@@ -4,7 +4,8 @@ Model mods for Hookshot installs, without hand-assembling tools: pick a model fr
 game files, get a Blender scene, edit it, and turn the scene into a mod that Hookshot loads.
 
 > Working name. Status: **early**. The model pipeline works today with Blender and a Switch Toolbox build
-> (`pipeline/`); the Rust tool that replaces Toolbox is being written (`crates/`), and the app comes after it.
+> (`pipeline/`). The Rust tool that replaces Toolbox reads every model and texture of the game and exports them for
+> Blender (`modstudio export`); rebuilding models (`modstudio replace`) is next, and the app comes after it.
 > See [docs/plan.md](docs/plan.md).
 
 ## What it does
@@ -21,6 +22,7 @@ game files, get a Blender scene, edit it, and turn the scene into a mod that Hoo
 | Path | |
 |---|---|
 | `crates/modstudio-formats` | the game's file formats in Rust: zstd with the game's dictionaries, SARC, BNTX, BFRES |
+| `crates/modstudio-core` | what the tool does with them: `model.json`, `.glb` export |
 | `crates/modstudio-cli` | `modstudio`, the command-line tool the pipeline and the app call |
 | `pipeline/` | Python: Blender scene creation, baking and export (runs inside Blender), build and install |
 | `docs/` | plan and notes |
@@ -33,6 +35,14 @@ cargo test
 ```
 
 The toolchain is pinned in `rust-toolchain.toml` (rustup picks it up). Windows and Linux.
+
+```
+modstudio inspect Model/Npc_U_GreatFairy.Npc_U_GreatFairy.bfres.zs --romfs <game>/romfs
+modstudio export Model/Npc_U_GreatFairy.Npc_U_GreatFairy.bfres.zs out/greatfairy --romfs <game>/romfs
+```
+
+`export` writes `<model>.glb` (skeleton, LOD 0 of each mesh, skin weights, UVs, vertex colours, materials), every
+texture the materials use as PNG, and `model.json`. Checks against your own dump: see `docs/plan.md`.
 
 ## Rules
 

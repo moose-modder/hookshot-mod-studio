@@ -10,4 +10,11 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Synthetic game files for tests (src/testing.rs).
+testing = []
+
 [dependencies]
+png = "0.18.1"
+ruzstd = "0.9.1"
+texture2ddecoder = "0.1.2"

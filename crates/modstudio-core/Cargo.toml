@@ -1,0 +1,19 @@
+[package]
+name = "modstudio-core"
+description = "What the CLI and the app do: inspect a model, export it for Blender, build mods"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+modstudio-formats = { path = "../modstudio-formats" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+modstudio-formats = { path = "../modstudio-formats", features = ["testing"] }

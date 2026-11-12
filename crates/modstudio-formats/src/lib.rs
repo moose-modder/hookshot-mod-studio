@@ -1,10 +1,25 @@
 //! The game's model files, read and written without any outside tool.
 //!
-//! Planned modules (see `docs/plan.md`):
-//! - `zs`: zstd frames, with the dictionaries the game keeps in `romfs/Pack/ZsDic.pack.zs`
-//! - `sarc`: the archive format of that pack (and others)
-//! - `bntx`: textures, including the Switch's block-linear layout
-//! - `bfres`: models: skeleton, meshes, vertex and index buffers, LODs, bounds; materials passed through
+//! - [`zs`]: zstd frames, with the dictionaries the game keeps in `romfs/Pack/ZsDic.pack.zs`
+//! - [`sarc`]: the archive format of that pack (and others)
+//! - [`romfs`]: reading files from a game's romfs folder
+//! - [`bntx`]: textures, decoded through [`tegra`] (the GPU's block-linear layout) to [`image::Image`]
+//! - [`bfres`]: models: skeleton, shapes with their LOD meshes, vertex and index buffers, materials
 //!
 //! The byte-level layouts are ported from Syroot's NintenTools libraries (MIT) as maintained in
 //! KillzXGaming/LegacySwitchLibraries; see `THIRD_PARTY.md`.
+
+mod bcn;
+pub mod bfres;
+pub mod bntx;
+mod bytes;
+mod error;
+pub mod image;
+pub mod romfs;
+pub mod sarc;
+pub mod tegra;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+pub mod zs;
+
+pub use error::{Error, Result};

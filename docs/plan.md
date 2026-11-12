@@ -8,7 +8,7 @@ editing and baking happen in the user's Blender.
 
 | Piece | Today | Target |
 |---|---|---|
-| Read a model and its textures | Toolbox `inspect-model` / `export-model` (FBX through Autodesk's SDK) | `modstudio inspect` / `export` → `.glb` + PNG |
+| Read a model and its textures | Toolbox `inspect-model` / `export-model` (FBX through Autodesk's SDK) | `modstudio inspect` / `export` → `.glb` + PNG (**done**, phase 1; the pipeline doesn't use it yet) |
 | Scene creation, baking, export from Blender | `pipeline/*.py` in Blender | same (glTF instead of FBX) |
 | Rebuild the model and textures | Toolbox `replace-model` | `modstudio replace` |
 | Resource size table | `restbl.exe` (RESTBL Calculator, AGPL) | own implementation, or Hookshot adjusts the table for mod files itself |
@@ -25,7 +25,32 @@ editing and baking happen in the user's Blender.
 3. **RESTBL** or the Hookshot-side alternative.
 4. **App**: model list (search, categories; Land hidden), previews, projects, mods on/off.
 
-`.bfres.mc` (MeshCodec-compressed) models are left for later: 5 models in the game use them.
+`.bfres.mc` (MeshCodec-compressed) models are left for later: 5 files in the game use it, and those checked so far
+(Impa) also exist as `.bfres.zs`, which is what is read.
+
+## Phase 1 findings (the reader, checked against the whole dump)
+
+- **The files are Switch 2 files.** BNTX platform `Ounc`, shaders `Nin_Ounce_NVN2`. Textures use the Orin GPU's
+  block-linear layout: same blocks and mip sizes as the Switch, a different byte order inside each GOB
+  (`tegra.rs`). Every texture's mip sizes match the offsets in its file (21,658 files).
+- **Textures:** 14,000 of 21,658 are ASTC (4x4 to 12x12), the rest BC1/3/4/5/6/7 and a few RG8. All 21,446 image
+  textures decode; the 212 that don't are data (R16 level maps, RGBA16F vertex animation). Against Toolbox's PNGs
+  for the Great Fairy and Impa: 92 of 101 identical, the other 9 within 1/255 (rounding).
+  **For the writer:** a texture that changes must be encoded as ASTC, or written as BC7/BC1 instead, if the game
+  takes a different format in place of ASTC (to try in game before choosing).
+- **Models:** all 6,464 parse (version 10.4). 6,406 store names as IDs into `Shader/ExternalBinaryString.bfres`
+  (454 strings, all resolve). Up to 10 LODs per mesh, up to 8 influences per vertex (`_i1`/`_w1` beyond 4; Toolbox's
+  export drops those). 896 shapes are stored as meshlets, which neither Syroot nor this reader reads: nearly all
+  in `Land_` (683 models) and `Obj_` (88), 1 NPC, 3 mask variants; they are left out of exports and listed.
+- **Format codes** for vertex attributes and textures are the graphics API's `channels << 8 | type`. Read that way,
+  the "16_SNorm" bone indices Syroot names (0x030a) are plain 16-bit unsigned integers (`AttribFormat`).
+- **Export checked in Blender** against Toolbox's FBX, mesh by mesh (vertex and face counts, bounds, rest and
+  deformed positions, UVs, colours, weights, materials): Great Fairy 15 of 16 identical (the eyelash keeps its 5th
+  influence), the Shadow Temple paddle ship identical for every mesh compared. Two deliberate differences: meshes
+  that follow one bone (skin count 0) are weighted to that bone (Toolbox used the first bone of the matrix list),
+  and vertex colours are written so Blender holds the game's bytes.
+- Local checks: `crates/modstudio-formats/tests/romfs.rs` (`MODSTUDIO_ROMFS=... cargo test --release
+  -p modstudio-formats --test romfs -- --ignored --nocapture`).
 
 ## Risks and how they are contained
 
@@ -39,4 +64,5 @@ editing and baking happen in the user's Blender.
   PC as a reference, it is never shipped), and the render comparison the pipeline was verified with.
 - **Known details** that must survive (found while building the pipeline): attribute format 0x030a holds 16-bit
   integer bone indices (Syroot names it 16_SNorm); colour sets that start at `_c1`; lower LODs' vertices exported as
-  loose points; matching LOD counts with dummy LODs; textures that grew 44% in the same format through Toolbox's writer.
+  loose points; matching LOD counts with dummy LODs; textures that grew 44% in the same format through Toolbox's writer;
+  meshes with 5 to 8 influences per vertex (the pipeline limits weights to 4 by default).
