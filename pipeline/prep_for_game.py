@@ -1,7 +1,9 @@
-"""Prepares a Blender scene for Switch Toolbox's `replace-model` command.
+"""Prepares a Blender scene for building the mod (modstudio replace, or Switch Toolbox's replace-model).
 
 Run by build_mod.py:
     blender --background scene.blend --python prep_for_game.py -- --config prep_config.json
+
+Exports glTF for modstudio replace (config glb_name) or FBX for Switch Toolbox's replace-model (fbx_name).
 
 The .blend file is never saved. Everything happens on the copy Blender loads.
 
@@ -375,7 +377,8 @@ class Textures:
                 px = image_pixels(img)
                 if px.shape == ref.shape:
                     changed = float((np.abs(px - ref).max(-1) > 0.5 / 255).mean())
-                    if changed == 0:
+                    # Under 0.01% is two decoders disagreeing on a block or two, not painting.
+                    if changed < 1e-4:
                         continue
                     note = f"{changed * 100:.2f}% of pixels"
                 else:
@@ -1310,14 +1313,40 @@ def main():
             rep.warn(f"game mesh {name} is not in the scene. The replace removes it.")
 
     if not rep.errors:
-        fbx = os.path.join(cfg["output"], cfg["fbx_name"])
         select_only([arm] + objects, arm)
-        #Scale 0.01: Toolbox (Assimp) applies the FBX unit scale that Blender writes
-        bpy.ops.export_scene.fbx(filepath=fbx, use_selection=True, object_types={'ARMATURE', 'MESH'},
-                                 add_leaf_bones=False, bake_anim=False, use_mesh_modifiers=True,
-                                 mesh_smooth_type='OFF', use_tspace=False, global_scale=0.01,
-                                 path_mode='STRIP', embed_textures=False)
-        log(f"Exported {fbx}")
+        if cfg.get("glb_name"):
+            # For modstudio replace: the scene as glTF, with up to 8 influences, tangents and every colour layer.
+            # Blender's exporter only makes tangents for triangles: meshes with larger faces get a Triangulate
+            # modifier (custom normals kept), which the export applies (on this copy; the .blend isn't saved).
+            split = []
+            for o in objects:
+                if any(len(p.vertices) > 3 for p in o.data.polygons):
+                    mod = o.modifiers.new("PREP_triangulate", 'TRIANGULATE')
+                    if hasattr(mod, "keep_custom_normals"):
+                        mod.keep_custom_normals = True
+                    with bpy.context.temp_override(object=o):
+                        bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)
+                    split.append(o.name)
+            if split:
+                log(f"Triangulated for the export (Blender makes tangents for triangles only): {split}")
+            glb = os.path.join(cfg["output"], cfg["glb_name"])
+            bpy.ops.export_scene.gltf(filepath=glb, export_format='GLB', use_selection=True, export_yup=True,
+                                      export_apply=True, export_skins=True, export_influence_nb=8,
+                                      export_all_influences=False, export_tangents=True, export_normals=True,
+                                      export_texcoords=True, export_vertex_color='ACTIVE',
+                                      export_all_vertex_colors=True, export_materials='NONE',
+                                      export_animations=False, export_def_bones=False,
+                                      export_rest_position_armature=True, export_extras=False,
+                                      export_cameras=False, export_lights=False)
+            log(f"Exported {glb}")
+        else:
+            fbx = os.path.join(cfg["output"], cfg["fbx_name"])
+            #Scale 0.01: Toolbox (Assimp) applies the FBX unit scale that Blender writes
+            bpy.ops.export_scene.fbx(filepath=fbx, use_selection=True, object_types={'ARMATURE', 'MESH'},
+                                     add_leaf_bones=False, bake_anim=False, use_mesh_modifiers=True,
+                                     mesh_smooth_type='OFF', use_tspace=False, global_scale=0.01,
+                                     path_mode='STRIP', embed_textures=False)
+            log(f"Exported {fbx}")
 
     report = {"warnings": rep.warnings, "errors": rep.errors, "meshes": rep.meshes, "textures": rep.textures,
               "painted": rep.painted, "seconds": round(time.time() - t_start, 1)}

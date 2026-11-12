@@ -10,7 +10,7 @@ editing and baking happen in the user's Blender.
 |---|---|---|
 | Read a model and its textures | Toolbox `inspect-model` / `export-model` (FBX through Autodesk's SDK) | `modstudio inspect` / `export` → `.glb` + PNG (**done**, phase 1; `extract_model.py` uses it) |
 | Scene creation, baking, export from Blender | `pipeline/*.py` in Blender | scenes made from the `.glb` (**done**); the build still exports FBX for Toolbox, glTF once `modstudio replace` exists |
-| Rebuild the model and textures | Toolbox `replace-model` | `modstudio replace` |
+| Rebuild the model and textures | Toolbox `replace-model` | `modstudio replace` (**done**; `build_mod.py` uses it) |
 | Resource size table | `restbl.exe` (RESTBL Calculator, AGPL) | own implementation, or Hookshot adjusts the table for mod files itself |
 | GUI | none | Tauri: Rust core, web UI, three.js previews from the `.glb` files |
 
@@ -80,9 +80,17 @@ Rules taken from the files (all checked against the dump):
 - Spheres: one per skin bone, the smallest sphere around the vertices weighted to it (all LODs, its local space),
   radius + 0.0001; shapes without skin bones have one sphere (Syroot's "one per mesh" reads past the array).
 
-Next: reading Blender's glTF export into this geometry (skinning back to matrix indices, rigid and unskinned
-vertices back to bone space, tangents, LODs), textures (BNTX writer; BC1/BC4/BC5 and BC7 encoders; BC formats are
-fine where the game had ASTC), `modstudio replace`, and the pipeline switch from Toolbox.
+Also done: `modstudio replace` reads Blender's glTF export (each mesh replaces the game shape of its name;
+skinning back to the shape's matrices and skin count, rigid and unskinned vertices back to their bone's space;
+every LOD gets the new mesh), and writes changed textures (BC1/BC3/BC4/BC5/BC7 encoders, BNTX writer; ASTC as
+BC5/BC4/BC7). `build_mod.py` uses it, so the pipeline no longer needs Toolbox.
+
+Checked locally: the unedited Great Fairy round trip matches the game's model as well as the Toolbox build did
+(better for 5-influence meshes); the edited Great Fairy scene builds, and matches the Toolbox build of the same
+scene mesh by mesh; textures come out closer to their PNGs than Toolbox's. **Not yet checked in the game.**
+
+Left: simplified LODs (every LOD is the full mesh now), new meshes and bones (in-place writing can't add them),
+meshlet shapes, the resource size table (phase 3).
 
 ## Risks and how they are contained
 

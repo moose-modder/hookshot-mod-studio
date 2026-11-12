@@ -147,7 +147,7 @@ def main():
             "mod_dir": f"{os.path.abspath(cfg['workspace'])}/{mod_name}".replace("\\", "/"),
             "install_dir": f"{cfg['install_mods']}/{mod_name}",
             "tools": tools,
-            "prep": {"armature": "Armature", "max_weights": 4, "merge": []},
+            "prep": {"armature": "Armature", "max_weights": 8 if exporter == "modstudio" else 4, "merge": []},
             "toolbox_options": [],
         }
         with open(project, "w", encoding="utf-8") as f:

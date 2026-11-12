@@ -1,8 +1,9 @@
 # Model mod pipeline
 
-The current pipeline: Python scripts that drive Blender, `modstudio` (this repo's Rust tool) and, for building
-the mod, a Switch Toolbox build with command-line commands. The Toolbox steps (`inspect-model`, `replace-model`)
-are being replaced by `modstudio` too (see `docs/plan.md`); the Blender scripts stay.
+Python scripts that drive Blender and `modstudio` (this repo's Rust tool) to turn a game model into a Blender
+scene and the edited scene into a mod. Switch Toolbox is no longer needed; without `tools.modstudio` the scripts
+still use a Toolbox build with command-line commands, as they did first. The resource size table still comes
+from `restbl.exe` (see `docs/plan.md`).
 
 Builds a model replacement mod (Ocarina of Time, Switch 2) from a Blender scene:
 
@@ -40,18 +41,19 @@ folder would be replaced). `--no-blend` only exports. Without `tools.modstudio` 
 
 What it does:
 
-1. **Reads the game's model** (`Toolbox.exe inspect-model`): meshes, materials, attributes and textures,
-   and exports the original textures as PNG into `work_dir\original_textures`.
+1. **Reads the game's model** (`modstudio export`): meshes, materials, attributes and textures (`model.json`),
+   and the original textures as PNG, into `work_dir\original`.
 2. **Prepares the scene** (Blender in the background, `prep_for_game.py`):
    - meshes named `<name>_WORK` are used for `<name>` (an old `<name>` export copy is ignored)
    - **puts the scene's look into the game's textures** (see *Materials and textures* below)
-   - one material per mesh, only the UV maps and colour layers the game mesh has, at most 4 bone
-     weights per vertex (Toolbox's importer keeps 4 anyway), mesh data named like the object
-   - exports `work_dir\model.fbx` (scale 0.01, as Toolbox needs) and `work_dir\textures\*.png`
-3. **Replaces the model** (`Toolbox.exe replace-model`): copies the game's model and the textures being
-   replaced into `mod_dir\romfs`, imports the FBX with *map original materials*, *keep original skin
-   count*, *original attribute formats*, no bone import, and LOD counts like the original (dummy LODs).
-   Textures keep their format; ASTC (which Toolbox can't encode) becomes BC7 (BC5 for `_Nrm`).
+   - one material per mesh, only the UV maps and colour layers the game mesh has, at most 8 bone weights per
+     vertex, faces with more than 3 corners triangulated (Blender exports tangents for triangles only)
+   - exports `work_dir\model.glb` and `work_dir\textures\*.png`
+3. **Builds the mod** (`modstudio replace`): the game's model with each scene mesh in place of the game mesh of
+   its name, in that mesh's vertex formats, skin count (the strongest influences) and LOD count (every LOD gets
+   the new mesh); a game mesh missing from the scene is removed. Each changed texture is written in its own
+   format, or for ASTC (not encoded here) as BC5 (normal maps), BC4 (one channel) or BC7. Files of an earlier
+   build are removed first.
 4. **Checks the result** against the game's model: every mesh keeps its material, skin count and LOD count.
 5. **RESTBL** (`restbl.exe` from the RESTBL Calculator): writes
    `romfs\System\Resource\ResourceSizeTable.Product.<version>.Nin_Ounce_NVN2.rsizetable.zs`.
@@ -66,7 +68,10 @@ What it does:
 
 Logs of every step are in `work_dir` (`1_inspect_game.log` ... `5_restbl.log`, `prep_report.json`).
 
-Options: `--skip-blender` reuses the last FBX and textures (e.g. to only change Toolbox options).
+Options: `--skip-blender` reuses the last export and textures.
+
+Without `tools.modstudio`, steps 1, 3 and 4 use Switch Toolbox (`inspect-model`, `replace-model`) and step 2 exports
+`model.fbx` at scale 0.01 with 4 weights per vertex, as before.
 
 ## Materials and textures
 

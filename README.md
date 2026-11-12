@@ -3,9 +3,9 @@
 Model mods for Hookshot installs, without hand-assembling tools: pick a model from your own
 game files, get a Blender scene, edit it, and turn the scene into a mod that Hookshot loads.
 
-> Working name. Status: **early**. The model pipeline works today with Blender and a Switch Toolbox build
-> (`pipeline/`). The Rust tool that replaces Toolbox reads every model and texture of the game and exports them for
-> Blender (`modstudio export`); rebuilding models (`modstudio replace`) is next, and the app comes after it.
+> Working name. Status: **early**. The model pipeline (`pipeline/`) runs on Blender and `modstudio`, the Rust tool
+> in `crates/` that reads the game's models and textures, exports them for Blender and builds mods from the edited
+> scene (`modstudio export`, `modstudio replace`). The resource size table and the app come next.
 > See [docs/plan.md](docs/plan.md).
 
 ## What it does

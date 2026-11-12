@@ -509,6 +509,10 @@ fn shape_geometry(
     let tangents = match &mesh.tangents {
         Some(t) => t.clone(),
         None if vb.attribute("_t0").is_some() || vb.attribute("_b0").is_some() => {
+            report.warn(format!(
+                "{}: the scene has no tangents (Blender exports them for triangles only); made from UV map 0",
+                shape.name
+            ));
             compute_tangents(mesh, &normals)
         }
         None => vec![[1.0, 0.0, 0.0, 1.0]; n],
