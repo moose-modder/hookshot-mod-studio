@@ -116,9 +116,10 @@ configuring for this:
   so the build sees any change; in scenes made before that, only nodes the import doesn't make are noticed. A
   change that doesn't show in colour, normals or opacity (e.g. roughness) is reported: it doesn't reach the game.
 - **Colour versions.** Some shared townsfolk models have their clothes texture in up to 14 colours
-  (`..._Alb.0`, `.1`, ...; the game picks one per character). The scene shows version 0. Baking into such a
-  texture is not supported yet (only version 0 would get the moved faces): the build stops with an error. A
-  painted texture changes version 0 only.
+  (`..._Alb.0`, `.1`, ...; the game picks one per character). The scene shows version 0; the build decodes the
+  others and bakes the moved faces into every one: for each version the scene's images of version 0 show that
+  version while baking, so a material that mixes in the original colour (stripes over the shirt) comes out in
+  each character's colour. A painted texture changes version 0 only.
 - Only this model's meshes are kept clear of. A texture file another model also uses (unusual: they're named
   after the model) isn't checked.
 

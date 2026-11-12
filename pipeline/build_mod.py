@@ -128,6 +128,29 @@ def compare_models(vanilla, result):
     return problems, rows
 
 
+def decode_colour_versions(modstudio, romfs, model_json, folder):
+    """A texture "<name>.0" is one of several colour versions (Tex/<name>.1.bntx.zs, ...; the game picks one per
+    character). The export has version 0; the bake needs the others too (prep_for_game.py bakes each)."""
+    with open(model_json, encoding="utf-8") as f:
+        names = [t["name"] for t in json.load(f)["textures"]]
+    made = {}
+    for name in names:
+        m = re.fullmatch(r"(.*)\.0", name)
+        if not m:
+            continue
+        k = 1
+        while os.path.exists(os.path.join(romfs, "Tex", f"{m.group(1)}.{k}.bntx.zs")):
+            out = os.path.join(folder, f"{m.group(1)}.{k}.png")
+            proc = subprocess.run([modstudio, "texture", os.path.join(romfs, "Tex", f"{m.group(1)}.{k}.bntx.zs"),
+                                   out, "--romfs", romfs], capture_output=True, text=True)
+            if proc.returncode != 0:
+                raise BuildError(f"decoding colour version {m.group(1)}.{k}: {proc.stdout}{proc.stderr}")
+            k += 1
+        made[name] = k - 1
+    if made:
+        log("   colour versions: " + ", ".join(f"{n} and {k} more" for n, k in made.items()))
+
+
 def check_scene(cfg, tools, romfs, mod_romfs, work, vanilla_json):
     """Step 5: renders the scene and the built model the same way and compares them (check_result.py).
     Returns the report."""
@@ -211,6 +234,7 @@ def main():
         vanilla_json = os.path.join(original_textures, "model.json")
         run("Reading the game's model", [tools["modstudio"], "export", game_model, original_textures,
             "--romfs", romfs], os.path.join(work, "1_inspect_game.log"), lambda l: False)
+        decode_colour_versions(tools["modstudio"], romfs, vanilla_json, original_textures)
     else:
         vanilla_json = os.path.join(work, "vanilla.json")
         original_textures = os.path.join(work, "original_textures")

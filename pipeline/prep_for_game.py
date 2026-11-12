@@ -1135,18 +1135,35 @@ def colour_guided(px, src_px, guide, cfg, name):
     return out
 
 
+def colour_versions(folder, base):
+    """The other colour versions of "<base>.0" in folder: ["<base>.1", "<base>.2", ...]."""
+    pattern = re.compile(re.escape(base) + r"\.(\d+)\.png", re.IGNORECASE)
+    found = sorted(int(m.group(1)) for m in map(pattern.fullmatch, os.listdir(folder)) if m and m.group(1) != "0")
+    return [f"{base}.{k}" for k in found]
+
+
+@contextlib.contextmanager
+def shown_as(texture, px):
+    """Every scene image of `texture` (its PNG, also as ".001" copies) shows the pixels px for a while."""
+    pattern = re.compile(re.escape(texture) + r"(\.png)?(\.\d{3})?", re.IGNORECASE)
+    images = [img for img in bpy.data.images if not img.name.startswith("PREP_") and pattern.fullmatch(img.name)
+              and tuple(img.size) == (px.shape[1], px.shape[0])]
+    saved = [(img, image_pixels(img)) for img in images]
+    try:
+        for img in images:
+            img.pixels.foreach_set(px.ravel())
+            img.update()
+        yield images
+    finally:
+        for img, old in saved:
+            img.pixels.foreach_set(old.ravel())
+            img.update()
+
+
 def bake_group(objs, infos, textures, cfg, rep):
     """Moves the changed faces of a group of meshes that share textures into free texture space and bakes
     them into each texture."""
     names = [o.name for o in objs if infos[o]["moved"] is not None]
-    # "<texture>.0" is one of several colour versions (Tex/<texture>.1, .2, ...; the game picks one per
-    # character). Baking moves faces to new UV islands, which only version 0 would get.
-    versioned = sorted({t for o in objs for t in textures.owned(infos[o]["game_material"]) if re.search(r"\.\d+$", t)})
-    if versioned:
-        rep.error(f"{names}: baking into textures with colour versions ({versioned}) is not supported yet: only "
-                  f"version 0 would get the new faces. Keep these meshes on their game material (a painted "
-                  f"texture changes version 0 only).")
-        return
     log(f"Baking {names} into the textures shared by {sorted({infos[o]['game_material'] for o in objs})}")
     stats = pack_layout(objs, infos, cfg, rep)
     log(f"   new UV layout {stats}")
@@ -1173,6 +1190,20 @@ def bake_group(objs, infos, textures, cfg, rep):
     #Colour first: the other textures follow its changes (see colour_guided)
     all_textures = sorted({t for ts in textures_of.values() for t in ts},
                           key=lambda t: (texture_role(t, roles) != "color", t))
+    # "<texture>.0" is one of several colour versions (Tex/<texture>.1, .2, ...; the game picks one per
+    # character, the scene shows 0). Every version gets the moved faces: after version 0, each is baked with the
+    # scene's images of version 0 showing that version, so a material that mixes in the original colour gets
+    # each version's. (A painted version 0 changes version 0 only.)
+    tasks = []
+    for t in all_textures:
+        tasks.append((t, None))
+        m = re.fullmatch(r"(.*)\.0", t)
+        if m:
+            found = colour_versions(textures.src, m.group(1))
+            if not found:
+                rep.error(f"{t} has colour versions, but they aren't in {textures.src} (build_mod.py decodes them); "
+                          f"the others wouldn't get the baked faces")
+            tasks += [(v, t) for v in found]
     guide = None
 
     # Faces whose texels stay: every face of the group that isn't moved, in the layout (= game UVs)
@@ -1191,12 +1222,12 @@ def bake_group(objs, infos, textures, cfg, rep):
     try:
         dummy = temp.material("PREP_dummy")
         set_target(dummy, temp.image("PREP_dummy", 16, 16, 'Non-Color'))
-        for name in all_textures:
+        for name, version_of in tasks:
             if not textures.exists(name):
                 rep.error(f"original texture {textures.path(name)} not found")
                 continue
-            users = [o for o in movers if name in textures_of[o]]
-            role = texture_role(name, roles)
+            users = [o for o in movers if (version_of or name) in textures_of[o]]
+            role = texture_role(version_of or name, roles)
             colorspace = 'sRGB' if role == "color" else 'Non-Color'
             src = temp.keep_image(textures.load(name, roles))
             w, h = src.size
@@ -1235,7 +1266,10 @@ def bake_group(objs, infos, textures, cfg, rep):
                 return make
 
             t0 = time.time()
-            with contextlib.ExitStack() as stack:
+            swap = contextlib.ExitStack()
+            if version_of:
+                swap.enter_context(shown_as(version_of, src_px))
+            with swap, contextlib.ExitStack() as stack:
                 for o in users:
                     make = own_material(out) if role in ("color", "normal") else sampled(o, "color", out)
                     stack.enter_context(face_materials(o, infos[o]["moved"], make, dummy))
@@ -1248,7 +1282,10 @@ def bake_group(objs, infos, textures, cfg, rep):
                 alpha_px = src_px.copy()
                 alpha_px[..., 0] = src_px[..., 3]
                 alpha.pixels.foreach_set(alpha_px.ravel())
-                with contextlib.ExitStack() as stack:
+                swap = contextlib.ExitStack()
+                if version_of:
+                    swap.enter_context(shown_as(version_of, src_px))
+                with swap, contextlib.ExitStack() as stack:
                     for o in users:
                         copies = {}
 
