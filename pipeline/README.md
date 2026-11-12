@@ -178,10 +178,16 @@ baked (no detection, unless `"detect": true`), with per-material settings:
 ## Notes
 
 - Meshes are matched to the game's by name (`<mesh>__<material>`, as Toolbox exports them). The model is
-  edited in place, so a **new mesh** (e.g. a beard on the hair material) is joined into the game mesh that uses
-  its material, with that mesh's UV maps and colour layers (vertex colours it lacks are copied from the nearest
-  vertices: game meshes keep shading data there). If its material is on several game meshes or is a new one,
-  name the mesh in the project file: `"prep": {"join": {"<new mesh>": "<game mesh>"}}`.
+  edited in place, so a **new mesh** is joined into a game mesh, with that mesh's UV maps and colour layers
+  (vertex colours it lacks are copied from the nearest vertices: game meshes keep shading data there):
+  - on a game material (a beard on the hair material): the game mesh with that material (the nearest of
+    several);
+  - on a new material (a hat, a bracelet): among the game meshes near it with textures of their own, the
+    nearest whose textures have room to bake it at half their resolution or better (else the one with the most
+    room), a skinned one if the new mesh bends with several bones. Its faces are always baked into that mesh's
+    textures; the log names the choice and the others it weighed.
+  To choose yourself: `"prep": {"join": {"<new mesh>": "<game mesh>"}}` in the project file. The new mesh
+  keeps its bone weights (up to the target's skin count), and is drawn with the target's material.
 - A mesh may use any number of materials: the game gets one, its own, with the others baked into its textures.
 - Normal maps are baked in Blender's tangent space (+Y), the same convention the scene's
   "Reconstruct RG Normal" node group reads them with.

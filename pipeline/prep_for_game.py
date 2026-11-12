@@ -299,15 +299,79 @@ def match_layers(extra, target, rep):
         me.color_attributes.remove(ca)
 
 
-def join_new_meshes(objects, vanilla_meshes, cfg, rep):
-    """The model is edited in place, so a mesh the game model doesn't have can't be added: it is joined into the
-    game mesh that uses its material (prep.join {"<new mesh>": "<game mesh>"} chooses one otherwise). Its other
-    materials are then baked like any custom material. Returns the remaining objects."""
+def _world_points(o, limit=None):
+    co, _ = _corner_points(o)
+    if limit and len(co) > limit:
+        co = co[np.linspace(0, len(co) - 1, limit).astype(int)]
+    return co
+
+
+def _mean_distance(points, target):
+    """Mean distance from points to the nearest vertices of target."""
+    from mathutils import kdtree
+    co = _world_points(target)
+    tree = kdtree.KDTree(len(co))
+    for i, p in enumerate(co):
+        tree.insert(p, i)
+    tree.balance()
+    return float(np.mean([tree.find(p)[2] for p in points])) if len(points) else math.inf
+
+
+def _bones_used(o, arm):
+    bones = {b.name for b in arm.data.bones}
+    names = {g.index: g.name for g in o.vertex_groups}
+    return {names[g.group] for v in o.data.vertices for g in v.groups if g.weight > 0 and names[g.group] in bones}
+
+
+def _surface(o):
+    """(3D area in world units, UV area of its first UV map) of a mesh."""
+    me = o.data
+    co, _ = _corner_points(o)
+    tris, _ = triangles(me)
+    loop_vert = np.zeros(len(me.loops), np.int32)
+    me.loops.foreach_get("vertex_index", loop_vert)
+    area3d = float(triangle_areas(co[loop_vert[tris]]).sum()) if len(tris) else 0.0
+    if not me.uv_layers:
+        return area3d, 0.0
+    uv = mesh_uv(me, me.uv_layers[0].name)
+    return area3d, float(triangle_areas(uv[tris]).sum()) if len(tris) else 0.0
+
+
+def _resolution_estimate(new, target, games, vanilla_meshes, textures, size=256, block=8):
+    """Roughly the share of the target's texel density the new mesh would get if baked into the free space of the
+    target's textures (as bake_group's packing reports it): the texture's wholly free blocks (scattered gaps
+    between islands don't take new ones) against the new mesh's area at that density, at half packing
+    efficiency."""
+    group_of = texture_groups(textures)
+    key = group_of(vanilla_meshes[target.name]["material"])
+    covered = np.zeros((size, size), bool)
+    for g in games:
+        if group_of(vanilla_meshes[g.name]["material"]) == key and g.data.uv_layers:
+            tris, _ = triangles(g.data)
+            covered |= raster_triangles(mesh_uv(g.data, g.data.uv_layers[0].name), tris, size, size) > 0
+    covered = dilate(covered, 1)
+    free = 1.0 - covered.reshape(size // block, block, size // block, block).any((1, 3)).mean()
+    area3d, area_uv = _surface(target)
+    needed = _surface(new)[0] * (area_uv / area3d if area3d else 0.0)
+    return min(1.0, math.sqrt(0.5 * free / needed)) if needed > 0 else 1.0
+
+
+def join_new_meshes(objects, vanilla_meshes, textures, arm, cfg, rep):
+    """The model is edited in place, so a mesh the game model doesn't have can't be added: it is joined into a
+    game mesh, chosen as
+      * the one prep.join {"<new mesh>": "<game mesh>"} names, else
+      * the one that uses its material (the nearest of several), else (a new material)
+      * among the game meshes with textures of this model's own to bake into, within three times the distance of
+        the nearest (or 25 cm more; the new mesh keeps its own bone weights either way): the nearest whose
+        textures have room for it at half their texel density or better (else the one with the most), skinned
+        when the new mesh follows more than one bone.
+    Its faces on other materials than the target's are then baked into the target's textures, all of them (their
+    UVs mean nothing there). Returns (the remaining objects, {target: index of its first joined face})."""
     rules = cfg.get("join", {})
+    games = [o for o in objects if o.name in vanilla_meshes]
     by_material = {}
-    for o in objects:
-        if o.name in vanilla_meshes:
-            by_material.setdefault(vanilla_meshes[o.name]["material"], []).append(o.name)
+    for o in games:
+        by_material.setdefault(vanilla_meshes[o.name]["material"], []).append(o)
     by_name = {o.name: o for o in objects}
     joins = {}
     for o in objects:
@@ -317,15 +381,39 @@ def join_new_meshes(objects, vanilla_meshes, cfg, rep):
         if target is None:
             used = {o.material_slots[i].material.name for i in np.unique(material_indices(o.data))
                     if i < len(o.material_slots) and o.material_slots[i].material}
-            candidates = sorted({t for m in used for t in by_material.get(plain_name(m), [])})
-            if len(candidates) != 1:
-                why = (f"its materials {sorted(used)} are on several game meshes {candidates}" if candidates
-                       else f"none of its materials {sorted(used)} is a game material")
-                rep.error(f"{o.name} is not a mesh of the game model and {why}. Join it into a game mesh in "
-                          f"Blender, or name one in the project file: \"prep\": {{\"join\": {{\"{o.name}\": "
-                          f"\"<game mesh>\"}}}}")
+            candidates = sorted({t for m in used for t in by_material.get(plain_name(m), [])}, key=lambda t: t.name)
+            points = _world_points(o, 2000)
+            how = "uses its material"
+            if not candidates:
+                candidates = [g for g in games if textures.owned(vanilla_meshes[g.name]["material"])
+                              and g.data.uv_layers]
+                how = "is the nearest with textures to bake into"
+            if not candidates:
+                rep.error(f"{o.name} is not a mesh of the game model and no game mesh can take it. Join it into a "
+                          f"game mesh in Blender, or name one: \"prep\": {{\"join\": {{\"{o.name}\": \"<game mesh>\"}}}}")
                 continue
-            target = candidates[0]
+            dist = {g.name: _mean_distance(points, g) for g in candidates} if len(candidates) > 1 else {}
+            candidates.sort(key=lambda g: dist.get(g.name, 0.0))
+            if how.startswith("is the nearest"):
+                bends = len(_bones_used(o, arm)) > 1
+                d0 = dist.get(candidates[0].name, 0.0)
+                near = [g for g in candidates if dist.get(g.name, 0.0) <= max(3 * d0, d0 + 0.25)]
+                if bends and any(vanilla_meshes[g.name]["skinCount"] >= 2 for g in near):
+                    near = [g for g in near if vanilla_meshes[g.name]["skinCount"] >= 2]
+                room = {g.name: _resolution_estimate(o, g, games, vanilla_meshes, textures) for g in near}
+                roomy = [g for g in near if room[g.name] >= 0.5]
+                best = roomy[0] if roomy else max(near, key=lambda g: room[g.name])
+                how = (f"is the nearest with room in its textures to bake into (about {room[best.name] * 100:.0f}% "
+                       f"of their resolution; others near: "
+                       + (", ".join(f"{g.name} {dist.get(g.name, 0.0):.3f} away, {room[g.name] * 100:.0f}%"
+                                    for g in near if g is not best) or "none") + ")")
+                if bends and vanilla_meshes[best.name]["skinCount"] < 2:
+                    rep.warn(f"{o.name} follows several bones, but joins {best.name}, which follows one: it won't bend")
+            else:
+                best = candidates[0]
+            target = best.name
+            log(f"{o.name} is not a mesh of the game model: it joins {target}"
+                + (f" ({dist[target]:.3f} away)" if target in dist else "") + f", which {how}")
         if target not in by_name or target not in vanilla_meshes:
             rep.error(f"{o.name}: join target {target} is not a game mesh in the scene")
             continue
@@ -334,16 +422,18 @@ def join_new_meshes(objects, vanilla_meshes, cfg, rep):
     # The join deletes the joined objects: decide what stays before it.
     gone = {id(e) for extras in joins.values() for e in extras}
     kept = [o for o in objects if id(o) not in gone]
+    first_joined = {}
     for target, extras in joins.items():
         t = by_name[target]
         names = [e.name for e in extras]
         for e in extras:
             match_layers(e, t, rep)
+        first_joined[target] = len(t.data.polygons)
         select_only([t] + extras, t)
         bpy.ops.object.join()
         log(f"Joined {names} into {target}")
         rep.meshes.setdefault(target, {})["joined"] = names
-    return kept
+    return kept, first_joined
 
 
 LOD_SAME = 0.95  # a game LOD with at least this share of LOD 0's triangles gets the more detailed version
@@ -1224,7 +1314,8 @@ def bake_group(objs, infos, textures, cfg, rep):
         set_target(dummy, temp.image("PREP_dummy", 16, 16, 'Non-Color'))
         for name, version_of in tasks:
             if not textures.exists(name):
-                rep.error(f"original texture {textures.path(name)} not found")
+                # (the export writes every texture the game has: this one the material names, the game doesn't)
+                log(f"   {name}: the game has no such texture (the material names it); nothing to bake")
                 continue
             users = [o for o in movers if (version_of or name) in textures_of[o]]
             role = texture_role(version_of or name, roles)
@@ -1439,7 +1530,8 @@ def main():
         bpy.ops.object.mode_set(mode='OBJECT')
     arm, objects = collect_objects(cfg, rep)
     log(f"Meshes: {sorted(o.name for o in objects)}")
-    objects = join_new_meshes(objects, vanilla_meshes, cfg, rep)
+    textures = Textures(cfg, model, rep)
+    objects, first_joined = join_new_meshes(objects, vanilla_meshes, textures, arm, cfg, rep)
 
     rules = {r["mesh"]: r for r in cfg.get("merge", [])}
     for name in rules:
@@ -1452,7 +1544,6 @@ def main():
         rep.warn(f"{len(missing_bones)} game bones are not in the armature, e.g. {missing_bones[:5]}")
 
     # Textures: painted ones, then custom materials baked into them
-    textures = Textures(cfg, model, rep)
     textures.find_painted()
     edit_game_materials(objects, vanilla_meshes, textures, rep)
     infos = {}
@@ -1490,6 +1581,11 @@ def main():
         else:
             moved = detect_changes(o, info, textures, cfg, rep)
             moved = grow_faces(o.data, moved, (rule or {}).get("grow", cfg.get("grow", 1)))
+        if o.name in first_joined:
+            # A joined mesh's faces on other materials: their UVs mean nothing in these textures, so always baked
+            joined = np.zeros(len(o.data.polygons), bool)
+            joined[first_joined[o.name]:] = True
+            moved = moved | (joined & custom)
         rep.meshes.setdefault(o.name, {}).update({"custom_materials": materials, "custom_faces": int(custom.sum()),
                                                   "baked_faces": int(moved.sum())})
         if moved.any():
