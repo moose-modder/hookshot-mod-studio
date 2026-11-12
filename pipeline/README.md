@@ -99,8 +99,13 @@ configuring for this:
      the colour.
 - **Painted textures.** If a scene image of one of those textures was painted on (it differs from the game's),
   the painted version is used. Pack or save the image so the `.blend` has it.
-- Changes made inside a game material itself (e.g. new nodes in `Mt_Skin`) are not baked, only noted in the
-  log: put them on a new material.
+- **Changes inside a game material** (new nodes in `Mt_Face`, e.g. a mask that recolours part of the texture)
+  are baked the same way: the material counts as a custom one, and the faces that look different are moved and
+  baked. (Changed settings of the import's own nodes, without new nodes, aren't noticed.)
+- **Colour versions.** Some shared townsfolk models have their clothes texture in up to 14 colours
+  (`..._Alb.0`, `.1`, ...; the game picks one per character). The scene shows version 0. Baking into such a
+  texture is not supported yet (only version 0 would get the moved faces): the build stops with an error. A
+  painted texture changes version 0 only.
 - Only this model's meshes are kept clear of. A texture file another model also uses (unusual: they're named
   after the model) isn't checked.
 
@@ -126,6 +131,7 @@ Paths can use `/`.
 | `prep.armature` | armature object name |
 | `prep.max_weights` | bone weights per vertex (default 4) |
 | `prep.merge` | optional list of rules, see below |
+| `prep.join` | optional `{"<new mesh>": "<game mesh>"}`: where a mesh the game model doesn't have goes (default: the game mesh with its material) |
 | `prep.grow` | rings of faces baked around the changed ones (default 1) |
 | `prep.color_threshold`, `normal_threshold`, `opacity_threshold` | how different a face must look to be baked (defaults 3/255, 0.02, 3/255) |
 | `prep.samples`, `bake_margin`, `probe_size`, `pack_grid`, `pack_margin` | bake samples (4), bake margin in pixels (3), scratch layout size (2048), packing grid (512), space between islands (0.006) |
@@ -155,8 +161,11 @@ baked (no detection, unless `"detect": true`), with per-material settings:
 
 ## Notes
 
-- Meshes are matched to the game's by name (`<mesh>__<material>`, as Toolbox exports them). A new mesh
-  name gets a warning: Toolbox can't know its material.
+- Meshes are matched to the game's by name (`<mesh>__<material>`, as Toolbox exports them). The model is
+  edited in place, so a **new mesh** (e.g. a beard on the hair material) is joined into the game mesh that uses
+  its material, with that mesh's UV maps and colour layers (vertex colours it lacks are copied from the nearest
+  vertices: game meshes keep shading data there). If its material is on several game meshes or is a new one,
+  name the mesh in the project file: `"prep": {"join": {"<new mesh>": "<game mesh>"}}`.
 - A mesh may use any number of materials: the game gets one, its own, with the others baked into its textures.
 - Normal maps are baked in Blender's tangent space (+Y), the same convention the scene's
   "Reconstruct RG Normal" node group reads them with.

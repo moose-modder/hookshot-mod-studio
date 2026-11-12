@@ -84,6 +84,13 @@ def rebuild(mods_dir, restbl, game, version, work_dir, log=print):
     if proc.returncode != 0:
         raise RuntimeError(f"restbl failed (exit {proc.returncode}): {(proc.stdout + proc.stderr).strip()[-2000:]}")
     made = glob.glob(os.path.join(combined, "romfs", TABLE_DIR, "*.rsizetable*"))
+    if not made and "No RESTBL needed" in proc.stdout:
+        # Every mod file fits the game's own table (e.g. a model that didn't grow): no table, and an old one goes.
+        if os.path.isdir(table_mod):
+            shutil.rmtree(table_mod)
+        shutil.rmtree(combined)
+        log(f"No resource size table needed for {len(mods)} mod(s) {mods}: every file fits the game's own table")
+        return None
     if len(made) != 1:
         raise RuntimeError(f"restbl wrote {len(made)} tables in {combined}; expected one")
 

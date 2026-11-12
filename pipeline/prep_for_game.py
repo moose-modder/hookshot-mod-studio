@@ -9,6 +9,8 @@ The .blend file is never saved. Everything happens on the copy Blender loads.
 
 For every mesh parented to the armature:
   * If "<name>_WORK" exists, it is the source for "<name>" (a stale "<name>" export copy is ignored).
+  * A mesh the game model doesn't have is joined into the game mesh that uses its material (or the one
+    prep.join names), with that mesh's UV maps and colour layers (missing colours from its nearest vertices).
   * Bone weights are limited to max_weights per vertex and normalized.
   * The mesh data gets the object's name (Assimp, and so Toolbox, matches meshes by mesh data name).
 
@@ -17,7 +19,8 @@ survive. So what the scene shows is put into the model's own textures (the ones 
 never shared CmnTex_* ones):
 
   * Painted textures: a scene image of one of those textures that differs from the game's is used.
-  * Custom materials: faces on any material other than the mesh's game material are baked:
+  * Custom materials: faces on any material other than the mesh's game material are baked (a game material
+    changed in place, i.e. with nodes the import doesn't make, counts as a custom one):
       1. Which faces look different: they are baked with their material and with the game material,
          side by side in a scratch layout (diffuse colour and normals). Faces that differ, and `grow`
          rings of faces around them, are moved. (A merge rule moves all faces of its extra materials.)
@@ -51,7 +54,7 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from scene_nodes import rg_normal_group  # noqa: E402
+from scene_nodes import RG_GROUP, rg_normal_group  # noqa: E402
 
 LAYOUT = "PREP_layout"
 PROBE = "PREP_probe"
@@ -238,6 +241,109 @@ def collect_objects(cfg, rep):
     arm.hide_set(False)
     arm.hide_viewport = False
     return arm, result
+
+
+def _corner_points(o):
+    """World positions of a mesh's vertices and, per corner, its vertex."""
+    me = o.data
+    co = np.zeros(len(me.vertices) * 3)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3) @ np.array(o.matrix_world.to_3x3()).T + np.array(o.matrix_world.translation)
+    loop_vert = np.zeros(len(me.loops), np.int32)
+    me.loops.foreach_get("vertex_index", loop_vert)
+    return co, loop_vert
+
+
+def _nearest(points, targets):
+    """Index of the nearest target for each point."""
+    out = np.zeros(len(points), np.int64)
+    for i in range(0, len(points), 512):
+        d = ((points[i:i + 512, None, :] - targets[None, :, :]) ** 2).sum(-1)
+        out[i:i + 512] = d.argmin(1)
+    return out
+
+
+def match_layers(extra, target, rep):
+    """Gives a mesh that is joined into a game mesh the target's UV maps and colour layers, so the join keeps
+    them: UV maps by position (renamed), a missing colour layer filled from the nearest vertex of the target
+    (game meshes keep data in vertex colours, e.g. hair shading), layers the target doesn't have removed."""
+    me, tme = extra.data, target.data
+    for i, uv in enumerate(list(tme.uv_layers)):
+        if i < len(me.uv_layers):
+            me.uv_layers[i].name = uv.name
+        else:
+            me.uv_layers.new(name=uv.name)
+            rep.warn(f"{extra.name}: has no UV map {uv.name}; its faces get UV 0,0 there")
+    for uv in list(me.uv_layers)[len(tme.uv_layers):]:
+        me.uv_layers.remove(uv)
+
+    co, loop_vert = _corner_points(extra)
+    tco, tloop_vert = _corner_points(target)
+    for ca in list(tme.color_attributes):
+        if me.color_attributes.get(ca.name) is not None:
+            continue
+        prop = "color_srgb" if ca.data_type == 'BYTE_COLOR' else "color"
+        src = np.zeros(len(ca.data) * 4, np.float32)
+        ca.data.foreach_get(prop, src)
+        src = src.reshape(-1, 4)
+        new = me.color_attributes.new(ca.name, ca.data_type, ca.domain)
+        if ca.domain == 'CORNER':
+            pick = _nearest(co[loop_vert], tco[tloop_vert])
+        else:
+            pick = _nearest(co, tco)
+        new.data.foreach_set(prop, src[pick].ravel())
+        log(f"{extra.name}: colour layer {ca.name} filled from the nearest vertices of {target.name}")
+    names = {ca.name for ca in tme.color_attributes}
+    for ca in [ca for ca in me.color_attributes if ca.name not in names]:
+        log(f"{extra.name}: removed colour layer {ca.name} ({target.name} has none of that name)")
+        me.color_attributes.remove(ca)
+
+
+def join_new_meshes(objects, vanilla_meshes, cfg, rep):
+    """The model is edited in place, so a mesh the game model doesn't have can't be added: it is joined into the
+    game mesh that uses its material (prep.join {"<new mesh>": "<game mesh>"} chooses one otherwise). Its other
+    materials are then baked like any custom material. Returns the remaining objects."""
+    rules = cfg.get("join", {})
+    by_material = {}
+    for o in objects:
+        if o.name in vanilla_meshes:
+            by_material.setdefault(vanilla_meshes[o.name]["material"], []).append(o.name)
+    by_name = {o.name: o for o in objects}
+    joins = {}
+    for o in objects:
+        if o.name in vanilla_meshes:
+            continue
+        target = rules.get(o.name)
+        if target is None:
+            used = {o.material_slots[i].material.name for i in np.unique(material_indices(o.data))
+                    if i < len(o.material_slots) and o.material_slots[i].material}
+            candidates = sorted({t for m in used for t in by_material.get(plain_name(m), [])})
+            if len(candidates) != 1:
+                why = (f"its materials {sorted(used)} are on several game meshes {candidates}" if candidates
+                       else f"none of its materials {sorted(used)} is a game material")
+                rep.error(f"{o.name} is not a mesh of the game model and {why}. Join it into a game mesh in "
+                          f"Blender, or name one in the project file: \"prep\": {{\"join\": {{\"{o.name}\": "
+                          f"\"<game mesh>\"}}}}")
+                continue
+            target = candidates[0]
+        if target not in by_name or target not in vanilla_meshes:
+            rep.error(f"{o.name}: join target {target} is not a game mesh in the scene")
+            continue
+        joins.setdefault(target, []).append(o)
+
+    # The join deletes the joined objects: decide what stays before it.
+    gone = {id(e) for extras in joins.values() for e in extras}
+    kept = [o for o in objects if id(o) not in gone]
+    for target, extras in joins.items():
+        t = by_name[target]
+        names = [e.name for e in extras]
+        for e in extras:
+            match_layers(e, t, rep)
+        select_only([t] + extras, t)
+        bpy.ops.object.join()
+        log(f"Joined {names} into {target}")
+        rep.meshes.setdefault(target, {})["joined"] = names
+    return kept
 
 
 def limit_weights(o, arm, max_weights):
@@ -975,6 +1081,14 @@ def bake_group(objs, infos, textures, cfg, rep):
     """Moves the changed faces of a group of meshes that share textures into free texture space and bakes
     them into each texture."""
     names = [o.name for o in objs if infos[o]["moved"] is not None]
+    # "<texture>.0" is one of several colour versions (Tex/<texture>.1, .2, ...; the game picks one per
+    # character). Baking moves faces to new UV islands, which only version 0 would get.
+    versioned = sorted({t for o in objs for t in textures.owned(infos[o]["game_material"]) if re.search(r"\.\d+$", t)})
+    if versioned:
+        rep.error(f"{names}: baking into textures with colour versions ({versioned}) is not supported yet: only "
+                  f"version 0 would get the new faces. Keep these meshes on their game material (a painted "
+                  f"texture changes version 0 only).")
+        return
     log(f"Baking {names} into the textures shared by {sorted({infos[o]['game_material'] for o in objs})}")
     stats = pack_layout(objs, infos, cfg, rep)
     log(f"   new UV layout {stats}")
@@ -1153,22 +1267,44 @@ def use_game_material(o, game_material):
     me.update()
 
 
-def check_game_materials(objects, infos, textures):
-    """A game material whose nodes were changed in place: those changes don't reach the game."""
+EDITED_SUFFIX = "_scene_edit"
+
+
+def edited_nodes(m):
+    """Nodes of a material that the import doesn't make (node groups other than the RG normal group count)."""
+    out = []
+    for n in m.node_tree.nodes:
+        if n.type not in IMPORT_NODES:
+            out.append(n.name)
+        elif n.type == 'GROUP' and (n.node_tree is None or plain_name(n.node_tree.name) != RG_GROUP):
+            out.append(n.name)
+    return out
+
+
+def edit_game_materials(objects, vanilla_meshes, textures, rep):
+    """A game material changed in place in the scene (new nodes, e.g. a mask that recolours part of the
+    texture) is treated like a custom material: renamed on this copy, so its faces are detected and baked, and
+    the game material is rebuilt from the textures for the comparison."""
+    game = {vanilla_meshes[o.name]["material"] for o in objects if o.name in vanilla_meshes}
     seen = set()
     for o in objects:
-        info = infos.get(o)
-        if not info:
-            continue
         for s in o.material_slots:
             m = s.material
-            if not m or not m.use_nodes or plain_name(m.name) != info["game_material"] or m.name in seen:
+            if not m or m.name in seen or not m.use_nodes or plain_name(m.name) not in game:
                 continue
             seen.add(m.name)
-            extra = sorted({n.type for n in m.node_tree.nodes} - IMPORT_NODES)
-            if extra and textures.owned(info["game_material"]):
-                log(f"Note: material {m.name} has nodes the import doesn't make ({', '.join(extra)}). If they change "
-                    f"how it looks, that isn't baked: changes belong on a new material.")
+            nodes = edited_nodes(m)
+            if not nodes:
+                continue
+            base = plain_name(m.name)
+            if not textures.owned(base):
+                rep.warn(f"material {m.name} was changed in the scene ({', '.join(nodes)}), but has no textures of "
+                         f"this model's own to bake it into; the game uses it unchanged")
+                continue
+            m.name = base + EDITED_SUFFIX
+            log(f"Material {base} was changed in the scene ({', '.join(nodes)}): its faces are baked like a new "
+                f"material's")
+            rep.meshes.setdefault(o.name, {}).setdefault("edited_game_materials", []).append(base)
 
 
 # ---------------------------------------------------------------- main
@@ -1199,6 +1335,7 @@ def main():
         bpy.ops.object.mode_set(mode='OBJECT')
     arm, objects = collect_objects(cfg, rep)
     log(f"Meshes: {sorted(o.name for o in objects)}")
+    objects = join_new_meshes(objects, vanilla_meshes, cfg, rep)
 
     rules = {r["mesh"]: r for r in cfg.get("merge", [])}
     for name in rules:
@@ -1213,12 +1350,12 @@ def main():
     # Textures: painted ones, then custom materials baked into them
     textures = Textures(cfg, model, rep)
     textures.find_painted()
+    edit_game_materials(objects, vanilla_meshes, textures, rep)
     infos = {}
     for o in objects:
         vm = vanilla_meshes.get(o.name)
         if vm is None:
-            rep.warn(f"{o.name} is not a mesh of the game model. Toolbox will not know its material.")
-            continue
+            continue  # reported by join_new_meshes
         rule = rules.get(o.name)
         game_material = (rule or {}).get("into_material") or vm["material"]
         if game_material not in textures.materials:
@@ -1230,7 +1367,6 @@ def main():
             continue
         infos[o] = {"game_material": game_material, "uv": uv, "rule": rule, "moved": None,
                     "custom": custom_faces(o, game_material)}
-    check_game_materials(objects, infos, textures)
 
     for o, info in infos.items():
         custom = info["custom"]

@@ -36,8 +36,14 @@ def log(msg):
     print("[scene] " + msg, flush=True)
 
 
+# "..._Alb", and "..._Alb.0" for one of a texture's colour versions (the clothes of shared townsfolk models have
+# up to 14; the model uses version 0 and the game picks another per character). Same rule as prep_for_game.py.
+KIND = re.compile(r"_([A-Za-z]+\d?)(?:\.\d+)?$")
+
+
 def texture_role(name):
-    return {"Alb": "color", "Nrm": "normal"}.get(name.rsplit("_", 1)[-1], "aux")
+    m = KIND.search(name)
+    return {"Alb": "color", "Nrm": "normal"}.get(m.group(1) if m else "", "aux")
 
 
 # ---------------------------------------------------------------- from modstudio export (.glb)
