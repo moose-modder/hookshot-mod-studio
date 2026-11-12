@@ -1,0 +1,18 @@
+[package]
+name = "modstudio-cli"
+description = "Command-line tool: inspect, export and replace the game's models (used by the pipeline and the app)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "modstudio"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+modstudio-formats = { path = "../modstudio-formats" }

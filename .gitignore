@@ -1,0 +1,22 @@
+/target
+__pycache__/
+*.pyc
+
+# Personal settings and project files (they hold local paths)
+/pipeline/*.json
+!/pipeline/config.example.json
+
+# Anything made from the game is never committed: models, textures, archives, scenes, exports
+*.zs
+*.bfres
+*.bntx
+*.sarc
+*.pack
+*.mc
+*.blend
+*.blend1
+*.fbx
+*.glb
+*.gltf
+/workspace/
+/mods/

@@ -1,0 +1,11 @@
+{
+  "game": "oot",
+  "game_romfs": "C:/Games/OOT_Remake/romfs",
+  "workspace": "C:/Modding/work",
+  "install_mods": "C:/Games/OOT_Remake/mods",
+  "tools": {
+    "blender": "C:/Program Files/Blender Foundation/Blender 5.2/blender.exe",
+    "toolbox": "C:/Modding/Toolbox/Toolbox.exe",
+    "restbl": "C:/Modding/restbl/restbl.exe"
+  }
+}
