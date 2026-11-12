@@ -304,8 +304,41 @@ pub fn tiny_bntx(name: &str, width: u32, height: u32, gob: Gob) -> Vec<u8> {
     b.u64(brti + 0x60, s as u64);
     let mips = b.alloc(8, 8);
     b.u64(brti + 0x70, mips as u64);
-    let data = b.alloc(swizzled.len(), 0x200);
+    let cpu_end = b.data.len();
+    // The image data block (BRTD), its data 0x200-aligned right after its 16-byte header, as in the game.
+    let brtd = b.alloc(0, 0x200) + 0x200 - 0x10;
+    b.data.resize(brtd + 0x10, 0);
+    b.bytes(brtd, b"BRTD");
+    b.u64(header + 0x30, brtd as u64);
+    let data = b.alloc(swizzled.len(), 0x10);
     b.bytes(data, &swizzled);
     b.u64(mips, data as u64);
+    // The relocation table on the next 4 KiB: the CPU part, and the data block with the pointers into it (the
+    // header's BRTD pointer and the mip pointer).
+    let rlt = b.alloc(0, 0x1000);
+    b.u64(brtd + 8, (rlt - brtd) as u64);
+    let rlt = b.alloc(0x10 + 2 * 0x18 + 2 * 8, 8);
+    b.bytes(rlt, b"_RLT");
+    b.u32(rlt + 4, rlt as u32);
+    b.u32(rlt + 8, 2);
+    for (i, (offset, size, first, count)) in [(0, cpu_end, 0, 0), (brtd, rlt - brtd, 0, 2)]
+        .into_iter()
+        .enumerate()
+    {
+        let sec = rlt + 0x10 + i * 0x18;
+        b.u32(sec + 8, offset as u32);
+        b.u32(sec + 12, size as u32);
+        b.u32(sec + 16, first);
+        b.u32(sec + 20, count);
+    }
+    let entries = rlt + 0x10 + 2 * 0x18;
+    for (k, at) in [header + 0x30, mips].into_iter().enumerate() {
+        b.u32(entries + k * 8, at as u32);
+        b.u16(entries + k * 8 + 4, 1);
+        b.u8(entries + k * 8 + 6, 1);
+    }
+    b.u32(header + 0x18, rlt as u32);
+    let len = b.data.len() as u32;
+    b.u32(header + 0x1C, len);
     b.data
 }

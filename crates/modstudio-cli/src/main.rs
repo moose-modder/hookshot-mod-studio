@@ -16,9 +16,10 @@ Usage:
   modstudio export <model.bfres.zs> <out-dir> --romfs <romfs>
       <model>.glb (skeleton, LOD 0 of each mesh, skin weights, UVs, colours), the textures as PNG and
       model.json, for Blender and previews
-  modstudio replace <model.bfres.zs> <scene.glb> <out-romfs> --romfs <romfs>
+  modstudio replace <model.bfres.zs> <scene.glb> <out-romfs> --romfs <romfs> [--textures <dir>]
       the model rebuilt from Blender's glTF export of its scene (each mesh replaces the game's mesh of its
-      name), written compressed under <out-romfs> at the model's path
+      name), written compressed under <out-romfs> at the model's path; with --textures, every <name>.png in
+      <dir> replaces the game's texture <name> (under <out-romfs>/Tex)
   modstudio decompress <file.zs> <out> --romfs <romfs>
       decompress a .zs file with the game's dictionaries
   modstudio texture <file.bntx.zs> <out.png> --romfs <romfs>
@@ -28,7 +29,7 @@ Usage:
 
 Model paths are relative to the romfs (Model/Npc_X.Npc_X.bfres.zs) or absolute.
 
-To come (docs/plan.md): textures in replace (BC encoding), the resource size table.
+To come (docs/plan.md): the resource size table.
 ";
 
 /// A usage error (exit code 2) or a failure (exit code 1).
@@ -163,7 +164,13 @@ fn replace(args: &Args) -> Result<(), Failure> {
         Path::new(glb),
         Path::new(out),
     )?;
-    println!("{}", serde_json::to_string_pretty(&summary)?);
+    let mut report = serde_json::to_value(&summary)?;
+    if let Some(dir) = args.option("textures") {
+        let (written, warnings) =
+            modstudio_core::texture::replace_textures(&romfs, Path::new(dir), Path::new(out))?;
+        report["textures"] = serde_json::json!({"written": written, "warnings": warnings});
+    }
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
 

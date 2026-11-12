@@ -4,11 +4,13 @@
 //! - [`model::export`]: the model as `.glb` (skeleton, LOD 0 of each mesh, skin weights, UVs, colours), its
 //!   textures as PNG, and `model.json`, for Blender and previews
 //! - [`replace::replace_model`]: the model rebuilt from Blender's glTF export of the scene
+//! - [`texture::replace_textures`]: changed textures (PNG) written in the game's format
 
 pub mod gltf;
 pub mod math;
 pub mod model;
 pub mod replace;
+pub mod texture;
 
 use std::fmt;
 

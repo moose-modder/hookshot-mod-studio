@@ -456,3 +456,61 @@ fn models_write_back_identically() {
     report("written back", files.len(), &failures, romfs.root());
     assert!(failures.is_empty());
 }
+
+/// How the game's textures set block height, flags and layout fields (to write new ones the same way).
+#[test]
+#[ignore = "needs a game dump (MODSTUDIO_ROMFS)"]
+fn texture_layout_survey() {
+    use modstudio_formats::bntx::Bntx;
+    use std::collections::BTreeMap;
+    let romfs = romfs();
+    let mut files = Vec::new();
+    files_with_suffix(&romfs.root().join("Tex"), ".bntx.zs", &mut files);
+    let stats = Mutex::new(BTreeMap::<String, usize>::new());
+    let failures = for_each_file(&romfs, &files, |decoder, path| {
+        let data = romfs.read(decoder, path).map_err(|e| e.to_string())?;
+        let bntx = Bntx::parse(&data).map_err(|e| e.to_string())?;
+        let t = &bntx.textures[0];
+        let Some((_, bh)) = t.format.block_size() else {
+            return Ok(());
+        };
+        let rows = t.height.div_ceil(bh);
+        // The usual rule (tegra_swizzle's block_height_mip0): rows + rows / 2 against 16 * 8, 8 * 8, ...
+        let rule = match rows + rows / 2 {
+            r if r >= 128 => 4,
+            r if r >= 64 => 3,
+            r if r >= 32 => 2,
+            r if r >= 16 => 1,
+            _ => 0,
+        };
+        let brti = data.as_slice();
+        let at = u64::from_le_bytes(brti[0x28..0x30].try_into().unwrap()) as usize;
+        let at = u64::from_le_bytes(brti[at..at + 8].try_into().unwrap()) as usize;
+        let flags = brti[at + 0x10];
+        let access = u32::from_le_bytes(brti[at + 0x20..at + 0x24].try_into().unwrap());
+        let layout2 = u32::from_le_bytes(brti[at + 0x38..at + 0x3C].try_into().unwrap());
+        let kind = format!("{:?}", t.format.encoding().unwrap()).to_lowercase();
+        let mut s = stats.lock().unwrap();
+        let rows_bucket = match rows {
+            r if r <= 8 => "<=8",
+            r if r <= 16 => "<=16",
+            r if r <= 64 => "<=64",
+            r if r <= 256 => "<=256",
+            _ => ">256",
+        };
+        *s.entry(format!(
+            "log2 {} vs rule {rule} (rows {rows_bucket})",
+            t.block_height_log2
+        ))
+        .or_default() += 1;
+        *s.entry(format!(
+            "flags {flags} access 0x{access:x} layout2 0x{layout2:x} ({kind})"
+        ))
+        .or_default() += 1;
+        Ok(())
+    });
+    for (k, v) in stats.into_inner().unwrap() {
+        println!("{v:>7}  {k}");
+    }
+    report("textures", files.len(), &failures, romfs.root());
+}
