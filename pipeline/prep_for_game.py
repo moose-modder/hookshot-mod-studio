@@ -54,7 +54,7 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from scene_nodes import RG_GROUP, rg_normal_group  # noqa: E402
+from scene_nodes import FINGERPRINT, RG_GROUP, material_fingerprint, rg_normal_group  # noqa: E402
 
 LAYOUT = "PREP_layout"
 PROBE = "PREP_probe"
@@ -1329,7 +1329,16 @@ EDITED_SUFFIX = "_scene_edit"
 
 
 def edited_nodes(m):
-    """Nodes of a material that the import doesn't make (node groups other than the RG normal group count)."""
+    """How a game material was changed in the scene, as a list of what (empty: not changed): against the
+    fingerprint make_scene.py stamped it with (any value, link, image or node), else (scenes made before the
+    stamp) nodes the import doesn't make (node groups other than the RG normal group count)."""
+    stamp = m.get(FINGERPRINT)
+    if stamp:
+        if material_fingerprint(m) == stamp:
+            return []
+        added = [n.name for n in m.node_tree.nodes if n.type not in IMPORT_NODES or (
+            n.type == 'GROUP' and (n.node_tree is None or plain_name(n.node_tree.name) != RG_GROUP))]
+        return added or ["settings or links of its nodes"]
     out = []
     for n in m.node_tree.nodes:
         if n.type not in IMPORT_NODES:
@@ -1451,6 +1460,9 @@ def main():
             log(f"{o.name}: baking {int(moved.sum())} faces of {materials} into {info['game_material']}")
         else:
             log(f"{o.name}: {materials} look like {info['game_material']}; nothing to bake")
+            if any(m.endswith(EDITED_SUFFIX) for m in materials):
+                rep.warn(f"{o.name}: the changes to {info['game_material']} don't show in what the build bakes "
+                         f"(colour, normals, opacity), so they don't reach the game")
 
     group_of = texture_groups(textures)
     groups = {}

@@ -110,9 +110,11 @@ configuring for this:
      the colour.
 - **Painted textures.** If a scene image of one of those textures was painted on (it differs from the game's),
   the painted version is used. Pack or save the image so the `.blend` has it.
-- **Changes inside a game material** (new nodes in `Mt_Face`, e.g. a mask that recolours part of the texture)
-  are baked the same way: the material counts as a custom one, and the faces that look different are moved and
-  baked. (Changed settings of the import's own nodes, without new nodes, aren't noticed.)
+- **Changes inside a game material** (new nodes in `Mt_Face`, e.g. a mask that recolours part of the texture,
+  or a changed value, link or image) are baked the same way: the material counts as a custom one, and the faces
+  that look different are moved and baked. `make_scene.py` stamps each material with a fingerprint of its nodes
+  so the build sees any change; in scenes made before that, only nodes the import doesn't make are noticed. A
+  change that doesn't show in colour, normals or opacity (e.g. roughness) is reported: it doesn't reach the game.
 - **Colour versions.** Some shared townsfolk models have their clothes texture in up to 14 colours
   (`..._Alb.0`, `.1`, ...; the game picks one per character). The scene shows version 0. Baking into such a
   texture is not supported yet (only version 0 would get the moved faces): the build stops with an error. A

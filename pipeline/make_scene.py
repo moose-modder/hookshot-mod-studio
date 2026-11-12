@@ -27,7 +27,7 @@ import sys
 import bpy
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from scene_nodes import RG_GROUP, rg_normal_group  # noqa: E402
+from scene_nodes import FINGERPRINT, RG_GROUP, material_fingerprint, rg_normal_group  # noqa: E402
 
 ARMATURE = "Armature"
 
@@ -210,6 +210,11 @@ def main():
         log(f"removed {remove_loose_vertices()} loose vertices (other LODs' vertices, which the build drops anyway)")
         changed = fix_normal_maps()
         log(f"RG normal maps reconstructed in {len(changed)} material(s)")
+    # Each material as made: the build tells a material changed in the scene from this stamp.
+    for m in bpy.data.materials:
+        fp = material_fingerprint(m)
+        if fp:
+            m[FINGERPRINT] = fp
     # images are referenced from the export folder, beside the .blend
     bpy.ops.wm.save_as_mainfile(filepath=a.blend, relative_remap=True)
     log(f"saved {a.blend}")
