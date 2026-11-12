@@ -51,7 +51,9 @@ What it does:
    - exports `work_dir\model.glb` and `work_dir\textures\*.png`
 3. **Builds the mod** (`modstudio replace`): the game's model with each scene mesh in place of the game mesh of
    its name, in that mesh's vertex formats, skin count (the strongest influences) and LOD count (every LOD gets
-   the new mesh); a game mesh missing from the scene is removed. Each changed texture is written in its own
+   the new mesh); a game mesh missing from the scene is removed. A scene mesh that is still the game's own (the
+   same triangles with the same positions, UVs, colours and skinning, normals within 1 degree) is **kept** as the
+   game has it, its LODs and tangents included; the log says `kept`. Each changed texture is written in its own
    format, or for ASTC (not encoded here) as BC5 (normal maps), BC4 (one channel) or BC7. Files of an earlier
    build are removed first.
 4. **Checks the result** against the game's model: every mesh keeps its material, skin count and LOD count.

@@ -105,9 +105,9 @@ fn weights_are_kept_exactly_and_repeated_bones_merged() {
 }
 
 #[test]
-fn export_then_replace_gives_the_same_geometry() {
+fn an_unchanged_mesh_keeps_the_game_shape() {
     use modstudio_core::replace::geometry_from_gltf;
-    use modstudio_formats::bfres_write::{ShapeGeometry, write};
+    use modstudio_formats::bfres_write::write;
 
     let file = tiny_bfres();
     let bfres = Bfres::parse(&file, None).unwrap();
@@ -116,23 +116,60 @@ fn export_then_replace_gives_the_same_geometry() {
     let gltf = gltf::Gltf::parse(&glb).unwrap();
     let (shapes, report) = geometry_from_gltf(model, &gltf).unwrap();
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    assert_eq!(report.shapes[0].status, "kept");
+    assert!(shapes.is_empty());
+    // Nothing to replace: the file is written back as it was.
+    assert_eq!(write(&bfres, &shapes).unwrap(), file);
+}
+
+#[test]
+fn export_then_replace_gives_the_same_geometry() {
+    use modstudio_core::replace::geometry_from_gltf;
+    use modstudio_formats::bfres_write::{ShapeGeometry, write};
+
+    let file = tiny_bfres();
+    let bfres = Bfres::parse(&file, None).unwrap();
+    let model = &bfres.models[0];
+    let (glb, _, _) = model_glb(model, &[]).unwrap();
+    // One vertex moved a little in the scene: the shape is rebuilt, everything else as it was.
+    let (json, bin) = gltf::split(&glb).unwrap();
+    let mut bin = bin.to_vec();
+    let mesh = json["meshes"][0]["primitives"][0]["attributes"]["POSITION"]
+        .as_u64()
+        .unwrap() as usize;
+    let accessor = &json["accessors"][mesh];
+    let view = &json["bufferViews"][accessor["bufferView"].as_u64().unwrap() as usize];
+    let at = view["byteOffset"].as_u64().unwrap_or(0) as usize
+        + accessor["byteOffset"].as_u64().unwrap_or(0) as usize;
+    let x = f32::from_le_bytes(bin[at..at + 4].try_into().unwrap()) + 0.25;
+    bin[at..at + 4].copy_from_slice(&x.to_le_bytes());
+    let moved = glb_with(&json, &bin);
+    let gltf = gltf::Gltf::parse(&moved).unwrap();
+    let (shapes, report) = geometry_from_gltf(model, &gltf).unwrap();
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     assert_eq!(report.shapes[0].status, "replaced");
 
     let original = ShapeGeometry::from_shape(model, &model.shapes[0]).unwrap();
     let new = &shapes[&0];
     assert_eq!(new.lods, original.lods);
+    let mut moved_values = 0;
     for name in ["_p0", "_u0", "_i0", "_w0"] {
         for (a, b) in new.attributes[name].iter().zip(&original.attributes[name]) {
             for c in 0..2 {
-                assert!((a[c] - b[c]).abs() < 1e-6, "{name}: {a:?} vs {b:?}");
+                if (a[c] - b[c]).abs() >= 1e-6 {
+                    assert_eq!(name, "_p0", "{name}: {a:?} vs {b:?}");
+                    moved_values += 1;
+                }
             }
         }
     }
-    // Written and read back, the shape has the same vertices.
+    assert_eq!(moved_values, 1);
+    // Written and read back, the shape has the new vertices and the same skinning.
     let out = write(&bfres, &shapes).unwrap();
     let back = Bfres::parse(&out, None).unwrap();
     let read = ShapeGeometry::from_shape(&back.models[0], &back.models[0].shapes[0]).unwrap();
-    assert_eq!(read.attributes["_p0"], original.attributes["_p0"]);
+    let xyz = |v: &Vec<[f32; 4]>| v.iter().map(|p| [p[0], p[1], p[2]]).collect::<Vec<_>>();
+    assert_eq!(xyz(&read.attributes["_p0"]), xyz(&new.attributes["_p0"]));
     assert_eq!(read.attributes["_w0"], original.attributes["_w0"]);
 }
 
@@ -159,6 +196,11 @@ fn a_shape_missing_from_the_scene_is_removed() {
 /// The same .glb with other JSON.
 fn glb_with_json(glb: &[u8], json: &serde_json::Value) -> Vec<u8> {
     let (_, bin) = gltf::split(glb).unwrap();
+    glb_with(json, bin)
+}
+
+/// A .glb of `json` and `bin`.
+fn glb_with(json: &serde_json::Value, bin: &[u8]) -> Vec<u8> {
     let mut text = serde_json::to_vec(json).unwrap();
     text.resize(text.len().next_multiple_of(4), b' ');
     let total = 12 + 8 + text.len() + 8 + bin.len();

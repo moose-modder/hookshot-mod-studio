@@ -29,7 +29,8 @@ use crate::{Context, Error, Result};
 #[derive(Debug, Clone, Serialize)]
 pub struct ShapeReport {
     pub name: String,
-    /// "replaced", "removed"
+    /// "replaced", "kept" (the scene's mesh is the game's own: the shape and its LODs stay as they are) or
+    /// "removed"
     pub status: String,
     pub vertices: u32,
     pub triangles: u32,
@@ -597,7 +598,11 @@ fn shape_geometry(
                     .map(|v| {
                         let mut out = [0f32; 4];
                         for (c, o) in out.iter_mut().enumerate() {
-                            if let Some(&(m, w)) = slots[v].get(first + c) {
+                            if first + c >= skin {
+                                // Past the skin count (skin counts 3 and 7) the game always stores bone 1 with
+                                // weight 1 (every such vertex of the game's 292 shapes).
+                                *o = 1.0;
+                            } else if let Some(&(m, w)) = slots[v].get(first + c) {
                                 *o = if weight { w } else { m };
                             }
                         }
@@ -656,6 +661,147 @@ fn flat_normals(mesh: &SceneMesh) -> Vec<[f32; 3]> {
         }
     }
     out.into_iter().map(math::normalize3).collect()
+}
+
+/// Normals within this angle of the game's count as the same: the game stores them in 10 bits a component, not
+/// quite unit length, and Blender makes them unit length, so a stored value can move one step.
+const SAME_NORMAL_DEGREES: f32 = 1.0;
+/// Positions and UVs within this of the game's (as stored) count as the same: they come back from Blender
+/// through the bone matrices and a V flip, a few float steps off.
+const SAME_VALUE: f32 = 1e-4;
+
+/// Whether `g` (a shape's geometry made from the scene) is the game's own: its LOD 0 has the same triangles in the
+/// same order (Blender's import and export keep it), each corner with the same position and UVs (within
+/// SAME_VALUE, as stored), colours and skinning (as stored; the order of a vertex's slots doesn't matter) and
+/// normal (within SAME_NORMAL_DEGREES). Tangents (Blender makes its own) and attributes the scene doesn't give
+/// aren't compared. Then the shape is kept as the game has it, every LOD with it. Any doubt (a reordered mesh)
+/// makes it count as changed, never the other way round. Err: why not (shown with MODSTUDIO_DEBUG_KEEP).
+fn same_as_game(
+    model: &Model,
+    shape: &Shape,
+    g: &ShapeGeometry,
+) -> Result<std::result::Result<(), String>> {
+    let vb = &model.vertex_buffers[shape.vertex_buffer];
+    let original = ShapeGeometry::from_shape(model, shape)?;
+    let (Some(lod_o), Some(lod_n)) = (original.lods.first(), g.lods.first()) else {
+        return Ok(Err("no LOD".into()));
+    };
+    if lod_o.indices.len() != lod_n.indices.len() {
+        return Ok(Err(format!(
+            "{} triangles, the game's {}",
+            lod_n.indices.len() / 3,
+            lod_o.indices.len() / 3
+        )));
+    }
+    let weight_max = vb
+        .attribute("_w0")
+        .and_then(|a| a.format.size().zip(a.format.components()))
+        .map_or(
+            255.0,
+            |(size, comps)| {
+                if size / comps >= 2 { 65535.0 } else { 255.0 }
+            },
+        );
+    // A value as the game stores it.
+    let stored = |a: &modstudio_formats::bfres::Attribute, value: [f32; 4]| -> Option<[f32; 4]> {
+        let mut buf = vec![0u8; a.format.size()?];
+        a.format.encode(value, &mut buf)?;
+        a.format.decode(&buf)
+    };
+    let skin_count = shape.skin_count as usize;
+    let skin = |geo: &ShapeGeometry, v: usize| -> Option<Vec<(u32, u32)>> {
+        let mut pairs = Vec::new();
+        for (set, (i, w)) in [("_i0", "_w0"), ("_i1", "_w1")].into_iter().enumerate() {
+            let Some(idx) = geo.attributes.get(i) else {
+                continue;
+            };
+            let idx = idx.get(v)?;
+            let ws = geo.attributes.get(w).map(|w| w.get(v)).unwrap_or(None);
+            // (slots past the skin count hold padding)
+            for c in 0..4usize.min(skin_count.saturating_sub(set * 4)) {
+                let weight = match ws {
+                    Some(ws) => (ws[c] * weight_max).round() as u32,
+                    // rigid: one slot, no weights
+                    None if c == 0 => weight_max as u32,
+                    None => 0,
+                };
+                if weight > 0 {
+                    pairs.push((idx[c].round() as u32, weight));
+                }
+            }
+        }
+        pairs.sort_unstable();
+        Some(pairs)
+    };
+    let cos = SAME_NORMAL_DEGREES.to_radians().cos();
+    // Why corner (vo of the game's, vn of the scene's) differs, if it does.
+    let corner = |vo: usize, vn: usize| -> Option<&'static str> {
+        for a in &vb.attributes {
+            let name = a.name.as_str();
+            let (Some(o), Some(n)) = (original.attributes.get(name), g.attributes.get(name)) else {
+                continue;
+            };
+            let (Some(&o), Some(&n)) = (o.get(vo), n.get(vn)) else {
+                return Some("vertex out of range");
+            };
+            let comps = a.format.components().unwrap_or(4).min(4);
+            if name.starts_with("_p") || name.starts_with("_u") {
+                let (Some(o), Some(n)) = (stored(a, o), stored(a, n)) else {
+                    return Some("format");
+                };
+                if (0..comps).any(|c| (o[c] - n[c]).abs() > SAME_VALUE) {
+                    return Some(if name.starts_with("_p") {
+                        "position"
+                    } else {
+                        "UV"
+                    });
+                }
+            } else if name.starts_with("_c") {
+                if stored(a, o) != stored(a, n) {
+                    return Some("colour");
+                }
+            } else if name == "_n0" {
+                let unit = |x: [f32; 4]| math::normalize3([x[0], x[1], x[2]]);
+                if dot(unit(o), unit(n)) < cos {
+                    return Some("normal");
+                }
+            }
+        }
+        if skin(&original, vo)? != skin(g, vn)? {
+            return Some("skinning");
+        }
+        None
+    };
+    let mut why = std::collections::BTreeMap::<&str, usize>::new();
+    for (to, tn) in lod_o
+        .indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(lod_n.indices.as_chunks::<3>().0)
+    {
+        let vo = to.map(|i| (lod_o.first_vertex + i) as usize);
+        let vn = tn.map(|i| (lod_n.first_vertex + i) as usize);
+        // the same triangle whichever corner comes first (keeping the winding)
+        let mut first_reason = None;
+        let same = (0..3).any(|r| {
+            let reason = (0..3).find_map(|c| corner(vo[c], vn[(c + r) % 3]));
+            if r == 0 {
+                first_reason = reason;
+            }
+            reason.is_none()
+        });
+        if !same {
+            *why.entry(first_reason.unwrap_or("?")).or_default() += 1;
+        }
+    }
+    if why.is_empty() {
+        Ok(Ok(()))
+    } else {
+        Ok(Err(format!(
+            "triangles that differ, by first difference: {why:?}"
+        )))
+    }
 }
 
 /// A shape removed: one vertex, every LOD one empty triangle.
@@ -734,22 +880,46 @@ pub fn geometry_from_gltf(
             continue;
         }
         let (g, status) = match by_shape.get(&si) {
-            Some(mesh) => (
-                shape_geometry(model, shape, mesh, &game_world, &mut report)?,
-                "replaced",
-            ),
+            Some(mesh) => {
+                // (warnings about a mesh that turns out unchanged would only be noise)
+                let mut own = GeometryReport::default();
+                let g = shape_geometry(model, shape, mesh, &game_world, &mut own)?;
+                let same = same_as_game(model, shape, &g)?;
+                if std::env::var_os("MODSTUDIO_DEBUG_KEEP").is_some() {
+                    eprintln!("{}: {:?}", shape.name, same);
+                }
+                if same.is_ok() {
+                    (g, "kept")
+                } else {
+                    for w in own.warnings {
+                        report.warn(w);
+                    }
+                    (g, "replaced")
+                }
+            }
             None => {
                 report.warn(format!("{}: not in the scene; removed", shape.name));
                 (removed_shape(model, shape), "removed")
             }
         };
+        let kept = status == "kept";
+        let stored = if kept {
+            ShapeGeometry::from_shape(model, shape)?
+        } else {
+            g
+        };
         report.shapes.push(ShapeReport {
             name: shape.name.clone(),
             status: status.to_owned(),
-            vertices: g.vertex_count,
-            triangles: g.lods.first().map_or(0, |l| l.indices.len() as u32 / 3),
+            vertices: stored.vertex_count,
+            triangles: stored
+                .lods
+                .first()
+                .map_or(0, |l| l.indices.len() as u32 / 3),
         });
-        out.insert(si, g);
+        if !kept {
+            out.insert(si, stored);
+        }
     }
     Ok((out, report))
 }
