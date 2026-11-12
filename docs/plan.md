@@ -8,8 +8,8 @@ editing and baking happen in the user's Blender.
 
 | Piece | Today | Target |
 |---|---|---|
-| Read a model and its textures | Toolbox `inspect-model` / `export-model` (FBX through Autodesk's SDK) | `modstudio inspect` / `export` → `.glb` + PNG (**done**, phase 1; the pipeline doesn't use it yet) |
-| Scene creation, baking, export from Blender | `pipeline/*.py` in Blender | same (glTF instead of FBX) |
+| Read a model and its textures | Toolbox `inspect-model` / `export-model` (FBX through Autodesk's SDK) | `modstudio inspect` / `export` → `.glb` + PNG (**done**, phase 1; `extract_model.py` uses it) |
+| Scene creation, baking, export from Blender | `pipeline/*.py` in Blender | scenes made from the `.glb` (**done**); the build still exports FBX for Toolbox, glTF once `modstudio replace` exists |
 | Rebuild the model and textures | Toolbox `replace-model` | `modstudio replace` |
 | Resource size table | `restbl.exe` (RESTBL Calculator, AGPL) | own implementation, or Hookshot adjusts the table for mod files itself |
 | GUI | none | Tauri: Rust core, web UI, three.js previews from the `.glb` files |
@@ -35,9 +35,12 @@ editing and baking happen in the user's Blender.
   (`tegra.rs`). Every texture's mip sizes match the offsets in its file (21,658 files).
 - **Textures:** 14,000 of 21,658 are ASTC (4x4 to 12x12), the rest BC1/3/4/5/6/7 and a few RG8. All 21,446 image
   textures decode; the 212 that don't are data (R16 level maps, RGBA16F vertex animation). Against Toolbox's PNGs
-  for the Great Fairy and Impa: 92 of 101 identical, the other 9 within 1/255 (rounding).
-  **For the writer:** a texture that changes must be encoded as ASTC, or written as BC7/BC1 instead, if the game
-  takes a different format in place of ASTC (to try in game before choosing).
+  for the Great Fairy and Impa: 100 of 101 identical (BC1-3 are decoded the way DirectXTex does, which Toolbox
+  uses). The other is one ASTC block of Impa's cloth normal map where Toolbox's decoder gives an impossible normal
+  (red 254 with green 0) and ours a plausible one.
+  **For the writer:** a changed texture doesn't have to be ASTC. Toolbox can't encode ASTC and writes BC7 (BC5 for
+  `_Nrm`) instead; the Great Fairy mod built that way has its skin normal map as BC5 where the game has ASTC 5x5,
+  and it shows right in game.
 - **Models:** all 6,464 parse (version 10.4). 6,406 store names as IDs into `Shader/ExternalBinaryString.bfres`
   (454 strings, all resolve). Up to 10 LODs per mesh, up to 8 influences per vertex (`_i1`/`_w1` beyond 4; Toolbox's
   export drops those). 896 shapes are stored as meshlets, which neither Syroot nor this reader reads: nearly all
@@ -49,6 +52,13 @@ editing and baking happen in the user's Blender.
   influence), the Shadow Temple paddle ship identical for every mesh compared. Two deliberate differences: meshes
   that follow one bone (skin count 0) are weighted to that bone (Toolbox used the first bone of the matrix list),
   and vertex colours are written so Blender holds the game's bytes.
+- **Scenes from the export** (`make_scene.py --glb`) build through Toolbox like scenes from its FBX. Round trip
+  of the unedited Great Fairy (extract, build, read the result back): same faces, bounds, UVs, colours and weights
+  as the game's model, as good as the Toolbox-made scene or better (5th influences kept). Two lessons:
+  - Weights must stay on exact 1/255 steps: Toolbox's writer truncates each weight and gives the remainder to an
+    empty slot on matrix 0, so 162.99999/255 became a 4th influence. The export keeps the game's bytes exactly.
+  - Toolbox's FBX import splits a few more vertices (21 of 6,544 on one mesh) from the glTF-made scene than from
+    its own: differences below 1e-5 in stored normals. Nothing visible; our writer replaces that step.
 - Local checks: `crates/modstudio-formats/tests/romfs.rs` (`MODSTUDIO_ROMFS=... cargo test --release
   -p modstudio-formats --test romfs -- --ignored --nocapture`).
 

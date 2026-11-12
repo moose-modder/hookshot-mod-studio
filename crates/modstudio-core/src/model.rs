@@ -398,21 +398,31 @@ fn shape_geometry(model: &Model, shape: &Shape, world: &[Mat4]) -> Result<ShapeG
             let i = [read("_i0")?, read("_i1")?];
             let w = [read("_w0")?, read("_w1")?];
             for v in 0..n {
+                let base = v * sets * 4;
                 let mut total = 0.0;
                 for k in 0..skin {
                     let (set, c) = (k / 4, k % 4);
                     let (Some(iv), Some(wv)) = (&i[set], &w[set]) else {
                         continue;
                     };
-                    joints[v * sets * 4 + k] = matrix_bone(iv[v][c])? as u16;
-                    weights[v * sets * 4 + k] = wv[v][c];
-                    total += wv[v][c];
+                    let (bone, weight) = (matrix_bone(iv[v][c])? as u16, wv[v][c]);
+                    total += weight;
+                    // A bone named twice (files Switch Toolbox wrote have these) is one influence.
+                    match (0..k).find(|&e| weights[base + e] > 0.0 && joints[base + e] == bone) {
+                        Some(e) if weight > 0.0 => weights[base + e] += weight,
+                        _ => {
+                            joints[base + k] = bone;
+                            weights[base + k] = weight;
+                        }
+                    }
                 }
-                let slot = &mut weights[v * sets * 4..(v + 1) * sets * 4];
-                if total > 0.0 {
-                    slot.iter_mut().for_each(|x| *x /= total);
-                } else {
+                // The game's weights are bytes that sum to 255: they are kept exactly. (Rescaling moves them
+                // off the 1/255 steps, and a writer that truncates, like Switch Toolbox's, then loses a step.)
+                let slot = &mut weights[base..base + sets * 4];
+                if total <= 0.0 {
                     slot[0] = 1.0;
+                } else if (total - 1.0).abs() > 0.5 / 255.0 {
+                    slot.iter_mut().for_each(|x| *x /= total);
                 }
             }
         }

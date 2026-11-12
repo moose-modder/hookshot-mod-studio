@@ -1,15 +1,15 @@
 # Model mod pipeline
 
-The current pipeline: Python scripts that drive Blender and a Switch Toolbox build with command-line commands.
-The Toolbox steps (`inspect-model`, `export-model`, `replace-model`) are being replaced by `modstudio`, this
-repo's Rust tool (see `docs/plan.md`); the Blender scripts stay.
+The current pipeline: Python scripts that drive Blender, `modstudio` (this repo's Rust tool) and, for building
+the mod, a Switch Toolbox build with command-line commands. The Toolbox steps (`inspect-model`, `replace-model`)
+are being replaced by `modstudio` too (see `docs/plan.md`); the Blender scripts stay.
 
 Builds a model replacement mod (Ocarina of Time, Switch 2) from a Blender scene:
 
 ```
 cd pipeline
 copy config.example.json config.json      (then fill in the paths)
-python extract_model.py GreatFairy --name greatfairy
+python extract_model.py Npc_U_GreatFairy --name greatfairy
 python build_mod.py greatfairy.json --install
 ```
 
@@ -24,15 +24,19 @@ python extract_model.py Zelda_Adult --name zelda
 The model can be a `.bfres.zs` file, a path inside the game's romfs, or part of its name (several matches are
 listed). Paths come from `config.json`. It makes:
 
-1. `<workspace>\zelda\`: the model as `.fbx`, every texture its materials use as `.png` (shared `CmnTex_*` ones
-   too) and `model.json` (meshes, materials, skin counts, vertex attributes, texture formats). Same as Toolbox's
-   FBX export in the UI. A texture the game doesn't ship (some materials name ones that don't exist) is warned about.
-2. `<workspace>\zelda\zelda.blend`: the FBX imported, with the RG normal maps reconstructed for the viewport.
+1. `<workspace>\zelda\` (`modstudio export`): the model as `.glb` (skeleton, the most detailed LOD of each mesh,
+   skin weights, UVs, vertex colours), every texture its materials use as `.png` (shared `CmnTex_*` ones too) and
+   `model.json` (meshes, materials, skin counts, vertex attributes, texture formats). A texture the game doesn't
+   ship (some materials name ones that don't exist) is listed in `1_export.log`.
+2. `<workspace>\zelda\zelda.blend`: the model imported, the armature named `Armature`, each material made from
+   its textures (`_Alb` to colour and alpha, `_Nrm` through the RG normal group so the viewport shows it right,
+   the others as image nodes to paint on).
 3. `pipeline\zelda.json`: the project file for `build_mod.py` (mod `ZeldaMod`, installed to the game's
    `mods\ZeldaMod`). Add merge rules there if you give a mesh extra materials.
 
 The .blend and the project file are never overwritten; an existing export needs `--force` (edited PNGs in that
-folder would be replaced). `--no-blend` only exports.
+folder would be replaced). `--no-blend` only exports. Without `tools.modstudio` in `config.json`, Toolbox's
+`export-model` makes an `.fbx` instead, as before (scenes made either way build the same).
 
 What it does:
 
@@ -113,7 +117,7 @@ Paths can use `/`.
 | `mod_dir` | the mod; files go to `mod_dir\romfs\...` |
 | `install_dir` | optional, for `--install`: the mod's folder, e.g. `<game folder>/mods/ImpaMod` |
 | `game_version` | optional, e.g. `"111"`; else read from the game's RESTBL file name |
-| `tools` | paths to Blender, Toolbox (a build with the command line commands) and `restbl.exe` |
+| `tools` | paths to Blender, `modstudio` (`target/release/modstudio.exe` after `cargo build --release`), Toolbox (a build with the command line commands) and `restbl.exe` |
 | `prep.armature` | armature object name |
 | `prep.max_weights` | bone weights per vertex (default 4) |
 | `prep.merge` | optional list of rules, see below |

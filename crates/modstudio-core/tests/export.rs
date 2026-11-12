@@ -73,3 +73,33 @@ fn exports_skeleton_mesh_skin_and_material() {
     assert_eq!(mat["pbrMetallicRoughness"]["baseColorTexture"]["index"], 0);
     assert_eq!(json["images"][0]["uri"], "Tex_Test_Alb.png");
 }
+
+#[test]
+fn weights_are_kept_exactly_and_repeated_bones_merged() {
+    let mut file = tiny_bfres();
+    {
+        // Patch the vertex buffer: vertex 0 names bone 0 twice (128 + 127), vertex 2 splits 163 / 92.
+        let bfres = Bfres::parse(&file, None).unwrap();
+        let data = bfres.models[0].vertex_buffers[0].buffers[0].data;
+        let at = data.as_ptr() as usize - file.as_ptr() as usize;
+        drop(bfres);
+        file[at + 16..at + 20].copy_from_slice(&[0, 0, 128, 127]);
+        file[at + 40 + 16..at + 40 + 20].copy_from_slice(&[0, 1, 163, 92]);
+    }
+    let bfres = Bfres::parse(&file, None).unwrap();
+    let (glb, _, _) = model_glb(&bfres.models[0], &[]).unwrap();
+    let (json, bin) = gltf::split(&glb).unwrap();
+    let prim = &json["meshes"][0]["primitives"][0];
+    let weights = floats(
+        &json,
+        bin,
+        prim["attributes"]["WEIGHTS_0"].as_u64().unwrap(),
+    );
+    assert!(
+        (weights[0] - 1.0).abs() < 1e-6 && weights[1] == 0.0,
+        "{:?}",
+        &weights[..4]
+    );
+    assert_eq!(weights[8], 163.0 / 255.0);
+    assert_eq!(weights[9], 92.0 / 255.0);
+}

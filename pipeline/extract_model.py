@@ -6,9 +6,10 @@
 or part of a name to look for in its Model folder (Impa). Several matches are listed, nothing is done.
 
 Steps (paths from config.json):
-  1. Toolbox export-model: <workspace>/<name>/<model>.fbx, the textures its materials use as .png beside it
-     (shared CmnTex_* ones too), model.json (meshes, materials, skin counts, textures and their formats)
-  2. Blender (background): <workspace>/<name>/<name>.blend, the FBX imported, normal maps shown right
+  1. modstudio export: <workspace>/<name>/<model>.glb, the textures its materials use as .png beside it
+     (shared CmnTex_* ones too), model.json (meshes, materials, skin counts, textures and their formats).
+     Without tools.modstudio in config.json, Switch Toolbox's export-model writes an .fbx instead.
+  2. Blender (background): <workspace>/<name>/<name>.blend, the model imported, materials made from its textures
      (make_scene.py). Never overwritten: delete it yourself to start the scene over.
   3. A project file for build_mod.py, pipeline/<name>.json (not overwritten either)
 
@@ -70,11 +71,11 @@ def find_model(romfs, what):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Export a game model as .fbx + .png and set up a Blender scene for it.")
+    ap = argparse.ArgumentParser(description="Export a game model (.glb or .fbx, .png) and set up a Blender scene for it.")
     ap.add_argument("model", help="model file, path inside the romfs, or part of its name")
     ap.add_argument("--name", help="short name for the folder, .blend and project file (default: the model's name)")
     ap.add_argument("--config", default=os.path.join(HERE, "config.json"))
-    ap.add_argument("--no-blend", action="store_true", help="only the .fbx and .png files")
+    ap.add_argument("--no-blend", action="store_true", help="only the export, no Blender scene")
     ap.add_argument("--force", action="store_true", help="export again into a folder that has an export (the .blend and "
                                                           "project file are still kept)")
     args = ap.parse_args()
@@ -83,7 +84,8 @@ def main():
         cfg = json.load(f)
     romfs = os.path.abspath(cfg["game_romfs"])
     tools = cfg["tools"]
-    for tool in ("toolbox",) + (() if args.no_blend else ("blender",)):
+    exporter = "modstudio" if tools.get("modstudio") else "toolbox"
+    for tool in (exporter,) + (() if args.no_blend else ("blender",)):
         if not os.path.exists(tools.get(tool, "")):
             raise ExtractError(f"{args.config}: tools.{tool} not found: {tools.get(tool)}")
 
@@ -100,15 +102,22 @@ def main():
 
     log(f"Model:  {model}")
     log(f"Folder: {out}")
-    if glob.glob(os.path.join(out, "*.fbx")) and not args.force:
+    exports = lambda: glob.glob(os.path.join(out, "*.glb")) + glob.glob(os.path.join(out, "*.fbx"))  # noqa: E731
+    if exports() and not args.force:
         raise ExtractError(f"{out} already has an export (edited textures there would be replaced). "
                            f"Use --force to export again, or --name for another folder.")
     os.makedirs(out, exist_ok=True)
 
-    # 1. FBX, textures, model.json
-    run("Exporting the model (Toolbox)", [tools["toolbox"], "export-model", model, "--romfs", romfs, "--out", out],
-        os.path.join(out, "1_export.log"))
-    fbx = sorted(glob.glob(os.path.join(out, "*.fbx")), key=os.path.getmtime)[-1]
+    # 1. The model (.glb or .fbx), textures, model.json
+    if exporter == "modstudio":
+        run("Exporting the model (modstudio)", [tools["modstudio"], "export", model, out, "--romfs", romfs],
+            os.path.join(out, "1_export.log"))
+        scene_input = ["--glb", sorted(glob.glob(os.path.join(out, "*.glb")), key=os.path.getmtime)[-1]]
+    else:
+        run("Exporting the model (Toolbox)", [tools["toolbox"], "export-model", model, "--romfs", romfs, "--out", out],
+            os.path.join(out, "1_export.log"))
+        scene_input = ["--fbx", sorted(glob.glob(os.path.join(out, "*.fbx")), key=os.path.getmtime)[-1]]
+    exported = scene_input[1]
     with open(os.path.join(out, "model.json"), encoding="utf-8") as f:
         info = json.load(f)
     meshes = info["models"][0]["meshes"]
@@ -120,7 +129,7 @@ def main():
         log(f"\n== Blender scene: {blend} exists, kept")
     else:
         run("Making the Blender scene", [tools["blender"], "--background", "--factory-startup", "--python-exit-code", "1",
-            "--python", os.path.join(HERE, "make_scene.py"), "--", "--fbx", fbx, "--blend", blend],
+            "--python", os.path.join(HERE, "make_scene.py"), "--"] + scene_input + ["--blend", blend],
             os.path.join(out, "2_scene.log"))
 
     # 3. Project file for build_mod.py
@@ -146,7 +155,7 @@ def main():
         log(f"\n== Wrote the project file {project}")
 
     pngs = glob.glob(os.path.join(out, "*.png"))
-    log(f"\nDone: {os.path.basename(fbx)}, {len(pngs)} textures, {len(meshes)} meshes:")
+    log(f"\nDone: {os.path.basename(exported)}, {len(pngs)} textures, {len(meshes)} meshes:")
     for m in meshes:
         log(f"   {m['name']:40} {m['material']:20} skin {m['skinCount']}  LODs {m['lods']}")
     log("\nNext:")

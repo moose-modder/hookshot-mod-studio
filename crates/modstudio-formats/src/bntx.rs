@@ -284,9 +284,16 @@ fn decode_texels(
             crate::bcn::decode(data, w, h, channels, signed)
                 .ok_or_else(|| "BC data too short".to_owned())
         }
-        Encoding::Bc1 => bgra_words(&|out| t2d::decode_bc1a(data, w, h, out)),
-        Encoding::Bc2 => bgra_words(&|out| t2d::decode_bc2(data, w, h, out)),
-        Encoding::Bc3 => bgra_words(&|out| t2d::decode_bc3(data, w, h, out)),
+        Encoding::Bc1 | Encoding::Bc2 | Encoding::Bc3 => {
+            use crate::bcn::ColourBlocks;
+            let kind = match encoding {
+                Encoding::Bc1 => ColourBlocks::Bc1,
+                Encoding::Bc2 => ColourBlocks::Bc2,
+                _ => ColourBlocks::Bc3,
+            };
+            crate::bcn::decode_colour(data, w, h, kind)
+                .ok_or_else(|| "BC data too short".to_owned())
+        }
         Encoding::Bc6 => bgra_words(&|out| t2d::decode_bc6(data, w, h, out, false)),
         Encoding::Bc7 => bgra_words(&|out| t2d::decode_bc7(data, w, h, out)),
         Encoding::Astc => {

@@ -1,6 +1,98 @@
-//! BC4 and BC5 (one and two channels of 8-byte blocks), unsigned and signed.
+//! BC1, BC2 and BC3 (colour blocks with 1-bit, explicit and interpolated alpha), and BC4 and BC5 (one and two
+//! channels of 8-byte blocks), unsigned and signed.
 //!
-//! Signed values are mapped to 0..=255 as `(v / 127) * 0.5 + 0.5`, the usual way normal maps are stored unsigned.
+//! Colour blocks are decoded the way DirectXTex does (endpoints as 5/6-bit fractions, interpolated in floating
+//! point, rounded once), which is what Switch Toolbox's PNGs hold. Signed BC4/BC5 values are mapped to 0..=255 as
+//! `(v / 127) * 0.5 + 0.5`, the usual way normal maps are stored unsigned.
+
+/// The four colours of a BC1-style colour block. `punch_through` (BC1): when the first endpoint isn't greater
+/// than the second, colour 2 is the midpoint and colour 3 transparent black.
+fn colour_palette(block: &[u8], punch_through: bool) -> [[u8; 4]; 4] {
+    let e0 = u16::from_le_bytes([block[0], block[1]]);
+    let e1 = u16::from_le_bytes([block[2], block[3]]);
+    let unpack = |c: u16| {
+        [
+            f32::from((c >> 11) & 31) * (1.0 / 31.0),
+            f32::from((c >> 5) & 63) * (1.0 / 63.0),
+            f32::from(c & 31) * (1.0 / 31.0),
+        ]
+    };
+    let (a, b) = (unpack(e0), unpack(e1));
+    let lerp = |s: f32| [0, 1, 2].map(|i| a[i] + s * (b[i] - a[i]));
+    let store = |c: [f32; 3], alpha: u8| {
+        let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        [q(c[0]), q(c[1]), q(c[2]), alpha]
+    };
+    if punch_through && e0 <= e1 {
+        [
+            store(a, 255),
+            store(b, 255),
+            store(lerp(0.5), 255),
+            [0, 0, 0, 0],
+        ]
+    } else {
+        [
+            store(a, 255),
+            store(b, 255),
+            store(lerp(1.0 / 3.0), 255),
+            store(lerp(2.0 / 3.0), 255),
+        ]
+    }
+}
+
+/// Which colour block format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColourBlocks {
+    Bc1,
+    Bc2,
+    Bc3,
+}
+
+/// Decodes `width` x `height` pixels of BC1, BC2 or BC3 blocks, stored row by row, into RGBA.
+pub fn decode_colour(
+    data: &[u8],
+    width: usize,
+    height: usize,
+    kind: ColourBlocks,
+) -> Option<Vec<u8>> {
+    let (bw, bh) = (width.div_ceil(4), height.div_ceil(4));
+    let block_size = if kind == ColourBlocks::Bc1 { 8 } else { 16 };
+    if data.len() < bw * bh * block_size {
+        return None;
+    }
+    let mut out = vec![0u8; width * height * 4];
+    for by in 0..bh {
+        for bx in 0..bw {
+            let block = &data[(by * bw + bx) * block_size..][..block_size];
+            let colour = &block[block_size - 8..];
+            let palette = colour_palette(colour, kind == ColourBlocks::Bc1);
+            let indices = u32::from_le_bytes([colour[4], colour[5], colour[6], colour[7]]);
+            let alpha: Option<[u8; 16]> = match kind {
+                ColourBlocks::Bc1 => None,
+                ColourBlocks::Bc2 => {
+                    let bits = u64::from_le_bytes(block[..8].try_into().expect("8 bytes"));
+                    Some(std::array::from_fn(|i| {
+                        (((bits >> (4 * i)) & 15) as u8) * 17
+                    }))
+                }
+                ColourBlocks::Bc3 => Some(decode_bc4_block(&block[..8], false)),
+            };
+            for i in 0..16 {
+                let (x, y) = (bx * 4 + i % 4, by * 4 + i / 4);
+                if x >= width || y >= height {
+                    continue;
+                }
+                let mut px = palette[((indices >> (2 * i)) & 3) as usize];
+                if let Some(a) = alpha {
+                    px[3] = a[i];
+                }
+                let o = (y * width + x) * 4;
+                out[o..o + 4].copy_from_slice(&px);
+            }
+        }
+    }
+    Some(out)
+}
 
 /// The 8 values of a BC4 block's palette, as 0..=255.
 fn palette(block: &[u8], signed: bool) -> [u8; 8] {
@@ -101,6 +193,47 @@ pub fn decode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rgb565(r: u16, g: u16, b: u16) -> [u8; 2] {
+        ((r << 11) | (g << 5) | b).to_le_bytes()
+    }
+
+    #[test]
+    fn colour_palettes_round_like_directxtex() {
+        // Four-colour mode: thirds, rounded once from the 5/6-bit fractions.
+        let mut block = [0u8; 8];
+        block[..2].copy_from_slice(&rgb565(31, 63, 0));
+        block[2..4].copy_from_slice(&rgb565(0, 0, 31));
+        let p = colour_palette(&block, true);
+        assert_eq!(p[0], [255, 255, 0, 255]);
+        assert_eq!(p[2], [170, 170, 85, 255]);
+        assert_eq!(p[3], [85, 85, 170, 255]);
+        // Three-colour mode: green 10 and 11 of 63 meet at exactly 42.5, which rounds up; colour 3 is transparent.
+        block[..2].copy_from_slice(&rgb565(0, 10, 0));
+        block[2..4].copy_from_slice(&rgb565(0, 11, 0));
+        let p = colour_palette(&block, true);
+        assert_eq!(p[2][1], 43);
+        assert_eq!(p[3], [0, 0, 0, 0]);
+        // BC2/BC3 colour blocks always use four colours.
+        assert_eq!(colour_palette(&block, false)[3][3], 255);
+    }
+
+    #[test]
+    fn colour_blocks_with_alpha() {
+        // BC2: explicit 4-bit alpha (15 -> 255); BC3: BC4-style alpha. All colour indices 0 (white).
+        let mut bc2 = vec![0xFFu8; 8];
+        bc2.extend_from_slice(&rgb565(31, 63, 31));
+        bc2.extend_from_slice(&[0; 6]);
+        let px = decode_colour(&bc2, 4, 4, ColourBlocks::Bc2).unwrap();
+        assert!(px.chunks(4).all(|p| p == [255, 255, 255, 255]));
+        let mut bc3 = vec![0u8, 255, 0, 0, 0, 0, 0, 0];
+        bc3.extend_from_slice(&rgb565(31, 63, 31));
+        bc3.extend_from_slice(&[0; 6]);
+        let px = decode_colour(&bc3, 2, 2, ColourBlocks::Bc3).unwrap();
+        assert_eq!(px.len(), 16);
+        assert!(px.chunks(4).all(|p| p == [255, 255, 255, 0]));
+        assert!(decode_colour(&bc3[..15], 2, 2, ColourBlocks::Bc3).is_none());
+    }
 
     #[test]
     fn unsigned_palettes() {
