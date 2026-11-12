@@ -16,6 +16,9 @@ Usage:
   modstudio export <model.bfres.zs> <out-dir> --romfs <romfs>
       <model>.glb (skeleton, LOD 0 of each mesh, skin weights, UVs, colours), the textures as PNG and
       model.json, for Blender and previews
+  modstudio replace <model.bfres.zs> <scene.glb> <out-romfs> --romfs <romfs>
+      the model rebuilt from Blender's glTF export of its scene (each mesh replaces the game's mesh of its
+      name), written compressed under <out-romfs> at the model's path
   modstudio decompress <file.zs> <out> --romfs <romfs>
       decompress a .zs file with the game's dictionaries
   modstudio texture <file.bntx.zs> <out.png> --romfs <romfs>
@@ -25,8 +28,7 @@ Usage:
 
 Model paths are relative to the romfs (Model/Npc_X.Npc_X.bfres.zs) or absolute.
 
-To come (docs/plan.md):
-  replace                    rebuild a model and its textures from a Blender export
+To come (docs/plan.md): textures in replace (BC encoding), the resource size table.
 ";
 
 /// A usage error (exit code 2) or a failure (exit code 1).
@@ -150,6 +152,21 @@ fn export(args: &Args) -> Result<(), Failure> {
     Ok(())
 }
 
+fn replace(args: &Args) -> Result<(), Failure> {
+    let [model, glb, out] = args.positional(3)? else {
+        unreachable!()
+    };
+    let romfs = Romfs::open(PathBuf::from(args.required("romfs")?))?;
+    let summary = modstudio_core::replace::replace_model(
+        &romfs,
+        Path::new(model),
+        Path::new(glb),
+        Path::new(out),
+    )?;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let Some(command) = raw.first().map(String::as_str) else {
@@ -167,6 +184,7 @@ fn main() -> ExitCode {
         }
         "inspect" => Args::parse(&raw[1..]).and_then(|a| inspect(&a)),
         "export" => Args::parse(&raw[1..]).and_then(|a| export(&a)),
+        "replace" => Args::parse(&raw[1..]).and_then(|a| replace(&a)),
         "decompress" => Args::parse(&raw[1..]).and_then(|a| decompress(&a)),
         "texture" => Args::parse(&raw[1..]).and_then(|a| texture(&a)),
         other => Err(Failure::Usage(format!("unknown command {other:?}"))),

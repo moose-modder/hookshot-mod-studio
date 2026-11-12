@@ -130,6 +130,11 @@ impl Decoder {
     }
 }
 
+/// A zstd frame of `data`, without a dictionary (the game reads those too; Switch Toolbox's mods are written so).
+pub fn compress(data: &[u8]) -> Vec<u8> {
+    ruzstd::encoding::compress_to_vec(data, ruzstd::encoding::CompressionLevel::Fastest)
+}
+
 fn zstd_error(e: FrameDecoderError) -> Error {
     match e {
         FrameDecoderError::DictNotProvided { dict_id } => Error::DictionaryMissing(dict_id),

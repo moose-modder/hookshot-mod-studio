@@ -2,6 +2,8 @@
 
 use serde_json::{Map, Value, json};
 
+use crate::math::{self, Mat4};
+
 const FLOAT: u32 = 5126;
 const UNSIGNED_SHORT: u32 = 5123;
 const UNSIGNED_INT: u32 = 5125;
@@ -142,6 +144,241 @@ pub fn split(glb: &[u8]) -> Option<(Value, &[u8])> {
     let bin_at = 20 + json_len;
     let bin_len = u32::from_le_bytes(glb.get(bin_at..bin_at + 4)?.try_into().ok()?) as usize;
     Some((json, glb.get(bin_at + 8..bin_at + 8 + bin_len)?))
+}
+
+// ---------------------------------------------------------------- reading (Blender's export)
+
+/// A parsed `.glb`: what reading meshes back needs (accessors, nodes, skins).
+pub struct Gltf {
+    pub json: Value,
+    bin: Vec<u8>,
+}
+
+/// One mesh in the scene: the node's name, its primitives, its skin.
+#[derive(Debug, Clone)]
+pub struct MeshNode {
+    pub node: usize,
+    pub name: String,
+    pub mesh: usize,
+    pub skin: Option<usize>,
+}
+
+fn err(what: impl Into<String>) -> crate::Error {
+    crate::Error(format!("glTF: {}", what.into()))
+}
+
+impl Gltf {
+    pub fn parse(glb: &[u8]) -> crate::Result<Self> {
+        let (json, bin) = split(glb).ok_or_else(|| err("not a .glb file (binary glTF 2.0)"))?;
+        if json["buffers"].as_array().map_or(0, Vec::len) > 1 {
+            return Err(err("more than one buffer"));
+        }
+        Ok(Gltf {
+            json,
+            bin: bin.to_vec(),
+        })
+    }
+
+    fn index(v: &Value, what: &str) -> crate::Result<usize> {
+        v.as_u64()
+            .map(|i| i as usize)
+            .ok_or_else(|| err(format!("{what} missing")))
+    }
+
+    /// An accessor's values as floats, `width` per element (normalised integers scaled to 0..1 / -1..1).
+    pub fn floats(&self, accessor: usize) -> crate::Result<(Vec<f32>, usize)> {
+        let a = &self.json["accessors"][accessor];
+        if a.get("sparse").is_some() {
+            return Err(err("sparse accessors"));
+        }
+        let count = Self::index(&a["count"], "accessor count")?;
+        let width = match a["type"].as_str() {
+            Some("SCALAR") => 1,
+            Some("VEC2") => 2,
+            Some("VEC3") => 3,
+            Some("VEC4") => 4,
+            Some("MAT4") => 16,
+            t => return Err(err(format!("accessor type {t:?}"))),
+        };
+        let component = Self::index(&a["componentType"], "componentType")? as u32;
+        let normalized = a["normalized"].as_bool().unwrap_or(false);
+        let size = match component {
+            5120 | 5121 => 1,
+            5122 | 5123 => 2,
+            5125 | 5126 => 4,
+            c => return Err(err(format!("component type {c}"))),
+        };
+        let view = &self.json["bufferViews"][Self::index(&a["bufferView"], "bufferView")?];
+        let start = view["byteOffset"].as_u64().unwrap_or(0) as usize
+            + a["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let stride = view["byteStride"]
+            .as_u64()
+            .map_or(width * size, |s| s as usize);
+        let mut out = Vec::with_capacity(count * width);
+        for e in 0..count {
+            for c in 0..width {
+                let at = start + e * stride + c * size;
+                let b = self
+                    .bin
+                    .get(at..at + size)
+                    .ok_or_else(|| err("accessor past the buffer"))?;
+                let v = match component {
+                    5126 => f32::from_le_bytes(b.try_into().expect("4")),
+                    5125 => u32::from_le_bytes(b.try_into().expect("4")) as f32,
+                    5123 => {
+                        let u = u16::from_le_bytes([b[0], b[1]]);
+                        if normalized {
+                            f32::from(u) / 65535.0
+                        } else {
+                            f32::from(u)
+                        }
+                    }
+                    5122 => {
+                        let s = i16::from_le_bytes([b[0], b[1]]);
+                        if normalized {
+                            (f32::from(s) / 32767.0).max(-1.0)
+                        } else {
+                            f32::from(s)
+                        }
+                    }
+                    5121 => {
+                        if normalized {
+                            f32::from(b[0]) / 255.0
+                        } else {
+                            f32::from(b[0])
+                        }
+                    }
+                    _ => {
+                        let s = b[0] as i8;
+                        if normalized {
+                            (f32::from(s) / 127.0).max(-1.0)
+                        } else {
+                            f32::from(s)
+                        }
+                    }
+                };
+                out.push(v);
+            }
+        }
+        Ok((out, width))
+    }
+
+    /// An accessor of integers (indices, joints).
+    pub fn integers(&self, accessor: usize) -> crate::Result<Vec<u32>> {
+        let a = &self.json["accessors"][accessor];
+        if a["componentType"].as_u64() == Some(5126) {
+            return Err(err("float values where integers belong"));
+        }
+        // Integers up to 2^24 are exact as f32; indices beyond that aren't game-sized anyway.
+        Ok(self
+            .floats(accessor)?
+            .0
+            .into_iter()
+            .map(|v| v as u32)
+            .collect())
+    }
+
+    /// Every node's transform in scene space.
+    pub fn world_matrices(&self) -> crate::Result<Vec<Mat4>> {
+        let nodes = self.json["nodes"].as_array().cloned().unwrap_or_default();
+        let local: Vec<Mat4> = nodes
+            .iter()
+            .map(|n| {
+                if let Some(m) = n["matrix"].as_array() {
+                    let mut out = math::IDENTITY;
+                    for (k, v) in m.iter().take(16).enumerate() {
+                        out[k] = v.as_f64().unwrap_or(0.0) as f32;
+                    }
+                    return out;
+                }
+                let f = |key: &str, default: &[f32]| -> Vec<f32> {
+                    n[key].as_array().map_or(default.to_vec(), |a| {
+                        a.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect()
+                    })
+                };
+                let (t, r, s) = (
+                    f("translation", &[0.0; 3]),
+                    f("rotation", &[0.0, 0.0, 0.0, 1.0]),
+                    f("scale", &[1.0; 3]),
+                );
+                math::from_trs(
+                    [t[0], t[1], t[2]],
+                    [r[0], r[1], r[2], r[3]],
+                    [s[0], s[1], s[2]],
+                )
+            })
+            .collect();
+        let mut parent = vec![None; nodes.len()];
+        for (i, n) in nodes.iter().enumerate() {
+            for c in n["children"].as_array().into_iter().flatten() {
+                if let Some(c) = c.as_u64().map(|c| c as usize).filter(|&c| c < nodes.len()) {
+                    parent[c] = Some(i);
+                }
+            }
+        }
+        (0..nodes.len())
+            .map(|i| {
+                let mut m = local[i];
+                let mut p = parent[i];
+                let mut steps = 0;
+                while let Some(j) = p {
+                    m = math::mul(&local[j], &m);
+                    p = parent[j];
+                    steps += 1;
+                    if steps > nodes.len() {
+                        return Err(err("node hierarchy has a loop"));
+                    }
+                }
+                Ok(m)
+            })
+            .collect()
+    }
+
+    pub fn node_name(&self, node: usize) -> String {
+        self.json["nodes"][node]["name"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned()
+    }
+
+    /// The nodes that carry a mesh.
+    pub fn mesh_nodes(&self) -> Vec<MeshNode> {
+        let nodes = self.json["nodes"].as_array().cloned().unwrap_or_default();
+        nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                Some(MeshNode {
+                    node: i,
+                    name: n["name"].as_str().unwrap_or("").to_owned(),
+                    mesh: n["mesh"].as_u64()? as usize,
+                    skin: n["skin"].as_u64().map(|s| s as usize),
+                })
+            })
+            .collect()
+    }
+
+    /// A skin's joints (node indices) and inverse bind matrices.
+    pub fn skin(&self, skin: usize) -> crate::Result<(Vec<usize>, Vec<Mat4>)> {
+        let s = &self.json["skins"][skin];
+        let joints: Vec<usize> = s["joints"]
+            .as_array()
+            .ok_or_else(|| err("skin without joints"))?
+            .iter()
+            .map(|j| Self::index(j, "joint"))
+            .collect::<crate::Result<_>>()?;
+        let ibm = match s["inverseBindMatrices"].as_u64() {
+            Some(a) => {
+                let (v, w) = self.floats(a as usize)?;
+                if w != 16 || v.len() != joints.len() * 16 {
+                    return Err(err("inverse bind matrices don't match the joints"));
+                }
+                v.chunks(16).map(|c| c.try_into().expect("16")).collect()
+            }
+            None => vec![math::IDENTITY; joints.len()],
+        };
+        Ok((joints, ibm))
+    }
 }
 
 #[cfg(test)]

@@ -103,3 +103,73 @@ fn weights_are_kept_exactly_and_repeated_bones_merged() {
     assert_eq!(weights[8], 163.0 / 255.0);
     assert_eq!(weights[9], 92.0 / 255.0);
 }
+
+#[test]
+fn export_then_replace_gives_the_same_geometry() {
+    use modstudio_core::replace::geometry_from_gltf;
+    use modstudio_formats::bfres_write::{ShapeGeometry, write};
+
+    let file = tiny_bfres();
+    let bfres = Bfres::parse(&file, None).unwrap();
+    let model = &bfres.models[0];
+    let (glb, _, _) = model_glb(model, &[]).unwrap();
+    let gltf = gltf::Gltf::parse(&glb).unwrap();
+    let (shapes, report) = geometry_from_gltf(model, &gltf).unwrap();
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    assert_eq!(report.shapes[0].status, "replaced");
+
+    let original = ShapeGeometry::from_shape(model, &model.shapes[0]).unwrap();
+    let new = &shapes[&0];
+    assert_eq!(new.lods, original.lods);
+    for name in ["_p0", "_u0", "_i0", "_w0"] {
+        for (a, b) in new.attributes[name].iter().zip(&original.attributes[name]) {
+            for c in 0..2 {
+                assert!((a[c] - b[c]).abs() < 1e-6, "{name}: {a:?} vs {b:?}");
+            }
+        }
+    }
+    // Written and read back, the shape has the same vertices.
+    let out = write(&bfres, &shapes).unwrap();
+    let back = Bfres::parse(&out, None).unwrap();
+    let read = ShapeGeometry::from_shape(&back.models[0], &back.models[0].shapes[0]).unwrap();
+    assert_eq!(read.attributes["_p0"], original.attributes["_p0"]);
+    assert_eq!(read.attributes["_w0"], original.attributes["_w0"]);
+}
+
+#[test]
+fn a_shape_missing_from_the_scene_is_removed() {
+    use modstudio_core::replace::geometry_from_gltf;
+
+    let file = tiny_bfres();
+    let bfres = Bfres::parse(&file, None).unwrap();
+    let model = &bfres.models[0];
+    let (glb, _, _) = model_glb(model, &[]).unwrap();
+    // Rename the mesh node: the scene no longer has the shape.
+    let (mut json, bin) = gltf::split(&glb).unwrap();
+    json["nodes"][3]["name"] = serde_json::json!("Something_Else");
+    let _ = bin;
+    let renamed = glb_with_json(&glb, &json);
+    let gltf = gltf::Gltf::parse(&renamed).unwrap();
+    let (shapes, report) = geometry_from_gltf(model, &gltf).unwrap();
+    assert_eq!(report.shapes[0].status, "removed");
+    assert_eq!(shapes[&0].vertex_count, 1);
+    assert!(report.warnings.iter().any(|w| w.contains("Something_Else")));
+}
+
+/// The same .glb with other JSON.
+fn glb_with_json(glb: &[u8], json: &serde_json::Value) -> Vec<u8> {
+    let (_, bin) = gltf::split(glb).unwrap();
+    let mut text = serde_json::to_vec(json).unwrap();
+    text.resize(text.len().next_multiple_of(4), b' ');
+    let total = 12 + 8 + text.len() + 8 + bin.len();
+    let mut out = b"glTF".to_vec();
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&(total as u32).to_le_bytes());
+    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(&text);
+    out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"BIN\0");
+    out.extend_from_slice(bin);
+    out
+}

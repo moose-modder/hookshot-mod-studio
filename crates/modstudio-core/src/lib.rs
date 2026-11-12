@@ -3,10 +3,12 @@
 //! - [`model::inspect`]: a model's meshes, materials, vertex formats and textures, as `model.json`
 //! - [`model::export`]: the model as `.glb` (skeleton, LOD 0 of each mesh, skin weights, UVs, colours), its
 //!   textures as PNG, and `model.json`, for Blender and previews
+//! - [`replace::replace_model`]: the model rebuilt from Blender's glTF export of the scene
 
 pub mod gltf;
 pub mod math;
 pub mod model;
+pub mod replace;
 
 use std::fmt;
 
