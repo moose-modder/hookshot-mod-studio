@@ -5,12 +5,14 @@
 //! - [`romfs`]: reading files from a game's romfs folder
 //! - [`bntx`]: textures, decoded through [`tegra`] (the GPU's block-linear layout) to [`image::Image`]
 //! - [`bfres`]: models: skeleton, shapes with their LOD meshes, vertex and index buffers, materials
+//! - [`bfres_write`]: a model written back with new geometry for some shapes
 //!
 //! The byte-level layouts are ported from Syroot's NintenTools libraries (MIT) as maintained in
 //! KillzXGaming/LegacySwitchLibraries; see `THIRD_PARTY.md`.
 
 mod bcn;
 pub mod bfres;
+pub mod bfres_write;
 pub mod bntx;
 mod bytes;
 mod error;

@@ -62,6 +62,28 @@ editing and baking happen in the user's Blender.
 - Local checks: `crates/modstudio-formats/tests/romfs.rs` (`MODSTUDIO_ROMFS=... cargo test --release
   -p modstudio-formats --test romfs -- --ignored --nocapture`).
 
+## Phase 2: the writer (`bfres_write.rs`), status
+
+Done: the model file written back with new geometry for chosen shapes. Everything before the GPU data stays in
+place (fields patched); the GPU block is laid out again; the memory pool block and the relocation table move
+with its end. Checked on the whole dump: all 5,627 models with ordinary meshes write back byte-identical, and
+written with every shape's own decoded geometry, nothing changes but the recomputed bounds.
+
+Rules taken from the files (all checked against the dump):
+- Index buffers in shape and LOD order, each on 256 bytes; then vertex buffers, each on its buffer alignment;
+  the GPU block padded to 4 KiB. Relocation sections: 0 the CPU part, 1 index buffers, 2 vertex buffers, then the
+  memory pool block and the table itself (pointers into those move with them).
+- Each LOD has its own vertices in the shape's vertex buffer (`first_vertex`).
+- Bounding boxes per LOD: each sub-mesh, then the whole mesh, around every vertex in the local space of the bone
+  of each skin slot, empty slots included (they name matrix 0). Matches the game's LOD 0 boxes exactly; some lower
+  LODs in the game are looser than their geometry.
+- Spheres: one per skin bone, the smallest sphere around the vertices weighted to it (all LODs, its local space),
+  radius + 0.0001; shapes without skin bones have one sphere (Syroot's "one per mesh" reads past the array).
+
+Next: reading Blender's glTF export into this geometry (skinning back to matrix indices, rigid and unskinned
+vertices back to bone space, tangents, LODs), textures (BNTX writer; BC1/BC4/BC5 and BC7 encoders; BC formats are
+fine where the game had ASTC), `modstudio replace`, and the pipeline switch from Toolbox.
+
 ## Risks and how they are contained
 
 - **The game's BFRES version is still being worked out upstream** (v10.2+, meshlets, external strings for this

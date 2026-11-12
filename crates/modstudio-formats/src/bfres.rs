@@ -220,6 +220,20 @@ pub struct Shape<'a> {
     pub key_shape_count: u8,
     /// Level-of-detail meshes, most detailed first.
     pub meshes: Vec<Mesh<'a>>,
+    /// Bounding boxes: one per sub-mesh and one per mesh (Syroot's count), at `bounding_at`.
+    pub boundings: Vec<Bounding>,
+    pub bounding_at: usize,
+    /// Bounding spheres (centre, radius), at `radius_at`: one per skin bone, or one for the shape without skin bones
+    /// (Syroot reads one per mesh there, which runs into the next structure in this game's files).
+    pub spheres: Vec<[f32; 4]>,
+    pub radius_at: usize,
+}
+
+/// An axis-aligned box: centre and half size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bounding {
+    pub center: [f32; 3],
+    pub extent: [f32; 3],
 }
 
 #[derive(Debug)]
@@ -515,7 +529,46 @@ impl<'a> Shape<'a> {
         let skin_bone_indices = (0..skin_bone_count)
             .map(|i| d.u16_at(skin_list + i * 2))
             .collect::<Result<Vec<_>>>()?;
+        let vec3 = |o: usize| -> Result<[f32; 3]> {
+            Ok([d.f32_at(o)?, d.f32_at(o + 4)?, d.f32_at(o + 8)?])
+        };
+        let bounding_at = d.offset_at(at + 0x38)?;
+        let bounding_count: usize = meshes.iter().map(|m| m.sub_meshes.len() + 1).sum();
+        let boundings = if bounding_at == 0 {
+            Vec::new()
+        } else {
+            (0..bounding_count)
+                .map(|i| {
+                    let b = bounding_at + i * 24;
+                    Ok(Bounding {
+                        center: vec3(b)?,
+                        extent: vec3(b + 12)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+        let radius_at = d.offset_at(at + 0x40)?;
+        let sphere_count = skin_bone_count.max(1);
+        let spheres = if radius_at == 0 || mesh_count == 0 {
+            Vec::new()
+        } else {
+            (0..sphere_count)
+                .map(|i| {
+                    let s = radius_at + i * 16;
+                    Ok([
+                        d.f32_at(s)?,
+                        d.f32_at(s + 4)?,
+                        d.f32_at(s + 8)?,
+                        d.f32_at(s + 12)?,
+                    ])
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
         Ok(Shape {
+            boundings,
+            bounding_at,
+            spheres,
+            radius_at,
             at,
             flags: d.u32_at(at + 0x04)?,
             material: d.u16_at(at + 0x52)? as usize,

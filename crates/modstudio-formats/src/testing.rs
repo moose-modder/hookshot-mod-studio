@@ -183,12 +183,40 @@ pub fn tiny_bfres() -> Vec<u8> {
     b.u8(mat + 0xA2, 1);
     b.u8(mat + 0xA3, 1);
 
-    // GPU data: the vertex buffer, then the index buffer.
+    // Bounds: skin bones Root and Arm, a box for the sub-mesh and one for the mesh, a sphere per skin bone
+    // (values as the game's tools would compute them; see bfres_write).
+    let skin_bones = b.alloc(4, 8);
+    b.u16(skin_bones, 0);
+    b.u16(skin_bones + 2, 1);
+    b.u64(shape + 0x20, skin_bones as u64);
+    b.u16(shape + 0x58, 2);
+    let boxes = b.alloc(2 * 24, 8);
+    for k in 0..2 {
+        // Every vertex in the space of each of its slots' bones, empty slots too (matrix 0, Root): (0,0,0) and
+        // (0,1,0) in Root's space; (1,0,0) in Arm's space (0,0,0) and Root's (1,0,0).
+        b.f32s(boxes + k * 24, &[0.5, 0.5, 0.0, 0.5, 0.5, 0.0]);
+    }
+    b.u64(shape + 0x38, boxes as u64);
+    let spheres = b.alloc(2 * 16, 8);
+    b.f32s(spheres, &[0.0, 0.5, 0.0, 0.5001]);
+    b.f32s(spheres + 16, &[0.0, 0.0, 0.0, 0.0001]);
+    b.u64(shape + 0x40, spheres as u64);
+
+    // GPU data as the game lays it out: index buffers (256-byte aligned), then vertex buffers, padded to 4 KiB;
+    // then the memory pool block and the relocation table.
     let info = b.alloc(0x20, 8);
     b.u64(header + 0xB0, info as u64);
-    let gpu = b.alloc(0, 0x100);
+    let cpu_end = b.data.len();
+    let gpu = b.alloc(0, 0x1000);
     b.u64(info + 8, gpu as u64);
-    let verts = b.alloc(60, 8);
+    let idx = b.alloc(6, 0x100);
+    for (i, v) in [0u16, 1, 2].into_iter().enumerate() {
+        b.u16(idx + i * 2, v);
+    }
+    b.u32(mesh + 0x20, (idx - gpu) as u32);
+    let vertex_start = b.alloc(0, 0x100);
+    let verts = b.alloc(60, 0x100);
+    b.u16(vb + 0x56, 0x100);
     let vertex = |p: [f32; 3], uv: [u16; 2], bone: u8| {
         let mut v = Vec::new();
         p.iter().for_each(|x| v.extend_from_slice(&x.to_le_bytes()));
@@ -202,11 +230,37 @@ pub fn tiny_bfres() -> Vec<u8> {
     vdata.extend(vertex([0., 1., 0.], [0, 65535], 0));
     b.bytes(verts, &vdata);
     b.u32(vb + 0x48, (verts - gpu) as u32);
-    let idx = b.alloc(6, 8);
-    for (i, v) in [0u16, 1, 2].into_iter().enumerate() {
-        b.u16(idx + i * 2, v);
+    let gpu_end = b.alloc(0, 0x1000);
+    b.u32(info + 4, (gpu_end - gpu) as u32);
+    let pool = b.alloc(0x120, 8);
+    b.u64(header + 0xA8, pool as u64);
+
+    let rlt = b.alloc(0x10 + 4 * 0x18 + 2 * 8, 8);
+    b.bytes(rlt, b"_RLT");
+    b.u32(rlt + 4, rlt as u32);
+    b.u32(rlt + 8, 4);
+    // (offset, size, first entry, entries): CPU part, index buffers, vertex buffers, memory pool.
+    let sections = [
+        (0, cpu_end, 0, 0),
+        (gpu, vertex_start - gpu, 0, 1),
+        (vertex_start, gpu_end - vertex_start, 1, 0),
+        (pool, 0x120, 1, 1),
+    ];
+    for (i, (offset, size, first, count)) in sections.into_iter().enumerate() {
+        let s = rlt + 0x10 + i * 0x18;
+        b.u32(s + 8, offset as u32);
+        b.u32(s + 12, size as u32);
+        b.u32(s + 16, first);
+        b.u32(s + 20, count);
     }
-    b.u32(mesh + 0x20, (idx - gpu) as u32);
+    // The pointers into the GPU data (the buffer info's) and into the memory pool (the header's).
+    let entries = rlt + 0x10 + 4 * 0x18;
+    for (k, at) in [info + 8, header + 0xA8].into_iter().enumerate() {
+        b.u32(entries + k * 8, at as u32);
+        b.u16(entries + k * 8 + 4, 1);
+        b.u8(entries + k * 8 + 6, 1);
+    }
+    b.u32(header + 0x18, rlt as u32);
     let len = b.data.len() as u32;
     b.u32(header + 0x1C, len);
     b.data

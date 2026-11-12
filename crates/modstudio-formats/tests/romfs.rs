@@ -261,6 +261,19 @@ fn model_survey() {
                     s.push(format!("shapes with skin 0 on a moved bone: {kind}"));
                 }
                 s.push(format!("lods {}", sh.meshes.len()));
+                if let Some(mesh) = sh.meshes.first() {
+                    let n = mesh.sub_meshes.len();
+                    s.push(format!("sub meshes in LOD 0: {}", n.min(5)));
+                    if n > 1 && n < 4 {
+                        let file = path.file_name().unwrap().to_string_lossy().into_owned();
+                        let index = m.shapes.iter().position(|x| std::ptr::eq(x, sh)).unwrap();
+                        println!("multi sub-mesh: {file} shape {index} ({n})");
+                    }
+                }
+                let expected: usize = sh.meshes.iter().map(|m| m.sub_meshes.len() + 1).sum();
+                if !sh.meshes.is_empty() && sh.boundings.len() != expected {
+                    s.push("bounding count differs".to_owned());
+                }
                 for (i, mesh) in sh.meshes.iter().enumerate() {
                     s.push(format!(
                         "mesh primitive {} index format {}",
@@ -299,4 +312,147 @@ fn model_survey() {
         println!("{v:>8}  {k}");
     }
     report("models", files.len(), &failures, romfs.root());
+}
+
+/// Writing a model back without changes gives the same bytes; writing every shape back with its own decoded
+/// geometry changes nothing but the recomputed bounds, and those only within float rounding.
+#[test]
+#[ignore = "needs a game dump (MODSTUDIO_ROMFS)"]
+fn models_write_back_identically() {
+    use modstudio_formats::bfres::Bfres;
+    use modstudio_formats::bfres_write::{ShapeGeometry, write};
+    use std::collections::{BTreeMap, BTreeSet};
+    let romfs = romfs();
+    let strings = external_strings(&romfs);
+    let mut files = Vec::new();
+    files_with_suffix(&romfs.root().join("Model"), ".bfres.zs", &mut files);
+    files.retain(|p| !p.to_string_lossy().ends_with(".anim.bfres.zs"));
+    if let Ok(filter) = std::env::var("MODSTUDIO_FILTER") {
+        files.retain(|p| p.to_string_lossy().contains(&filter));
+    }
+    let stats = Mutex::new(BTreeMap::<String, usize>::new());
+    let worst = Mutex::new((0f32, String::new()));
+    let failures = for_each_file(&romfs, &files, |decoder, path| {
+        let data = romfs.read(decoder, path).map_err(|e| e.to_string())?;
+        let bfres = Bfres::parse(&data, Some(&strings)).map_err(|e| e.to_string())?;
+        let same = match write(&bfres, &BTreeMap::new()) {
+            Ok(out) => out == data,
+            Err(e) => {
+                if std::env::var_os("MODSTUDIO_VERBOSE").is_some() {
+                    println!("not written: {}: {e}", path.display());
+                }
+                *stats
+                    .lock()
+                    .unwrap()
+                    .entry(format!("not written: {e}"))
+                    .or_default() += 1;
+                return Ok(());
+            }
+        };
+        if !same {
+            return Err("unchanged write differs".into());
+        }
+        // Every shape with its own geometry.
+        let m = &bfres.models[0];
+        let mut replace = BTreeMap::new();
+        for (i, s) in m.shapes.iter().enumerate() {
+            replace.insert(
+                i,
+                ShapeGeometry::from_shape(m, s).map_err(|e| e.to_string())?,
+            );
+        }
+        let out = write(&bfres, &replace).map_err(|e| format!("own geometry: {e}"))?;
+        if out.len() != data.len() {
+            return Err(format!(
+                "own geometry: {} bytes instead of {}",
+                out.len(),
+                data.len()
+            ));
+        }
+        let mut bounds = BTreeSet::new();
+        for s in &m.shapes {
+            for k in 0..s.boundings.len() * 24 {
+                bounds.insert(s.bounding_at + k);
+            }
+            for k in 0..s.spheres.len() * 16 {
+                bounds.insert(s.radius_at + k);
+            }
+        }
+        if let Some(at) = (0..data.len()).find(|&i| data[i] != out[i] && !bounds.contains(&i)) {
+            return Err(format!(
+                "own geometry: byte 0x{at:x} differs outside the bounds"
+            ));
+        }
+        // Bounds: largest difference relative to the shape's size.
+        let after = Bfres::parse(&out, Some(&strings)).map_err(|e| e.to_string())?;
+        let mut file_worst = 0f32;
+        for (a, b) in m.shapes.iter().zip(&after.models[0].shapes) {
+            let scale = a
+                .boundings
+                .iter()
+                .flat_map(|x| x.extent)
+                .fold(1e-3f32, f32::max);
+            for (x, y) in a.boundings.iter().zip(&b.boundings) {
+                for c in 0..3 {
+                    file_worst = file_worst.max((x.center[c] - y.center[c]).abs() / scale);
+                    file_worst = file_worst.max((x.extent[c] - y.extent[c]).abs() / scale);
+                }
+            }
+            for (x, y) in a.spheres.iter().zip(&b.spheres) {
+                for c in 0..4 {
+                    file_worst = file_worst.max((x[c] - y[c]).abs() / scale);
+                }
+            }
+            if std::env::var_os("MODSTUDIO_VERBOSE").is_some() {
+                let off = |p: &[f32], q: &[f32]| {
+                    p.iter()
+                        .zip(q)
+                        .map(|(u, v)| (u - v).abs())
+                        .fold(0f32, f32::max)
+                        / scale
+                };
+                for (k, (x, y)) in a.boundings.iter().zip(&b.boundings).enumerate() {
+                    if off(&x.center, &y.center).max(off(&x.extent, &y.extent)) > 1e-3 {
+                        println!(
+                            "{} skin {} box {k}: stored {x:?} computed {y:?}",
+                            a.name, a.skin_count
+                        );
+                        break;
+                    }
+                }
+                for (k, (x, y)) in a.spheres.iter().zip(&b.spheres).enumerate() {
+                    if off(x, y) > 1e-3 {
+                        println!(
+                            "{} skin {} sphere {k} (of {}): stored {x:?} computed {y:?}",
+                            a.name,
+                            a.skin_count,
+                            a.spheres.len()
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+        let bucket = match file_worst {
+            w if w < 1e-5 => "bounds within 1e-5",
+            w if w < 1e-3 => "bounds within 1e-3",
+            w if w < 1e-1 => "bounds within 1e-1",
+            _ => "bounds off by more than 10%",
+        };
+        *stats.lock().unwrap().entry(bucket.to_owned()).or_default() += 1;
+        let mut w = worst.lock().unwrap();
+        if file_worst > w.0 {
+            *w = (
+                file_worst,
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+            );
+        }
+        Ok(())
+    });
+    for (k, v) in stats.into_inner().unwrap() {
+        println!("{v:>6}  {k}");
+    }
+    println!("worst bounds: {:?}", worst.into_inner().unwrap());
+    report("written back", files.len(), &failures, romfs.root());
+    assert!(failures.is_empty());
 }
