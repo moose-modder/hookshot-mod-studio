@@ -381,13 +381,14 @@ fn nearest_with(model: &Model, bone: usize, has: impl Fn(usize) -> bool) -> Opti
     None
 }
 
-fn shape_geometry(
+/// One scene mesh as the shape's vertex buffer stores it: one value per vertex for each attribute.
+fn mesh_attributes(
     model: &Model,
     shape: &Shape,
     mesh: &SceneMesh,
     world: &[Mat4],
     report: &mut GeometryReport,
-) -> Result<ShapeGeometry> {
+) -> Result<BTreeMap<String, Vec<[f32; 4]>>> {
     let vb = &model.vertex_buffers[shape.vertex_buffer];
     let bones = &model.skeleton.bones;
     let n = mesh.positions.len();
@@ -620,29 +621,66 @@ fn shape_geometry(
         };
         attributes.insert(a.name.clone(), values);
     }
+    Ok(attributes)
+}
 
-    // Every LOD gets the mesh; sub-meshes split its triangles in order.
-    let triangles = mesh.indices.len() / 3;
-    let lods = shape
-        .meshes
-        .iter()
-        .map(|m| {
-            let k = m.sub_meshes.len().max(1);
-            let counts = (0..k)
-                .map(|i| ((triangles * (i + 1) / k - triangles * i / k) * 3) as u32)
-                .collect();
-            LodGeometry {
-                first_vertex: 0,
-                indices: mesh.indices.clone(),
-                sub_mesh_counts: counts,
+/// The shape's geometry from the scene: `lods[0]` is the mesh, `lods[n]` the scene's own version of LOD n, if it
+/// has one (the build makes them, see prep_for_game.py). A LOD without one gets the next more detailed version.
+/// Each version's vertices follow the previous one's in the vertex buffer; sub-meshes split a LOD's triangles in
+/// order.
+fn shape_geometry(
+    model: &Model,
+    shape: &Shape,
+    lods: &[Option<&SceneMesh>],
+    world: &[Mat4],
+    report: &mut GeometryReport,
+) -> Result<ShapeGeometry> {
+    let Some(Some(base)) = lods.first() else {
+        return Err(Error(format!("{}: no scene mesh", shape.name)));
+    };
+    let mut attributes: BTreeMap<String, Vec<[f32; 4]>> = BTreeMap::new();
+    let mut vertex_count = 0u32;
+    let mut current: (&SceneMesh, u32) = (base, 0);
+    let mut out = Vec::with_capacity(shape.meshes.len());
+    for (i, m) in shape.meshes.iter().enumerate() {
+        let mesh = match lods.get(i).copied().flatten() {
+            Some(mesh) if i == 0 || !std::ptr::eq(mesh, current.0) => mesh,
+            _ => current.0,
+        };
+        if i == 0 || !std::ptr::eq(mesh, current.0) {
+            let values = mesh_attributes(model, shape, mesh, world, report)?;
+            for (name, v) in values {
+                attributes.entry(name).or_default().extend(v);
             }
-        })
-        .collect();
+            current = (mesh, vertex_count);
+            vertex_count += mesh.positions.len() as u32;
+        }
+        let triangles = mesh.indices.len() / 3;
+        let k = m.sub_meshes.len().max(1);
+        out.push(LodGeometry {
+            first_vertex: current.1,
+            indices: mesh.indices.clone(),
+            sub_mesh_counts: (0..k)
+                .map(|j| ((triangles * (j + 1) / k - triangles * j / k) * 3) as u32)
+                .collect(),
+        });
+    }
     Ok(ShapeGeometry {
-        vertex_count: n as u32,
+        vertex_count,
         attributes,
-        lods,
+        lods: out,
     })
+}
+
+/// "<mesh>.lod<n>" (n >= 1): the scene's version of the mesh's LOD n.
+fn lod_of(name: &str) -> (&str, usize) {
+    match name.rsplit_once(".lod") {
+        Some((base, n)) => match n.parse::<usize>() {
+            Ok(n) if n >= 1 => (base, n),
+            _ => (name, 0),
+        },
+        None => (name, 0),
+    }
 }
 
 fn flat_normals(mesh: &SceneMesh) -> Vec<[f32; 3]> {
@@ -848,13 +886,15 @@ pub fn geometry_from_gltf(
         .enumerate()
         .map(|(i, b)| (b.name.as_str(), i))
         .collect();
-    let mut by_shape: BTreeMap<usize, SceneMesh> = BTreeMap::new();
+    // Per shape, the scene's mesh of each LOD (0: the mesh itself).
+    let mut by_shape: BTreeMap<usize, Vec<Option<SceneMesh>>> = BTreeMap::new();
     for node in gltf.mesh_nodes() {
-        let name = plain_name(&node.name);
+        let (base, lod) = lod_of(&node.name);
+        let name = plain_name(base);
         let Some(si) = model
             .shapes
             .iter()
-            .position(|s| s.name == node.name || s.name == name)
+            .position(|s| s.name == base || s.name == name)
         else {
             report.warn(format!(
                 "{}: no game mesh of that name; left out (new meshes can't be added)",
@@ -862,28 +902,47 @@ pub fn geometry_from_gltf(
             ));
             continue;
         };
-        if by_shape.contains_key(&si) {
+        if lod >= model.shapes[si].meshes.len() {
             report.warn(format!(
-                "{}: more than one scene mesh for it; the first is used",
-                model.shapes[si].name
+                "{}: the game mesh has {} LODs; left out",
+                node.name,
+                model.shapes[si].meshes.len()
             ));
             continue;
         }
-        by_shape.insert(
-            si,
-            read_mesh(gltf, &node, &scene_world, &bones, &mut report)?,
-        );
+        let slots = by_shape.entry(si).or_default();
+        if slots.len() <= lod {
+            slots.resize_with(lod + 1, || None);
+        }
+        if slots[lod].is_some() {
+            report.warn(format!(
+                "{}: more than one scene mesh for it; the first is used",
+                node.name
+            ));
+            continue;
+        }
+        slots[lod] = Some(read_mesh(gltf, &node, &scene_world, &bones, &mut report)?);
     }
     let mut out = BTreeMap::new();
     for (si, shape) in model.shapes.iter().enumerate() {
         if shape.is_meshlet() {
             continue;
         }
-        let (g, status) = match by_shape.get(&si) {
-            Some(mesh) => {
+        let lods: Vec<Option<&SceneMesh>> = by_shape
+            .get(&si)
+            .map(|v| v.iter().map(Option::as_ref).collect())
+            .unwrap_or_default();
+        if !lods.is_empty() && lods[0].is_none() {
+            report.warn(format!(
+                "{}: the scene has lower LODs of it but not the mesh itself; removed",
+                shape.name
+            ));
+        }
+        let (g, status) = match lods.first().copied().flatten() {
+            Some(_) => {
                 // (warnings about a mesh that turns out unchanged would only be noise)
                 let mut own = GeometryReport::default();
-                let g = shape_geometry(model, shape, mesh, &game_world, &mut own)?;
+                let g = shape_geometry(model, shape, &lods, &game_world, &mut own)?;
                 let same = same_as_game(model, shape, &g)?;
                 if std::env::var_os("MODSTUDIO_DEBUG_KEEP").is_some() {
                     eprintln!("{}: {:?}", shape.name, same);
@@ -983,6 +1042,14 @@ mod tests {
                 assert!((a - b).abs() <= 1.0 / 255.0);
             }
         }
+    }
+
+    #[test]
+    fn lod_names() {
+        assert_eq!(lod_of("Hair_A__Mt_Hair.lod2"), ("Hair_A__Mt_Hair", 2));
+        assert_eq!(lod_of("Hair_A__Mt_Hair"), ("Hair_A__Mt_Hair", 0));
+        assert_eq!(lod_of("Hair.lod0"), ("Hair.lod0", 0));
+        assert_eq!(lod_of("Hair.lodge"), ("Hair.lodge", 0));
     }
 
     #[test]

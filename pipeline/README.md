@@ -50,8 +50,9 @@ What it does:
      vertex, faces with more than 3 corners triangulated (Blender exports tangents for triangles only)
    - exports `work_dir\model.glb` and `work_dir\textures\*.png`
 3. **Builds the mod** (`modstudio replace`): the game's model with each scene mesh in place of the game mesh of
-   its name, in that mesh's vertex formats, skin count (the strongest influences) and LOD count (every LOD gets
-   the new mesh); a game mesh missing from the scene is removed. A scene mesh that is still the game's own (the
+   its name, in that mesh's vertex formats, skin count (the strongest influences) and LOD count (the lower LODs
+   are the mesh decimated in the proportions of the game's own, see `prep.lods`); a game mesh missing from the
+   scene is removed. A scene mesh that is still the game's own (the
    same triangles with the same positions, UVs, colours and skinning, normals within 1 degree) is **kept** as the
    game has it, its LODs and tangents included; the log says `kept`. Each changed texture is written in its own
    format, or for ASTC (not encoded here) as BC5 (normal maps), BC4 (one channel) or BC7. Files of an earlier
@@ -141,6 +142,7 @@ Paths can use `/`.
 | `prep.armature` | armature object name |
 | `prep.max_weights` | bone weights per vertex (default 4) |
 | `prep.merge` | optional list of rules, see below |
+| `prep.lods` | `"decimate"` (default): an edited mesh's lower LODs are made from it with Blender's Decimate, in the proportions of the game's own LODs (`prep.lod_symmetry`, default true; `prep.lod_weld`, a weld distance first, default off); `"full"`: every LOD gets the full mesh. Meshes kept as the game's keep the game's LODs either way |
 | `prep.join` | optional `{"<new mesh>": "<game mesh>"}`: where a mesh the game model doesn't have goes (default: the game mesh with its material) |
 | `prep.grow` | rings of faces baked around the changed ones (default 1) |
 | `prep.color_threshold`, `normal_threshold`, `opacity_threshold` | how different a face must look to be baked (defaults 3/255, 0.02, 3/255) |

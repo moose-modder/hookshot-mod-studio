@@ -13,9 +13,9 @@ modstudio: model mods for Hookshot
 Usage:
   modstudio inspect <model.bfres.zs> --romfs <romfs>
       meshes, materials, skin counts, vertex formats and textures, as JSON
-  modstudio export <model.bfres.zs> <out-dir> --romfs <romfs>
+  modstudio export <model.bfres.zs> <out-dir> --romfs <romfs> [--lod <n>]
       <model>.glb (skeleton, LOD 0 of each mesh, skin weights, UVs, colours), the textures as PNG and
-      model.json, for Blender and previews
+      model.json, for Blender and previews; --lod n: each mesh's LOD n instead (its last if it has fewer)
   modstudio replace <model.bfres.zs> <scene.glb> <out-romfs> --romfs <romfs> [--textures <dir>]
       the model rebuilt from Blender's glTF export of its scene (each mesh replaces the game's mesh of its
       name), written compressed under <out-romfs> at the model's path; with --textures, every <name>.png in
@@ -167,7 +167,13 @@ fn export(args: &Args) -> Result<(), Failure> {
         unreachable!()
     };
     let romfs = open_romfs(args)?;
-    let summary = model::export(&romfs, Path::new(model), Path::new(out))?;
+    let lod = match args.option("lod") {
+        Some(n) => n
+            .parse()
+            .map_err(|_| Failure::Usage(format!("--lod {n}: not a number")))?,
+        None => 0,
+    };
+    let summary = model::export_lod(&romfs, Path::new(model), Path::new(out), lod)?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
 }

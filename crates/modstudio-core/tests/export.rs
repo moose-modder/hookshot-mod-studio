@@ -174,6 +174,39 @@ fn export_then_replace_gives_the_same_geometry() {
 }
 
 #[test]
+fn a_lod_the_shape_lacks_is_left_out() {
+    use modstudio_core::replace::geometry_from_gltf;
+
+    let file = tiny_bfres();
+    let bfres = Bfres::parse(&file, None).unwrap();
+    let model = &bfres.models[0];
+    assert_eq!(model.shapes[0].meshes.len(), 1);
+    let (glb, _, _) = model_glb(model, &[]).unwrap();
+    // A second node with the same mesh, named as the build names a lower LOD.
+    let (mut json, _) = gltf::split(&glb).unwrap();
+    let mut lod = json["nodes"][3].clone();
+    lod["name"] = serde_json::json!(format!("{}.lod1", lod["name"].as_str().unwrap()));
+    let nodes = json["nodes"].as_array_mut().unwrap();
+    nodes.push(lod);
+    let index = nodes.len() - 1;
+    json["scenes"][0]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!(index));
+    let gltf = gltf::Gltf::parse(&glb_with_json(&glb, &json)).unwrap();
+    let (_, report) = geometry_from_gltf(model, &gltf).unwrap();
+    assert_eq!(report.shapes[0].status, "kept");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains(".lod1") && w.contains("1 LODs")),
+        "{:?}",
+        report.warnings
+    );
+}
+
+#[test]
 fn a_shape_missing_from_the_scene_is_removed() {
     use modstudio_core::replace::geometry_from_gltf;
 

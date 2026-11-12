@@ -346,6 +346,64 @@ def join_new_meshes(objects, vanilla_meshes, cfg, rep):
     return kept
 
 
+LOD_SAME = 0.95  # a game LOD with at least this share of LOD 0's triangles gets the more detailed version
+
+
+def make_lods(objects, vanilla_meshes, cfg, rep):
+    """Lower LODs of each mesh, in the proportions of the game mesh's own LODs: "<mesh>.lod<n>" copies, decimated
+    (collapse, symmetric in X), with smooth normals. modstudio replace gives each LOD its version; a mesh it keeps
+    as the game's ignores them. Returns the copies.
+    Compared on the townsman's face and hair (LODs 3 and 4, a few hundred triangles): welding the copy first
+    (prep.lod_weld, a distance) closes eyelids and lips into one surface that decimation then opens; without it
+    and with symmetry the face stays closed and no seams opened."""
+    made, report = [], {}
+    for o in objects:
+        vm = vanilla_meshes.get(o.name)
+        counts = (vm or {}).get("lodTriangles") or []
+        if len(counts) < 2 or not counts[0]:
+            continue
+        triangles = sum(len(p.vertices) - 2 for p in o.data.polygons)
+        versions = []
+        for n in range(1, len(counts)):
+            ratio = counts[n] / counts[0]
+            if ratio >= LOD_SAME:
+                continue
+            dup = o.copy()
+            dup.data = o.data.copy()
+            dup.name = dup.data.name = f"{o.name}.lod{n}"
+            for c in o.users_collection:
+                c.objects.link(dup)
+            me = dup.data
+            if getattr(me, "has_custom_normals", False):
+                with bpy.context.temp_override(object=dup, active_object=dup):
+                    bpy.ops.mesh.customdata_custom_splitnormals_clear()
+            me.polygons.foreach_set("use_smooth", np.ones(len(me.polygons), bool))
+            if "sharp_face" in me.attributes:
+                me.attributes.remove(me.attributes["sharp_face"])
+            dec = dup.modifiers.new("PREP_decimate", 'DECIMATE')
+            dec.decimate_type = 'COLLAPSE'
+            dec.ratio = ratio
+            dec.use_collapse_triangulate = True
+            dec.use_symmetry = cfg.get("lod_symmetry", True)
+            dec.symmetry_axis = 'X'
+            with bpy.context.temp_override(object=dup):
+                bpy.ops.object.modifier_move_to_index(modifier=dec.name, index=0)
+            weld_distance = cfg.get("lod_weld", 0)
+            if weld_distance:
+                weld = dup.modifiers.new("PREP_weld", 'WELD')
+                weld.merge_threshold = weld_distance
+                with bpy.context.temp_override(object=dup):
+                    bpy.ops.object.modifier_move_to_index(modifier=weld.name, index=0)
+            made.append(dup)
+            versions.append(f"{n}: {round(triangles * ratio)}")
+        if versions:
+            report[o.name] = versions
+            rep.meshes.setdefault(o.name, {})["lods"] = versions
+    if report:
+        log(f"Lower LODs (decimated to the game's proportions, triangles): {report}")
+    return made
+
+
 def limit_weights(o, arm, max_weights):
     bones = {b.name for b in arm.data.bones}
     names = {g.index: g.name for g in o.vertex_groups}
@@ -1449,6 +1507,8 @@ def main():
             rep.warn(f"game mesh {name} is not in the scene. The replace removes it.")
 
     if not rep.errors:
+        if cfg.get("glb_name") and cfg.get("lods", "decimate") == "decimate":
+            objects = objects + make_lods(objects, vanilla_meshes, cfg, rep)
         select_only([arm] + objects, arm)
         if cfg.get("glb_name"):
             # For modstudio replace: the scene as glTF, with up to 8 influences, tangents and every colour layer.

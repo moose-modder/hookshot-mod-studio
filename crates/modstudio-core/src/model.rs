@@ -54,6 +54,8 @@ pub struct MeshInfo {
     pub lods: usize,
     /// Triangles of LOD 0.
     pub triangles: u32,
+    /// Triangles of each LOD (the build makes lower LODs of an edited mesh in these proportions).
+    pub lod_triangles: Vec<u32>,
     /// Stored as meshlets, which can't be read or replaced yet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub meshlet: bool,
@@ -170,6 +172,7 @@ fn mesh_info(model: &Model, shape: &Shape) -> MeshInfo {
         skin_count: shape.skin_count,
         lods: shape.meshes.len(),
         triangles: shape.meshes.first().map_or(0, |m| m.index_count / 3),
+        lod_triangles: shape.meshes.iter().map(|m| m.index_count / 3).collect(),
         meshlet: shape.is_meshlet(),
         attributes: vb
             .attributes
@@ -197,6 +200,16 @@ pub struct ExportSummary {
 
 /// Writes `<model>.glb`, the textures as `<texture>.png` and `model.json` into `out_dir`.
 pub fn export(romfs: &Romfs, model_path: &Path, out_dir: &Path) -> Result<ExportSummary> {
+    export_lod(romfs, model_path, out_dir, 0)
+}
+
+/// [`export`] with each shape's LOD `lod` (a shape with fewer LODs: its last) in place of LOD 0.
+pub fn export_lod(
+    romfs: &Romfs,
+    model_path: &Path,
+    out_dir: &Path,
+    lod: usize,
+) -> Result<ExportSummary> {
     let mut decoder = romfs.decoder()?;
     let loaded = Loaded::read(romfs, &mut decoder, model_path)?;
     let bfres = loaded.bfres().context(model_path.display())?;
@@ -229,7 +242,7 @@ pub fn export(romfs: &Romfs, model_path: &Path, out_dir: &Path) -> Result<Export
         .models
         .first()
         .ok_or_else(|| Error(format!("{}: no models", model_path.display())))?;
-    let (glb, meshes, skipped) = model_glb(model, &summary.textures)?;
+    let (glb, meshes, skipped) = model_glb_lod(model, &summary.textures, lod)?;
     summary.glb = out_dir.join(format!("{}.glb", model.name));
     write(&summary.glb, &glb)?;
     summary.meshes = meshes;
@@ -300,9 +313,14 @@ struct ShapeGeometry {
     indices: Vec<u32>,
 }
 
-fn shape_geometry(model: &Model, shape: &Shape, world: &[Mat4]) -> Result<ShapeGeometry> {
+fn shape_geometry(
+    model: &Model,
+    shape: &Shape,
+    world: &[Mat4],
+    lod: usize,
+) -> Result<ShapeGeometry> {
     let vb = &model.vertex_buffers[shape.vertex_buffer];
-    let lod = &shape.meshes[0];
+    let lod = &shape.meshes[lod.min(shape.meshes.len().saturating_sub(1))];
     if lod.primitive != PRIMITIVE_TRIANGLES {
         return Err(Error(format!(
             "primitive type {} (not triangles)",
@@ -481,6 +499,15 @@ fn shape_geometry(model: &Model, shape: &Shape, world: &[Mat4]) -> Result<ShapeG
 /// The model as `.glb`: the skeleton as nodes, one skinned mesh per shape (LOD 0), materials with their
 /// textures (`<texture>.png` beside the file). Returns the file, the number of meshes and the shapes left out.
 pub fn model_glb(model: &Model, textures: &[String]) -> Result<(Vec<u8>, usize, Vec<String>)> {
+    model_glb_lod(model, textures, 0)
+}
+
+/// [`model_glb`] with each shape's LOD `lod` (a shape with fewer LODs: its last).
+pub fn model_glb_lod(
+    model: &Model,
+    textures: &[String],
+    lod: usize,
+) -> Result<(Vec<u8>, usize, Vec<String>)> {
     let (_, world) = bone_matrices(model)?;
     let bones = &model.skeleton.bones;
     let mut glb = Glb::new();
@@ -574,7 +601,7 @@ pub fn model_glb(model: &Model, textures: &[String]) -> Result<(Vec<u8>, usize, 
             skipped.push(format!("{}: stored as meshlets", shape.name));
             continue;
         }
-        let g = match shape_geometry(model, shape, &world) {
+        let g = match shape_geometry(model, shape, &world, lod) {
             Ok(g) => g,
             Err(e) => {
                 skipped.push(format!("{}: {e}", shape.name));
