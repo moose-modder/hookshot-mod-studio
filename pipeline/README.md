@@ -189,6 +189,13 @@ baked (no detection, unless `"detect": true`), with per-material settings:
   To choose yourself: `"prep": {"join": {"<new mesh>": "<game mesh>"}}` in the project file. The new mesh
   keeps its bone weights (up to the target's skin count), and is drawn with the target's material.
 - A mesh may use any number of materials: the game gets one, its own, with the others baked into its textures.
+- **Bones.** The game's skeleton is kept as it is:
+  - A **new bone** (e.g. for an antenna): the game has no animation for it, so in game it would only follow its
+    parent. Weights on it go to its nearest parent the game has, and the log says so; it looks the same.
+  - A **moved bone** (in edit mode): the game's animations set each animated bone's own position (the
+    townsman's animations hold the rest positions of most of his bones, `examples/anim_probe.rs`), so it would
+    be put back. The mesh stays as modelled and bends around the bone's place in the game; the log lists moved
+    bones. Reshape the mesh instead.
 - Normal maps are baked in Blender's tangent space (+Y), the same convention the scene's
   "Reconstruct RG Normal" node group reads them with.
 - "the game mesh has vertex colours, this mesh has none" is fine for a mesh you haven't painted: the export leaves

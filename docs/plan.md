@@ -95,8 +95,24 @@ asked for, its characters never appeared, and nothing in the log said why. ruzst
 of the frame header (libzstd's `ZSTD_getFrameContentSize` says "unknown") and adds a checksum; every file the game
 ships, Toolbox's and restbl's have the size and no checksum. `zs::compress` now rewrites the header that way.
 
-Left: simplified LODs (every LOD is the full mesh now), new meshes and bones (in-place writing can't add them),
-meshlet shapes, the resource size table (phase 3).
+Checked in game since: the townsman (`Npc_Hylia_MN_001`, a new goatee joined into the hair, a lip edit baked
+into the face) loads and shows the edit.
+
+## Phase 2b: more kinds of edits (done)
+
+- **Build check** (`check_result.py`): the built model rendered as the scene is (base colour, four sides, rest
+  and a test pose) and compared; differences reported by mesh and view, with images.
+- **Unedited meshes kept** as the game has them, LODs and tangents included (triangle-by-triangle comparison).
+- **Lower LODs** of edited meshes decimated in the game's own proportions.
+- **Material changes** of any kind noticed (a fingerprint stamped by `make_scene.py`), and baked.
+- **Colour versions** of clothes textures (`_Alb.0` ... `.13`) all baked.
+- **New meshes** joined into a game mesh: the one with their material, else the nearest with texture room.
+- **Bones**: weights on new bones go to their nearest game parent; moved bones are reported (the animations set
+  bone positions, so the skeleton is kept).
+
+Left: more bone influences than a mesh's skin count (new vertex attributes; the shader may not have the
+variant), real new meshes, materials or bones in the file (writing the whole file, names in the shared string
+table), meshlet shapes, the resource size table (phase 3).
 
 ## Risks and how they are contained
 

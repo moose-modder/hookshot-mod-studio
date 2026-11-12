@@ -308,14 +308,7 @@ impl Gltf {
                 )
             })
             .collect();
-        let mut parent = vec![None; nodes.len()];
-        for (i, n) in nodes.iter().enumerate() {
-            for c in n["children"].as_array().into_iter().flatten() {
-                if let Some(c) = c.as_u64().map(|c| c as usize).filter(|&c| c < nodes.len()) {
-                    parent[c] = Some(i);
-                }
-            }
-        }
+        let parent = self.parents();
         (0..nodes.len())
             .map(|i| {
                 let mut m = local[i];
@@ -332,6 +325,20 @@ impl Gltf {
                 Ok(m)
             })
             .collect()
+    }
+
+    /// Each node's parent.
+    pub fn parents(&self) -> Vec<Option<usize>> {
+        let nodes = self.json["nodes"].as_array().cloned().unwrap_or_default();
+        let mut parent = vec![None; nodes.len()];
+        for (i, n) in nodes.iter().enumerate() {
+            for c in n["children"].as_array().into_iter().flatten() {
+                if let Some(c) = c.as_u64().map(|c| c as usize).filter(|&c| c < nodes.len()) {
+                    parent[c] = Some(i);
+                }
+            }
+        }
+        parent
     }
 
     pub fn node_name(&self, node: usize) -> String {

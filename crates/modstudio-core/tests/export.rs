@@ -207,6 +207,36 @@ fn a_lod_the_shape_lacks_is_left_out() {
 }
 
 #[test]
+fn a_moved_bone_is_reported() {
+    use modstudio_core::replace::geometry_from_gltf;
+
+    let file = tiny_bfres();
+    let bfres = Bfres::parse(&file, None).unwrap();
+    let model = &bfres.models[0];
+    let (glb, _, _) = model_glb(model, &[]).unwrap();
+    let (mut json, _) = gltf::split(&glb).unwrap();
+    let arm = json["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|n| n["name"] == "Arm")
+        .unwrap();
+    let t = json["nodes"][arm]["translation"].clone();
+    let y = t[1].as_f64().unwrap_or(0.0) + 0.05;
+    json["nodes"][arm]["translation"] = serde_json::json!([t[0], y, t[2]]);
+    let gltf = gltf::Gltf::parse(&glb_with_json(&glb, &json)).unwrap();
+    let (_, report) = geometry_from_gltf(model, &gltf).unwrap();
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("1 bone(s) moved") && w.contains("Arm 5.0 cm")),
+        "{:?}",
+        report.warnings
+    );
+}
+
+#[test]
 fn a_shape_missing_from_the_scene_is_removed() {
     use modstudio_core::replace::geometry_from_gltf;
 

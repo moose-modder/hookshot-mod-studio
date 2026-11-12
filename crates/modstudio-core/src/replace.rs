@@ -91,6 +91,39 @@ fn read_mesh(
         ));
     }
     let skin = node.skin.map(|s| gltf.skin(s)).transpose()?;
+    // Each joint's game bone: its own, or for a bone the game's skeleton doesn't have, its nearest parent the
+    // game has. The game has no animation for a new bone, so it would follow that parent anyway.
+    let parents = gltf.parents();
+    let joint_bones: Vec<Option<usize>> = skin
+        .as_ref()
+        .map(|(joints, _)| {
+            joints
+                .iter()
+                .map(|&j| {
+                    let mut n = Some(j);
+                    let mut steps = 0;
+                    while let Some(k) = n {
+                        if let Some(&b) = bones.get(gltf.node_name(k).as_str()) {
+                            if k != j {
+                                report.warn(format!(
+                                    "{} isn't a bone of the game's skeleton: its weights went to {}, which it follows in game (the game has no animation for a new bone)",
+                                    gltf.node_name(j),
+                                    gltf.node_name(k)
+                                ));
+                            }
+                            return Some(b);
+                        }
+                        n = parents.get(k).copied().flatten();
+                        steps += 1;
+                        if steps > parents.len() {
+                            break;
+                        }
+                    }
+                    None
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let joint_names: Vec<String> = skin
         .as_ref()
         .map(|(joints, _)| joints.iter().map(|&j| gltf.node_name(j)).collect())
@@ -173,12 +206,11 @@ fn read_mesh(
                         for k in 0..16 {
                             mats[v][k] += weight * m[k];
                         }
-                        let name = &joint_names[joint];
-                        match bones.get(name.as_str()) {
-                            Some(&b) => infl[v].push((b, weight)),
+                        match joint_bones.get(joint).copied().flatten() {
+                            Some(b) => infl[v].push((b, weight)),
                             None => report.warn(format!(
-                                "{}: weights on {name}, which the game's skeleton doesn't have, were dropped",
-                                node.name
+                                "{}: weights on {}, which neither the game's skeleton nor its parents are in, were dropped",
+                                node.name, joint_names[joint]
                             )),
                         }
                     }
@@ -557,7 +589,8 @@ fn mesh_attributes(
                         if a.format.kind() == 1
                             && uv
                                 .iter()
-                                .any(|t| t.iter().any(|c| !(0.0..=1.0).contains(c)))
+                                // (decimated LODs interpolate a hair past the edge: not worth a word)
+                                .any(|t| t.iter().any(|c| !(-0.01..=1.01).contains(c)))
                         {
                             report.warn(format!(
                                 "{}: UV map {set} goes outside 0..1, which the game's format for it can't hold: clamped",
@@ -670,6 +703,50 @@ fn shape_geometry(
         attributes,
         lods: out,
     })
+}
+
+/// Bones the scene has where the game's skeleton has them no more (by more than MOVED_BONE). The skeleton is
+/// kept: the game's animations set each animated bone's own position (the townsman's hold the rest positions of
+/// 99 of its 168 bones, the wrists' 101 times; examples/anim_probe.rs), so a moved bone would be put back.
+/// Meshes stay as modelled, bending around the bones' places in the game.
+const MOVED_BONE: f32 = 0.001;
+
+fn moved_bones(
+    model: &Model,
+    gltf: &Gltf,
+    game_world: &[Mat4],
+    scene_world: &[Mat4],
+    bones: &BTreeMap<&str, usize>,
+    report: &mut GeometryReport,
+) {
+    let mut moved = Vec::new();
+    for (node, m) in scene_world.iter().enumerate() {
+        let name = gltf.node_name(node);
+        let Some(&b) = bones.get(name.as_str()) else {
+            continue;
+        };
+        let g = &game_world[b];
+        let d =
+            ((m[12] - g[12]).powi(2) + (m[13] - g[13]).powi(2) + (m[14] - g[14]).powi(2)).sqrt();
+        if d > MOVED_BONE {
+            moved.push((d, model.skeleton.bones[b].name.clone()));
+        }
+    }
+    if moved.is_empty() {
+        return;
+    }
+    moved.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let list: Vec<String> = moved
+        .iter()
+        .take(8)
+        .map(|(d, n)| format!("{n} {:.1} cm", d * 100.0))
+        .collect();
+    report.warn(format!(
+        "{} bone(s) moved in the scene ({}{}): the game keeps its skeleton (its animations set where each bone is), so meshes bend around the bones' places in the game. Reshape the mesh instead of moving bones.",
+        moved.len(),
+        list.join(", "),
+        if moved.len() > 8 { ", ..." } else { "" }
+    ));
 }
 
 /// "<mesh>.lod<n>" (n >= 1): the scene's version of the mesh's LOD n.
@@ -887,6 +964,7 @@ pub fn geometry_from_gltf(
         .map(|(i, b)| (b.name.as_str(), i))
         .collect();
     // Per shape, the scene's mesh of each LOD (0: the mesh itself).
+    moved_bones(model, gltf, &game_world, &scene_world, &bones, &mut report);
     let mut by_shape: BTreeMap<usize, Vec<Option<SceneMesh>>> = BTreeMap::new();
     for node in gltf.mesh_nodes() {
         let (base, lod) = lod_of(&node.name);
