@@ -89,6 +89,12 @@ Checked locally: the unedited Great Fairy round trip matches the game's model as
 (better for 5-influence meshes); the edited Great Fairy scene builds, and matches the Toolbox build of the same
 scene mesh by mesh; textures come out closer to their PNGs than Toolbox's. **Not yet checked in the game.**
 
+**The game needs the zstd frame to state its decompressed size.** The first in-game test (the townsman,
+`Npc_Hylia_MN_001`) showed the model opened (Hookshot's `mods:` line) and nothing more: its textures were never
+asked for, its characters never appeared, and nothing in the log said why. ruzstd's encoder leaves the size out
+of the frame header (libzstd's `ZSTD_getFrameContentSize` says "unknown") and adds a checksum; every file the game
+ships, Toolbox's and restbl's have the size and no checksum. `zs::compress` now rewrites the header that way.
+
 Left: simplified LODs (every LOD is the full mesh now), new meshes and bones (in-place writing can't add them),
 meshlet shapes, the resource size table (phase 3).
 

@@ -130,9 +130,41 @@ impl Decoder {
     }
 }
 
-/// A zstd frame of `data`, without a dictionary (the game reads those too; Switch Toolbox's mods are written so).
+/// A zstd frame of `data` that the game loads: without a dictionary (the game reads those too; Switch Toolbox's
+/// mods are written so), stating its decompressed size and without a content checksum, as every file the game
+/// ships does. The size is required: the game never loads a file whose frame leaves it out (seen in game: the
+/// model was opened, its textures never asked for).
 pub fn compress(data: &[u8]) -> Vec<u8> {
-    ruzstd::encoding::compress_to_vec(data, ruzstd::encoding::CompressionLevel::Fastest)
+    let frame = ruzstd::encoding::compress_to_vec(data, ruzstd::encoding::CompressionLevel::Fastest);
+    with_content_size(&frame, data.len() as u64)
+}
+
+/// The frame's header rewritten to state `size` and its content checksum dropped. ruzstd's encoder writes neither
+/// a content size nor a single-segment frame, only a window descriptor; the blocks stay as they are.
+fn with_content_size(frame: &[u8], size: u64) -> Vec<u8> {
+    let descriptor = frame[4];
+    assert_eq!(
+        descriptor & 0b1110_0011,
+        0,
+        "ruzstd frame header changed: descriptor {descriptor:#04x}"
+    );
+    let checksum = if descriptor & 0b100 != 0 { 4 } else { 0 };
+    let window = frame[5];
+    let blocks = &frame[6..frame.len() - checksum];
+    let mut out = Vec::with_capacity(frame.len() + 8);
+    out.extend_from_slice(&FRAME_MAGIC.to_le_bytes());
+    match u32::try_from(size) {
+        Ok(s) => {
+            out.extend_from_slice(&[2 << 6, window]);
+            out.extend_from_slice(&s.to_le_bytes());
+        }
+        Err(_) => {
+            out.extend_from_slice(&[3 << 6, window]);
+            out.extend_from_slice(&size.to_le_bytes());
+        }
+    }
+    out.extend_from_slice(blocks);
+    out
 }
 
 fn zstd_error(e: FrameDecoderError) -> Error {
@@ -159,6 +191,25 @@ mod tests {
         assert_eq!(d.decompress(&packed).unwrap(), data);
         // The decoder can be reused.
         assert_eq!(d.decompress(&packed).unwrap(), data);
+    }
+
+    #[test]
+    fn compressed_frames_state_their_size() {
+        for len in [0usize, 1, 255, 256, 70_000, 1_000_003] {
+            let data: Vec<u8> = (0..len).map(|i| (i * 7 % 253) as u8).collect();
+            let packed = compress(&data);
+            // As the game's own files: content size given, no dictionary, no checksum (descriptor bit 2).
+            assert_eq!(
+                frame_info(&packed).unwrap(),
+                FrameInfo {
+                    dictionary_id: None,
+                    content_size: Some(len as u64)
+                },
+                "{len} bytes"
+            );
+            assert_eq!(packed[4] & 0b100, 0, "{len} bytes: checksum flag");
+            assert_eq!(Decoder::plain().decompress(&packed).unwrap(), data, "{len} bytes");
+        }
     }
 
     /// A frame by hand: single segment, a 4-byte dictionary ID, a 1-byte content size, one raw block.
