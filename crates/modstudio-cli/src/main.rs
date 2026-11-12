@@ -27,7 +27,9 @@ Usage:
   modstudio --version
   modstudio help
 
-Model paths are relative to the romfs (Model/Npc_X.Npc_X.bfres.zs) or absolute.
+Model paths are relative to the romfs (Model/Npc_X.Npc_X.bfres.zs) or absolute. inspect, export, texture and
+decompress take --overlay <mod>/romfs (repeatable): files a mod has are read in place of the game's, as Hookshot
+loads them (the last --overlay wins), e.g. to export an installed mod's model with its textures.
 
 To come (docs/plan.md): the resource size table.
 ";
@@ -79,6 +81,14 @@ impl Args {
             .map(|(_, v)| v.as_str())
     }
 
+    /// Every value of a repeatable option, in order.
+    fn all(&self, name: &str) -> impl Iterator<Item = &str> {
+        self.options
+            .iter()
+            .filter(move |(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
+    }
+
     fn required(&self, name: &str) -> Result<&str, Failure> {
         self.option(name)
             .ok_or_else(|| Failure::Usage(format!("--{name} is required")))
@@ -95,11 +105,20 @@ impl Args {
     }
 }
 
+/// The game's romfs (`--romfs`) with the mods given by `--overlay` (each a mod's `romfs` folder) on top.
+fn open_romfs(args: &Args) -> Result<Romfs, Failure> {
+    let mut romfs = Romfs::open(PathBuf::from(args.required("romfs")?))?;
+    for dir in args.all("overlay") {
+        romfs = romfs.with_overlay(PathBuf::from(dir));
+    }
+    Ok(romfs)
+}
+
 fn decompress(args: &Args) -> Result<(), Failure> {
     let [input, output] = args.positional(2)? else {
         unreachable!()
     };
-    let romfs = Romfs::open(PathBuf::from(args.required("romfs")?))?;
+    let romfs = open_romfs(args)?;
     let data = romfs::read_maybe_zs(&mut romfs.decoder()?, Path::new(input))?;
     std::fs::write(output, data).map_err(|e| format!("{output}: {e}"))?;
     Ok(())
@@ -109,7 +128,7 @@ fn texture(args: &Args) -> Result<(), Failure> {
     let [input, output] = args.positional(2)? else {
         unreachable!()
     };
-    let romfs = Romfs::open(PathBuf::from(args.required("romfs")?))?;
+    let romfs = open_romfs(args)?;
     let data = romfs::read_maybe_zs(&mut romfs.decoder()?, Path::new(input))?;
     let bntx = Bntx::parse(&data)?;
     let texture = bntx
@@ -135,7 +154,7 @@ fn inspect(args: &Args) -> Result<(), Failure> {
     let [model] = args.positional(1)? else {
         unreachable!()
     };
-    let romfs = Romfs::open(PathBuf::from(args.required("romfs")?))?;
+    let romfs = open_romfs(args)?;
     let mut decoder = romfs.decoder()?;
     let loaded = model::Loaded::read(&romfs, &mut decoder, Path::new(model))?;
     let inspection = model::inspect(&romfs, &mut decoder, &loaded.bfres()?)?;
@@ -147,7 +166,7 @@ fn export(args: &Args) -> Result<(), Failure> {
     let [model, out] = args.positional(2)? else {
         unreachable!()
     };
-    let romfs = Romfs::open(PathBuf::from(args.required("romfs")?))?;
+    let romfs = open_romfs(args)?;
     let summary = model::export(&romfs, Path::new(model), Path::new(out))?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())

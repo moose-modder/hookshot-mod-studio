@@ -135,7 +135,8 @@ impl Decoder {
 /// ships does. The size is required: the game never loads a file whose frame leaves it out (seen in game: the
 /// model was opened, its textures never asked for).
 pub fn compress(data: &[u8]) -> Vec<u8> {
-    let frame = ruzstd::encoding::compress_to_vec(data, ruzstd::encoding::CompressionLevel::Fastest);
+    let frame =
+        ruzstd::encoding::compress_to_vec(data, ruzstd::encoding::CompressionLevel::Fastest);
     with_content_size(&frame, data.len() as u64)
 }
 
@@ -208,7 +209,11 @@ mod tests {
                 "{len} bytes"
             );
             assert_eq!(packed[4] & 0b100, 0, "{len} bytes: checksum flag");
-            assert_eq!(Decoder::plain().decompress(&packed).unwrap(), data, "{len} bytes");
+            assert_eq!(
+                Decoder::plain().decompress(&packed).unwrap(),
+                data,
+                "{len} bytes"
+            );
         }
     }
 

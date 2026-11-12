@@ -55,9 +55,16 @@ What it does:
    format, or for ASTC (not encoded here) as BC5 (normal maps), BC4 (one channel) or BC7. Files of an earlier
    build are removed first.
 4. **Checks the result** against the game's model: every mesh keeps its material, skin count and LOD count.
-5. **RESTBL** (`restbl.exe` from the RESTBL Calculator): writes
+5. **Compares the result with the scene** (`check_result.py`, Blender): the built model is read back (with the
+   mod's textures) and rendered the way the scene is: base colour and opacity, from the front, back and both
+   sides, in the rest pose and in a test pose (every game bone turned a little, so skinning shows). Where the
+   two differ, the build says which meshes and in which views, and leaves images in `work_dir\check`
+   (`differs_<view>_<pose>.png`: scene | result | differences in red). An edit the build lost, a mesh that
+   didn't come along or a vertex skinned to the wrong bone shows up here. Lighting, normal maps, roughness and
+   other maps are not compared, nor are distance versions (LODs).
+6. **RESTBL** (`restbl.exe` from the RESTBL Calculator): writes
    `romfs\System\Resource\ResourceSizeTable.Product.<version>.Nin_Ounce_NVN2.rsizetable.zs`.
-6. With `--install`: copies `mod_dir\romfs` into `install_dir`, the mod's own folder: for Hookshot
+7. With `--install`: replaces the `romfs` in `install_dir` (the mod's own folder) with `mod_dir\romfs`: for Hookshot
    `<game folder>\mods\ImpaMod`, for an emulator `...\load\0400486024DEC000\ImpaMod`. (Not the `mods` folder
    itself: a `romfs` directly in it is not read. The script refuses a folder named `mods` or `load`.)
    The mod's RESTBL is left out: the game reads **one** table, and with several mods Hookshot takes the one of
@@ -66,9 +73,10 @@ What it does:
    `zzz-ResourceSizeTable`, which sorts last. **Run `python restbl_all.py` yourself after adding, removing or
    turning off a mod** (it reads `config.json`).
 
-Logs of every step are in `work_dir` (`1_inspect_game.log` ... `5_restbl.log`, `prep_report.json`).
+Logs of every step are in `work_dir` (`1_inspect_game.log` ... `6_restbl.log`, `prep_report.json`,
+`check\check_report.json`).
 
-Options: `--skip-blender` reuses the last export and textures.
+Options: `--skip-blender` reuses the last export and textures; `--no-check` skips step 5.
 
 Without `tools.modstudio`, steps 1, 3 and 4 use Switch Toolbox (`inspect-model`, `replace-model`) and step 2 exports
 `model.fbx` at scale 0.01 with 4 weights per vertex, as before.
@@ -136,6 +144,7 @@ Paths can use `/`.
 | `prep.color_threshold`, `normal_threshold`, `opacity_threshold` | how different a face must look to be baked (defaults 3/255, 0.02, 3/255) |
 | `prep.samples`, `bake_margin`, `probe_size`, `pack_grid`, `pack_margin` | bake samples (4), bake margin in pixels (3), scratch layout size (2048), packing grid (512), space between islands (0.006) |
 | `toolbox_options` | extra `replace-model` options, e.g. `["--no-match-lods"]` |
+| `check` | optional settings of step 5: `color_tolerance` (out of 255, default 24), `min_pixels` (smallest area reported, default 80), `pose_degrees` (test pose, default 12), `resolution` (default 1024) |
 
 A merge rule is only needed to override the automatic choice for one mesh: all faces of its extra materials are
 baked (no detection, unless `"detect": true`), with per-material settings:

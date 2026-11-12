@@ -8,9 +8,11 @@ an FBX export):
   2. Blender (background, the .blend is not changed): prep_for_game.py -> glTF + baked textures
   3. modstudio replace: game model + glTF + textures -> <mod>/romfs
   4. modstudio inspect: checks the result against the game's model
-  5. restbl: resource size table for the mod
-  6. With --install: copies the mod's romfs to install_dir (without its RESTBL) and makes one RESTBL for all
-     installed mods (restbl_all.py)
+  5. check_result.py (Blender): the built model rendered as the scene is, and compared with it (modstudio only;
+     --no-check skips it)
+  6. restbl: resource size table for the mod
+  7. With --install: replaces install_dir's romfs with the mod's (without its RESTBL) and makes one RESTBL for
+     all installed mods (restbl_all.py)
 
 Only the Python standard library is needed.
 """
@@ -126,11 +128,63 @@ def compare_models(vanilla, result):
     return problems, rows
 
 
+def check_scene(cfg, tools, romfs, mod_romfs, work, vanilla_json):
+    """Step 5: renders the scene and the built model the same way and compares them (check_result.py).
+    Returns the report."""
+    check = os.path.join(work, "check")
+    if os.path.isdir(check):
+        shutil.rmtree(check)
+    os.makedirs(check)
+    result = os.path.join(check, "result")
+    run("Comparing the result with the scene", [tools["modstudio"], "export", cfg["model"], result,
+        "--romfs", romfs, "--overlay", mod_romfs], os.path.join(work, "5_check_export.log"), lambda l: False)
+    with open(vanilla_json, encoding="utf-8") as f:
+        bones = json.load(f)["models"][0]["bones"]
+    joined = {}
+    report_path = os.path.join(work, "prep_report.json")
+    if os.path.exists(report_path):
+        with open(report_path, encoding="utf-8") as f:
+            joined = {n: target for target, m in json.load(f)["meshes"].items() for n in m.get("joined", [])}
+    prep = cfg.get("prep", {})
+    glb = glob.glob(os.path.join(result, "*.glb"))
+    if len(glb) != 1:
+        raise BuildError(f"the check's export made {len(glb)} .glb files in {result}")
+    settings = dict(cfg.get("check", {}))
+    settings.update({"out": check, "result_glb": glb[0], "game_bones": bones, "joined": joined,
+                     "armature": prep.get("armature", "Armature"),
+                     "work_suffix": prep.get("work_suffix", "_WORK"), "exclude": prep.get("exclude", [])})
+    config = os.path.join(check, "check_config.json")
+    with open(config, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+    script = os.path.join(HERE, "check_result.py")
+    show = lambda l: l.startswith("[check]") or "Error" in l  # noqa: E731
+    run("   the scene", [tools["blender"], "--background", cfg["blend"], "--python", script, "--",
+        "--config", config, "--side", "scene"], os.path.join(work, "5_check_scene.log"), show)
+    run("   the result", [tools["blender"], "--background", "--factory-startup", "--python", script, "--",
+        "--config", config, "--side", "result"], os.path.join(work, "5_check_result.log"), show)
+    with open(os.path.join(check, "check_report.json"), encoding="utf-8") as f:
+        report = json.load(f)
+    if report["matches"]:
+        log("   The result looks like the scene (base colour, every view, rest and test pose).")
+    else:
+        by_mesh = {}
+        for d in report["differences"]:
+            for mesh in d["meshes"]:
+                by_mesh.setdefault(mesh, []).append(f"{d['view']} {d['pose']} ({d['kind']}, {d['pixels']} px)")
+        for mesh, where in sorted(by_mesh.items()):
+            log(f"   WARNING: {mesh} looks different from the scene: {', '.join(where)}")
+        log(f"   Images (scene | result | differences in red): {os.path.join(check, 'differs_*.png')}")
+    for item in report.get("not_compared", []):
+        log(f"   Note: not compared exactly (a shader the check can't flatten): {item}")
+    return report
+
+
 def main():
     ap = argparse.ArgumentParser(description="Build a model replacement mod from a Blender scene.")
     ap.add_argument("project", help="project .json (extract_model.py writes one)")
     ap.add_argument("--skip-blender", action="store_true", help="reuse the FBX and textures of the last build")
     ap.add_argument("--install", action="store_true", help="copy the mod to install_dir afterwards")
+    ap.add_argument("--no-check", action="store_true", help="skip comparing the result with the scene")
     args = ap.parse_args()
 
     t_start = time.time()
@@ -244,13 +298,20 @@ def main():
     if problems:
         raise BuildError("The result doesn't match the game's model:\n  " + "\n  ".join(problems))
 
-    # 5. RESTBL
+    # 5. Does it look like the scene?
+    check = None
+    if use_ms and not args.no_check:
+        check = check_scene(cfg, tools, romfs, mod_romfs, work, vanilla_json)
+
+    # 6. RESTBL (the last build's table goes first: restbl would count it as one of the mod's files)
+    for stale in glob.glob(os.path.join(mod_romfs, "System", "Resource", "*.rsizetable*")):
+        os.remove(stale)
     version = game_version(cfg)
     run(f"Resource size table ({cfg.get('game', 'oot')} {version})",
         [tools["restbl"], os.path.abspath(cfg["mod_dir"]), "--game", cfg.get("game", "oot"), "--version", version],
-        os.path.join(work, "5_restbl.log"))
+        os.path.join(work, "6_restbl.log"))
 
-    # 6. Install
+    # 7. Install
     if args.install:
         target = cfg.get("install_dir")
         if not target:
@@ -260,6 +321,9 @@ def main():
             raise BuildError(f"install_dir is the mods folder itself ({target}); "
                              f"name the mod's folder in it, e.g. {os.path.join(target, cfg.get('name', 'MyMod'))}")
         log(f"\n== Installing to {target}")
+        # The mod's folder gets exactly this build: files of an earlier one (a texture no longer changed) go.
+        if os.path.isdir(os.path.join(target, "romfs")):
+            shutil.rmtree(os.path.join(target, "romfs"))
         # Without the mod's own RESTBL: the game reads one table, so one is made for all installed mods
         shutil.copytree(mod_romfs, os.path.join(target, "romfs"), dirs_exist_ok=True,
                         ignore=lambda d, names: [n for n in names if ".rsizetable" in n.lower()])
@@ -273,6 +337,10 @@ def main():
     log(f"\nBuilt {cfg.get('name', 'mod')} in {time.time() - t_start:.0f}s:")
     for f in files:
         log(f"   romfs\\{f}")
+    if check is not None and not check["matches"]:
+        meshes = sorted({m for d in check["differences"] for m in d["meshes"]})
+        log(f"\nWARNING: the result doesn't look like the scene in {len(check['differences'])} place(s), on "
+            f"{', '.join(meshes)}. See {os.path.join(work, 'check', 'differs_*.png')}")
 
 
 if __name__ == "__main__":

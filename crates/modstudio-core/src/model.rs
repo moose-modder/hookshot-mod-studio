@@ -91,7 +91,7 @@ pub struct Loaded {
 impl Loaded {
     pub fn read(romfs: &Romfs, decoder: &mut Decoder, model: &Path) -> Result<Self> {
         let strings = load_external_strings(romfs, decoder)?;
-        let path = romfs.root().join(model);
+        let path = romfs.resolve(model);
         let data = romfs::read_maybe_zs(decoder, &path).context(path.display())?;
         Ok(Loaded { data, strings })
     }
@@ -118,10 +118,7 @@ pub fn texture_names(bfres: &Bfres) -> Vec<String> {
 }
 
 fn texture_path(romfs: &Romfs, name: &str) -> PathBuf {
-    romfs
-        .root()
-        .join(TEXTURE_DIR)
-        .join(format!("{name}.bntx.zs"))
+    romfs.resolve(Path::new(TEXTURE_DIR).join(format!("{name}.bntx.zs")))
 }
 
 pub fn inspect(romfs: &Romfs, decoder: &mut Decoder, bfres: &Bfres) -> Result<Inspection> {

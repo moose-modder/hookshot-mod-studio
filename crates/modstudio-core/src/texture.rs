@@ -104,10 +104,7 @@ pub struct TextureReport {
 
 /// The game's texture `name` with `image`, as a compressed `.bntx.zs` file's bytes.
 pub fn rebuild(romfs: &Romfs, name: &str, image: &Image) -> Result<(Vec<u8>, Choice, Format)> {
-    let path = romfs
-        .root()
-        .join(TEXTURE_DIR)
-        .join(format!("{name}.bntx.zs"));
+    let path = romfs.resolve(Path::new(TEXTURE_DIR).join(format!("{name}.bntx.zs")));
     let data = romfs::read_maybe_zs(&mut romfs.decoder()?, &path).context(path.display())?;
     let bntx = Bntx::parse(&data).context(name)?;
     let texture = bntx
@@ -149,9 +146,7 @@ pub fn replace_textures(
             .to_string_lossy()
             .into_owned();
         if romfs
-            .root()
-            .join(TEXTURE_DIR)
-            .join(format!("{name}.bntx.zs"))
+            .resolve(Path::new(TEXTURE_DIR).join(format!("{name}.bntx.zs")))
             .exists()
         {
             jobs.push((name, png));

@@ -215,4 +215,5 @@ def main():
     log(f"saved {a.blend}")
 
 
-main()
+if __name__ == "__main__":
+    main()
