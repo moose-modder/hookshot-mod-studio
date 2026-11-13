@@ -178,10 +178,9 @@ baked (no detection, unless `"detect": true`), with per-material settings:
 
 ## Settings
 
-One file shared by the app and the CLI: `%APPDATA%\HookshotModStudio\settings.json` on Windows,
-`~/.config/hookshot-mod-studio/settings.json` elsewhere (`MODSTUDIO_SETTINGS` or the CLI's `--settings` name
-another). The app's **Settings** page writes it; `modstudio settings --hookshot <Hookshot folder> --restbl
-<restbl>` too.
+`settings.json` beside the program (the app's and the CLI's are one file when they sit in one folder, as in
+`target/release`; `MODSTUDIO_SETTINGS` or the CLI's `--settings` name another). The app's **Settings** page writes
+it; `modstudio settings --hookshot <Hookshot folder> --restbl <restbl>` too.
 
 | Key | |
 |---|---|

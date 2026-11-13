@@ -123,18 +123,14 @@ async fn save_settings(state: State<'_, App>, settings: Settings) -> Result<Sett
     Ok(settings_view(&state))
 }
 
-/// Settings for a Hookshot folder (its romfs and mods folders), keeping the rest of `current`.
+/// Settings for a Hookshot folder (its romfs and mods folders, and the Blender found if none is set), keeping
+/// the rest of `current` (the projects folder is the user's to choose).
 #[tauri::command]
 fn settings_for_hookshot(dir: PathBuf, current: Settings) -> Settings {
     let fresh = Settings::for_hookshot(&dir);
     Settings {
         game_romfs: fresh.game_romfs,
         install_mods: fresh.install_mods,
-        workspace: if current.workspace.as_os_str().is_empty() {
-            fresh.workspace
-        } else {
-            current.workspace
-        },
         tools: modstudio_core::settings::Tools {
             blender: current.tools.blender.or(fresh.tools.blender),
             restbl: current.tools.restbl,

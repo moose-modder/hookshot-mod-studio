@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Context, Error, Result, tools};
 
+/// The settings file's name, beside the program.
+pub const SETTINGS_FILE: &str = "settings.json";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     /// The game, as the resource size table calculator names it.
@@ -79,25 +82,15 @@ impl Status {
 }
 
 impl Settings {
-    /// The settings file the CLI and the app share: `%APPDATA%\HookshotModStudio\settings.json` on Windows,
-    /// `$XDG_CONFIG_HOME/hookshot-mod-studio/settings.json` (or `~/.config/...`) elsewhere.
-    /// `MODSTUDIO_SETTINGS`, if set, names another file (to try things without changing the real settings).
+    /// The settings file: `settings.json` beside the program (the app's and the CLI's, when they sit in one
+    /// folder, are the same file), where it's easy to find. `MODSTUDIO_SETTINGS`, if set, names another file (to
+    /// try things without changing the real settings).
     pub fn default_path() -> Option<PathBuf> {
         if let Some(path) = std::env::var_os("MODSTUDIO_SETTINGS") {
             return Some(PathBuf::from(path));
         }
-        if cfg!(windows) {
-            std::env::var_os("APPDATA").map(|d| {
-                PathBuf::from(d)
-                    .join("HookshotModStudio")
-                    .join("settings.json")
-            })
-        } else {
-            std::env::var_os("XDG_CONFIG_HOME")
-                .map(PathBuf::from)
-                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-                .map(|d| d.join("hookshot-mod-studio").join("settings.json"))
-        }
+        let exe = std::env::current_exe().ok()?;
+        Some(exe.parent()?.join(SETTINGS_FILE))
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -191,7 +184,8 @@ impl Settings {
     pub fn status(&self) -> Status {
         let mut s = Status::default();
         if self.game_romfs.as_os_str().is_empty() {
-            s.problems.push("Choose your Hookshot folder".into());
+            s.problems
+                .push("Choose the game files folder (romfs, in your Hookshot folder)".into());
         } else if is_romfs(&self.game_romfs) {
             s.romfs = true;
             match self.game_version() {

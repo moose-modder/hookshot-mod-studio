@@ -49,8 +49,8 @@ Making mods (what the app does, with the same settings):
   modstudio mods [on <folder> | off <folder> | table]
       the mods in Hookshot's mods folder; turn one on or off; make the size table for all mods again
 
-These take --settings <file> (default: the app's settings.json, in %APPDATA%/HookshotModStudio on Windows,
-~/.config/hookshot-mod-studio elsewhere).
+These take --settings <file> (default: settings.json beside modstudio, which is the app's when the two sit in
+one folder).
 
 Model paths are relative to the romfs (Model/Npc_X.Npc_X.bfres.zs) or absolute. inspect, export, texture and
 decompress take --overlay <mod>/romfs (repeatable): files a mod has are read in place of the game's, as Hookshot
@@ -249,8 +249,9 @@ fn replace(args: &Args) -> Result<(), Failure> {
 fn settings_path(args: &Args) -> Result<PathBuf, Failure> {
     match args.option("settings") {
         Some(p) => Ok(PathBuf::from(p)),
-        None => Settings::default_path()
-            .ok_or_else(|| Failure::Failed("no settings folder (APPDATA or HOME)".into())),
+        None => Settings::default_path().ok_or_else(|| {
+            Failure::Failed("can't tell where modstudio is (for settings.json)".into())
+        }),
     }
 }
 

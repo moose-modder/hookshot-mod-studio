@@ -71,13 +71,37 @@
     <div class="row">
       <div class="label">
         <h3>Hookshot folder</h3>
-        <p class="muted">Holds <code>romfs</code> (the game's files) and <code>mods</code>.</p>
+        <p class="muted">Holds <code>romfs</code> and <code>mods</code>: choosing it fills in the two folders below.</p>
       </div>
       <div class="field">
         <div class="value" class:empty={!hookshot}>{hookshot || "Not chosen"}</div>
         <button onclick={chooseHookshot}>Choose…</button>
       </div>
       <div class="check">{@render tick(status.romfs && status.mods)}</div>
+    </div>
+
+    <div class="row">
+      <div class="label">
+        <h3>Game files</h3>
+        <p class="muted">The game's <code>romfs</code> folder. Only read, never changed.</p>
+      </div>
+      <div class="field">
+        <input type="text" bind:value={draft.game_romfs} placeholder="C:\Games\Hookshot\romfs" />
+        <button onclick={async () => { const d = await pickFolder("The game's romfs folder"); if (d) draft.game_romfs = d; }}>Choose…</button>
+      </div>
+      <div class="check">{@render tick(status.romfs)}</div>
+    </div>
+
+    <div class="row">
+      <div class="label">
+        <h3>Mods folder</h3>
+        <p class="muted">Hookshot's <code>mods</code> folder: mods are installed here.</p>
+      </div>
+      <div class="field">
+        <input type="text" bind:value={draft.install_mods} placeholder="C:\Games\Hookshot\mods" />
+        <button onclick={async () => { const d = await pickFolder("Hookshot's mods folder"); if (d) draft.install_mods = d; }}>Choose…</button>
+      </div>
+      <div class="check">{@render tick(status.mods)}</div>
     </div>
 
     <div class="row">
@@ -125,21 +149,6 @@
       </div>
       <div class="check">{@render tick(status.restbl)}</div>
     </div>
-
-    <details>
-      <summary class="muted">Advanced</summary>
-      <div class="row">
-        <div class="label"><h3>Game files (romfs)</h3></div>
-        <div class="field"><input type="text" bind:value={draft.game_romfs} /></div>
-        <div class="check">{@render tick(status.romfs)}</div>
-      </div>
-      <div class="row">
-        <div class="label"><h3>Mods folder</h3></div>
-        <div class="field"><input type="text" bind:value={draft.install_mods} /></div>
-        <div class="check">{@render tick(status.mods)}</div>
-      </div>
-      <p class="muted small">Settings file: <code>{view.path}</code></p>
-    </details>
   </section>
 
   {#if status.problems.length}
@@ -159,6 +168,7 @@
     </button>
     {#if savedNote}<span class="muted">Saved</span>{/if}
   </footer>
+  <p class="muted small">Saved in <code>{view.path}</code></p>
 </div>
 
 {#snippet tick(ok: boolean)}
@@ -195,7 +205,7 @@
     padding: 12px 0;
     border-bottom: 1px solid var(--border);
   }
-  details .row:last-of-type {
+  .form .row:last-child {
     border-bottom: none;
   }
   .label p {
@@ -234,16 +244,8 @@
     color: var(--muted);
     font-size: 12.5px;
   }
-  details {
-    padding: 10px 0;
-  }
-  summary {
-    cursor: pointer;
-    padding: 4px 0;
-  }
   .small {
     font-size: 12px;
-    padding-top: 6px;
   }
   footer {
     display: flex;
