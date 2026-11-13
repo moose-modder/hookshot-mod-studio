@@ -24,3 +24,6 @@ __pycache__/
 /app/node_modules/
 /app/dist/
 /app/src-tauri/gen/
+
+# Releases made by app/scripts/make_dist.py
+/dist/

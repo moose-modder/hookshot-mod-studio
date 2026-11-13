@@ -82,6 +82,10 @@ The Rust toolchain is pinned in `rust-toolchain.toml` (rustup picks it up). Wind
 WebKitGTK there: `libwebkit2gtk-4.1-dev`). A `cargo build` of the whole workspace builds the app with an empty page
 unless `npm run build` ran first.
 
+A release to hand out as a zip: `python app/scripts/make_dist.py` makes `dist/HookshotModStudio` (both programs, a
+blank `settings.json`, a README, the licenses of everything built in; no paths of the build PC in the programs)
+and `dist/hookshot-mod-studio-source.zip` (the source of the current commit, which goes with it).
+
 ## Rules
 
 - **No game files, and nothing made from them**, in the repo, issues or CI: models, textures, archives, exported
