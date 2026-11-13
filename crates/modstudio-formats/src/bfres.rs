@@ -361,6 +361,79 @@ pub struct Material {
     pub textures: Vec<String>,
     /// Sampler names (`_a0`, `_n0`, ...), in slot order.
     pub samplers: Vec<String>,
+    /// The shader program it uses and its parameter values (`None` if the material has no shader info).
+    pub shader: Option<ShaderAssign>,
+}
+
+/// A material's shader: the archive and shading model, and the material's parameter values.
+/// Layout from LegacySwitchLibraries `Model/Material/MaterialParserV10.cs` (`ShaderInfo`, `ShaderAssignV10`).
+#[derive(Debug, Clone, Default)]
+pub struct ShaderAssign {
+    pub archive: String,
+    pub model: String,
+    pub params: Vec<ShaderParam>,
+    /// Render settings (`gsys_alpha_test_enable`, `gsys_render_state_mode`, ...).
+    pub render_info: Vec<RenderInfo>,
+}
+
+/// A material's render setting (`RenderInfo.cs`: type 0 int, 1 float, 2 string).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderInfo {
+    pub name: String,
+    pub value: RenderValue,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RenderValue {
+    Ints(Vec<i32>),
+    Floats(Vec<f32>),
+    Strings(Vec<String>),
+}
+
+/// One shader parameter: its type (`ShaderParamType` in `ShaderParam.cs`: 0-3 bool, 4-7 int, 8-11 uint, 12-15
+/// float, 1 to 4 values each; 17-27 float matrices; 28 Srt2D, 29 Srt3D, 30 TexSrt, 31 TexSrtEx) and raw value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShaderParam {
+    pub name: String,
+    pub kind: u16,
+    pub data: Vec<u8>,
+}
+
+impl ShaderParam {
+    /// The value's size in bytes for a parameter type.
+    pub fn size_of(kind: u16) -> usize {
+        match kind {
+            0..=15 => 4 * (kind as usize % 4 + 1),
+            17 => 16,
+            18 | 21 => 24,
+            19 | 25 => 32,
+            22 => 36,
+            23 | 26 => 48,
+            27 => 64,
+            28 => 20,
+            29 => 36,
+            30 => 24,
+            31 => 32,
+            _ => 0,
+        }
+    }
+
+    /// The value as 32-bit floats (bool, int and uint values as their numbers; TexSrt: mode, scale, rotation,
+    /// translation).
+    pub fn floats(&self) -> Vec<f32> {
+        self.data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(i, b)| match self.kind {
+                0..=7 => i32::from_le_bytes(*b) as f32,
+                8..=11 => u32::from_le_bytes(*b) as f32,
+                30 | 31 if i == 0 => u32::from_le_bytes(*b) as f32,
+                _ => f32::from_le_bytes(*b),
+            })
+            .collect()
+    }
 }
 
 impl<'a> Bfres<'a> {
@@ -680,12 +753,129 @@ impl Material {
             .map(|i| r.string(texture_names + i * 8))
             .collect::<Result<Vec<_>>>()?;
         let samplers = r.dict_keys(at + 0x38)?;
+        let shader = ShaderAssign::parse(
+            r,
+            d.offset_at(at + 0x10)?,
+            d.offset_at(at + 0x58)?,
+            [
+                d.offset_at(at + 0x40)?,
+                d.offset_at(at + 0x48)?,
+                d.offset_at(at + 0x50)?,
+            ],
+        )?;
         Ok(Material {
             at,
             name,
             textures,
             samplers,
+            shader,
         })
+    }
+}
+
+impl ShaderAssign {
+    /// From the material's shader info (`info`), its parameter values (`values`) and its render info tables
+    /// (`render`: data, counts, data offsets); `None` if `info` is null.
+    fn parse(
+        r: &Reader<'_, '_>,
+        info: usize,
+        values: usize,
+        render: [usize; 3],
+    ) -> Result<Option<Self>> {
+        if info == 0 {
+            return Ok(None);
+        }
+        let d = r.data;
+        let assign = d.offset_at(info)?;
+        if assign == 0 {
+            return Ok(None);
+        }
+        let archive = r.string(assign)?;
+        let model = r.string(assign + 0x08)?;
+        let param_list = d.offset_at(assign + 0x20)?;
+        let count = d.u16_at(assign + 0x4A)? as usize;
+        let mut params = Vec::with_capacity(count);
+        for i in 0..count {
+            // 24 bytes: padding, name, value offset, type, padding
+            let entry = param_list + i * 24;
+            let kind = d.u16_at(entry + 18)?;
+            let at = values + d.u16_at(entry + 16)? as usize;
+            let data = if values == 0 {
+                Vec::new()
+            } else {
+                d.slice_at(at, ShaderParam::size_of(kind))?.to_vec()
+            };
+            params.push(ShaderParam {
+                name: r.string(entry + 8)?,
+                kind,
+                data,
+            });
+        }
+        // Render info: 16-byte entries (name, type); per entry a u16 count and a u16 offset into the data.
+        let info_list = d.offset_at(assign + 0x10)?;
+        let info_count = d.u16_at(assign + 0x48)? as usize;
+        let [data, counts, offsets] = render;
+        let mut render_info = Vec::with_capacity(info_count);
+        if data != 0 && counts != 0 && offsets != 0 {
+            for i in 0..info_count {
+                let entry = info_list + i * 16;
+                let n = d.u16_at(counts + i * 2)? as usize;
+                let at = data + d.u16_at(offsets + i * 2)? as usize;
+                let value = match d.u8_at(entry + 8)? {
+                    0 => RenderValue::Ints(
+                        (0..n)
+                            .map(|k| d.u32_at(at + k * 4).map(|v| v as i32))
+                            .collect::<Result<_>>()?,
+                    ),
+                    1 => RenderValue::Floats(
+                        (0..n)
+                            .map(|k| d.f32_at(at + k * 4))
+                            .collect::<Result<_>>()?,
+                    ),
+                    _ => RenderValue::Strings(
+                        (0..n)
+                            .map(|k| r.string(at + k * 8))
+                            .collect::<Result<_>>()?,
+                    ),
+                };
+                render_info.push(RenderInfo {
+                    name: r.string(entry)?,
+                    value,
+                });
+            }
+        }
+        Ok(Some(ShaderAssign {
+            archive,
+            model,
+            params,
+            render_info,
+        }))
+    }
+
+    /// A float render setting's first value.
+    pub fn render_float(&self, name: &str) -> Option<f32> {
+        self.render_info
+            .iter()
+            .find(|i| i.name == name)
+            .and_then(|i| match &i.value {
+                RenderValue::Floats(v) => v.first().copied(),
+                _ => None,
+            })
+    }
+
+    /// A string render setting's first value.
+    pub fn render_string(&self, name: &str) -> Option<&str> {
+        self.render_info
+            .iter()
+            .find(|i| i.name == name)
+            .and_then(|i| match &i.value {
+                RenderValue::Strings(s) => s.first().map(String::as_str),
+                _ => None,
+            })
+    }
+
+    pub fn param(&self, name: &str) -> Option<&ShaderParam> {
+        self.params.iter().find(|p| p.name == name)
     }
 }
 

@@ -6,6 +6,14 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+# "Unmaintained" notices for compile-time macro crates (no code of theirs runs in the tools), kept until the crates
+# that use them move on:
+ignore = [
+    # paste, through texture2ddecoder (ASTC/BCn decoding)
+    { id = "RUSTSEC-2024-0436", reason = "build-time macro of texture2ddecoder" },
+    # proc-macro-error, through gtk-rs 0.18 (glib-macros), Tauri's Linux window stack
+    { id = "RUSTSEC-2024-0370", reason = "build-time macro of Tauri's GTK 3 stack (Linux)" },
+]
 
 [licenses]
 version = 2
@@ -21,6 +29,9 @@ allow = [
     "Unicode-3.0",
     "Unlicense",
     "GPL-3.0-or-later",
+    # The app (Tauri): cssparser, selectors, dtoa-short (HTML/CSS parsing in tauri-utils) and option-ext. File-level
+    # copyleft, compatible with the GPL-3.0 (MPL-2.0 section 3.3).
+    "MPL-2.0",
 ]
 
 [bans]

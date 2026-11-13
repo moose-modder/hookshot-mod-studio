@@ -8,11 +8,12 @@ editing and baking happen in the user's Blender.
 
 | Piece | Today | Target |
 |---|---|---|
-| Read a model and its textures | Toolbox `inspect-model` / `export-model` (FBX through Autodesk's SDK) | `modstudio inspect` / `export` → `.glb` + PNG (**done**, phase 1; `extract_model.py` uses it) |
-| Scene creation, baking, export from Blender | `pipeline/*.py` in Blender | scenes made from the `.glb` (**done**); the build still exports FBX for Toolbox, glTF once `modstudio replace` exists |
-| Rebuild the model and textures | Toolbox `replace-model` | `modstudio replace` (**done**; `build_mod.py` uses it) |
+| Read a model and its textures | Toolbox `inspect-model` / `export-model` (FBX through Autodesk's SDK) | `modstudio inspect` / `export` → `.glb` + PNG (**done**, phase 1) |
+| Scene creation, baking, export from Blender | `pipeline/*.py` in Blender | scenes made from the `.glb`, glTF export for the build (**done**) |
+| Rebuild the model and textures | Toolbox `replace-model` | `modstudio replace` (**done**) |
+| Run the steps (new project, build, install) | Python scripts (`extract_model.py`, `build_mod.py`, `restbl_all.py`) | `modstudio-core` (`project`, `build`, `mods`), used by the CLI and the app (**done**; the Python scripts are gone) |
 | Resource size table | `restbl.exe` (RESTBL Calculator, AGPL) | own implementation, or Hookshot adjusts the table for mod files itself |
-| GUI | none | Tauri: Rust core, web UI, three.js previews from the `.glb` files |
+| GUI | none | Tauri: Rust core, web UI, three.js previews (**first version done**, phase 4) |
 
 ## Phases
 
@@ -83,7 +84,7 @@ Rules taken from the files (all checked against the dump):
 Also done: `modstudio replace` reads Blender's glTF export (each mesh replaces the game shape of its name;
 skinning back to the shape's matrices and skin count, rigid and unskinned vertices back to their bone's space;
 every LOD gets the new mesh), and writes changed textures (BC1/BC3/BC4/BC5/BC7 encoders, BNTX writer; ASTC as
-BC5/BC4/BC7). `build_mod.py` uses it, so the pipeline no longer needs Toolbox.
+BC5/BC4/BC7). The build uses it, so the pipeline no longer needs Toolbox.
 
 Checked locally: the unedited Great Fairy round trip matches the game's model as well as the Toolbox build did
 (better for 5-influence meshes); the edited Great Fairy scene builds, and matches the Toolbox build of the same
@@ -113,6 +114,68 @@ into the face) loads and shows the edit.
 Left: more bone influences than a mesh's skin count (new vertex attributes; the shader may not have the
 variant), real new meshes, materials or bones in the file (writing the whole file, names in the shared string
 table), meshlet shapes, the resource size table (phase 3).
+
+## Phase 4: the app (first version)
+
+The steps the Python scripts ran (a new project, the build, install, one size table for all mods) are in
+`modstudio-core` now, so the CLI (`modstudio new`, `build`, `mods`, `settings`, `models`) and the app share them
+and nobody needs Python outside Blender. Blender's scripts are built in and written out before a run. Checked
+locally: the townsman built this way is byte-identical to the Python build (model, five textures, size table), and
+an install plus turning mods off and on gives the same shared table.
+
+The app (`app/`, Tauri 2, Svelte 5, three.js):
+- **Settings**: the Hookshot folder (romfs and mods), the projects folder, Blender (found if installed in the usual
+  places), `restbl`; each checked (Blender's version, the game's version from its own size table).
+- **Models**: the game's models by kind, searchable (map pieces hidden unless asked), mods and projects marked; a
+  3D view (`preview`: one `.glb` with the base colour textures in it, cut-outs alpha-masked; about 0.1 s for a
+  townsman) and the model's meshes; *Make a project*.
+- **Projects**: open the scene in Blender, *Build* / *Build and install* with the steps shown as they run (and
+  Cancel), the last build's report (meshes kept or replaced, textures, warnings, the build check with its
+  pictures), the 3D view of the mod or the game's model.
+- **Installed mods**: on and off (the folder renamed with '-'), the shared size table made again.
+
+Checked by driving the page through WebView2's DevTools port (`MODSTUDIO_WEBVIEW_ARGS`; settings pointed elsewhere
+with `MODSTUDIO_SETTINGS`): a new project from the model list, a build with install into a scratch mods folder, the
+check's result, mods off and on. Not yet: an installer people download (`npm run tauri build` makes one locally;
+releases need a CI job), thumbnails in the model list, friendlier model names.
+
+## Materials: shader parameters and eyes
+
+Materials are read with their shader parameters now (`bfres::ShaderAssign`, from LegacySwitchLibraries'
+`MaterialParserV10.cs`; all models still parse and write back unchanged). Characters' materials use generic
+slots (`ns_param_scalar0..7`, `ns_param_color0..5`, `ns_tex_mtx0..5`); `examples/material_params.rs` lists them
+for a model, or one material's across every model.
+
+Each material gets a `look` in `model.json` (`look.rs`): how to draw it with one base colour, which the app's 3D
+view and the Blender scene follow. The colour comes from the texture on the colour sampler (`_a0`), not from
+texture names: eye shadows (about 75 materials) bind a texture named `..._Alb` to a mask sampler (`_gn3`), and
+drawn as colour it covered the eyes in red.
+
+Eyes (`Mt_Eye_Inner`, `eyes.rs`): iris `_a0`, sclera `_a1`, iris mask `_gn3`. The iris and its mask are sampled
+at the eye's UVs scaled about the centre by `ns_param_scalar3` (larger: a smaller iris; 0.55 for Gorons and
+horses up to 3.3 for Kotake; the cornea material has the same value in its `ns_param_scalar4`), the sclera at the
+eye's own UVs. Worked out from the textures and values, not from the shader's code, and checked by rendering:
+with the mask in the eye's own UV space instead, the iris covers the whole visible eye. The cornea
+(`Mt_Eye_Outer`) and eye shadows are left out of the base colour (see-through).
+
+Render settings are read too (`RenderInfo`: `gsys_render_state_mode` opaque / mask / translucent,
+`gsys_alpha_test_*`, `gsys_render_state_display_face`), and decide alpha (`model.json`'s `alpha`): opaque
+materials keep data in their colour texture's alpha (the Zoras' skin: alpha 0 over 64% of the texture), so
+treating alpha as opacity made their bodies disappear. In Blender the textures are loaded "channel packed" (no
+premultiplying, which drew that colour black), and the build carries such alpha over as data when it re-bakes
+faces (checked: an edited patch on Ruto's skin keeps the original's alpha values).
+
+Tints (`model.json`'s `tint`): a grey colour texture, or one the game doesn't have, takes the material's
+`ns_param_color0` (linear RGB). Across the characters, 122 grey textures have a colour there and they are each
+character's colours (shared eyebrow and eyelash textures: Zelda's eyebrows blond, Impa's silver); 30 materials
+name a colour texture the game doesn't have (child Link's hair: the tint is the colour); coloured textures with
+a tint (748, e.g. Zelda's hair) are left alone. `examples/colour_survey.rs` lists them. A re-baked texture the
+game tints gets a warning (the bake's colour would be tinted again).
+
+Found on the way: 154 meshes (128 on characters, e.g. child Zelda's hair) keep data in 16-bit float vertex colours
+with values above 1, and 25 in signed ones. Blender holds imported vertex colours as 8-bit sRGB, so these come
+back rounded and clamped: the build counts such a mesh as edited and writes the changed values. To fix: carry
+those colour sets through Blender as float attributes.
 
 ## Risks and how they are contained
 

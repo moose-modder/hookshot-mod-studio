@@ -1,0 +1,26 @@
+[package]
+name = "modstudio-app"
+description = "Hookshot Mod Studio, the app: pick a model, edit it in Blender, build and install the mod"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "hookshot-mod-studio"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[dependencies]
+modstudio-core = { path = "../../crates/modstudio-core" }
+modstudio-formats = { path = "../../crates/modstudio-formats" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tauri = { version = "2.12.5", features = [] }
+tauri-plugin-dialog = "2.8.4"

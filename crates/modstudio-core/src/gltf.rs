@@ -116,22 +116,118 @@ impl Glb {
         doc.insert("buffers".into(), json!([{"byteLength": self.bin.len()}]));
         doc.insert("bufferViews".into(), Value::Array(self.views));
         doc.insert("accessors".into(), Value::Array(self.accessors));
-        let mut text = serde_json::to_vec(&Value::Object(doc)).expect("JSON serialises");
-        text.resize(text.len().next_multiple_of(4), b' ');
-
-        let total = 12 + 8 + text.len() + 8 + self.bin.len();
-        let mut out = Vec::with_capacity(total);
-        out.extend_from_slice(b"glTF");
-        out.extend_from_slice(&2u32.to_le_bytes());
-        out.extend_from_slice(&(total as u32).to_le_bytes());
-        out.extend_from_slice(&(text.len() as u32).to_le_bytes());
-        out.extend_from_slice(b"JSON");
-        out.extend_from_slice(&text);
-        out.extend_from_slice(&(self.bin.len() as u32).to_le_bytes());
-        out.extend_from_slice(b"BIN\0");
-        out.extend_from_slice(&self.bin);
-        out
+        assemble(&Value::Object(doc), &self.bin)
     }
+}
+
+/// A `.glb` file from its JSON and binary chunk (`bin`'s length a multiple of 4).
+fn assemble(doc: &Value, bin: &[u8]) -> Vec<u8> {
+    let mut text = serde_json::to_vec(doc).expect("JSON serialises");
+    text.resize(text.len().next_multiple_of(4), b' ');
+    let total = 12 + 8 + text.len() + 8 + bin.len();
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(b"glTF");
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&(total as u32).to_le_bytes());
+    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(&text);
+    out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"BIN\0");
+    out.extend_from_slice(bin);
+    out
+}
+
+/// `glb` with its images (`"uri": "<name>.png"`) stored in the file, from `pngs` by image name; images not in
+/// `pngs` are dropped, with the textures and material slots that use them. For a preview that is one file.
+pub fn embed_images(
+    glb: &[u8],
+    pngs: &std::collections::BTreeMap<String, Vec<u8>>,
+) -> crate::Result<Vec<u8>> {
+    let (mut doc, bin) = split(glb).ok_or_else(|| crate::Error("not a .glb file".into()))?;
+    let mut bin = bin.to_vec();
+    let images = doc
+        .get("images")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    // Old image index -> new texture index (one texture per image, as model_glb makes them).
+    let mut kept_images = Vec::new();
+    let mut texture_of = vec![None; images.len()];
+    let mut views = doc["bufferViews"].as_array().cloned().unwrap_or_default();
+    for (i, image) in images.iter().enumerate() {
+        let Some(png) = image["name"].as_str().and_then(|n| pngs.get(n)) else {
+            continue;
+        };
+        bin.resize(bin.len().next_multiple_of(4), 0);
+        views.push(json!({"buffer": 0, "byteOffset": bin.len(), "byteLength": png.len()}));
+        bin.extend_from_slice(png);
+        texture_of[i] = Some(kept_images.len());
+        kept_images.push(
+            json!({"name": image["name"], "bufferView": views.len() - 1, "mimeType": "image/png"}),
+        );
+    }
+    bin.resize(bin.len().next_multiple_of(4), 0);
+    let old_textures = doc
+        .get("textures")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let new_texture = |t: &Value| -> Option<usize> {
+        let old = t["index"].as_u64()? as usize;
+        let source = old_textures.get(old)?["source"].as_u64()? as usize;
+        *texture_of.get(source)?
+    };
+    if let Some(materials) = doc.get_mut("materials").and_then(Value::as_array_mut) {
+        for m in materials {
+            let Some(m) = m.as_object_mut() else { continue };
+            for slot in ["normalTexture", "occlusionTexture", "emissiveTexture"] {
+                if let Some(t) = m.get(slot).cloned() {
+                    match new_texture(&t) {
+                        Some(n) => m[slot]["index"] = json!(n),
+                        None => {
+                            m.remove(slot);
+                        }
+                    }
+                }
+            }
+            if let Some(pbr) = m
+                .get_mut("pbrMetallicRoughness")
+                .and_then(Value::as_object_mut)
+            {
+                for slot in ["baseColorTexture", "metallicRoughnessTexture"] {
+                    if let Some(t) = pbr.get(slot).cloned() {
+                        match new_texture(&t) {
+                            Some(n) => pbr[slot]["index"] = json!(n),
+                            None => {
+                                pbr.remove(slot);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let doc_obj = doc.as_object_mut().expect("glTF JSON is an object");
+    doc_obj.remove("images");
+    doc_obj.remove("textures");
+    if !kept_images.is_empty() {
+        let textures: Vec<Value> = (0..kept_images.len())
+            .map(|i| json!({"source": i}))
+            .collect();
+        doc_obj.insert("images".into(), Value::Array(kept_images));
+        doc_obj.insert("textures".into(), Value::Array(textures));
+    }
+    doc_obj.insert("bufferViews".into(), Value::Array(views));
+    doc_obj.insert("buffers".into(), json!([{"byteLength": bin.len()}]));
+    Ok(assemble(&doc, &bin))
+}
+
+/// `glb` with its JSON changed by `edit` (the binary chunk as it is).
+pub fn edit_json(glb: &[u8], edit: impl FnOnce(&mut Value)) -> crate::Result<Vec<u8>> {
+    let (mut doc, bin) = split(glb).ok_or_else(|| crate::Error("not a .glb file".into()))?;
+    edit(&mut doc);
+    Ok(assemble(&doc, bin))
 }
 
 /// Splits a `.glb` into its JSON and binary chunk (for tests and checks).

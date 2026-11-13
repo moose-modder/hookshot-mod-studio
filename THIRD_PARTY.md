@@ -21,5 +21,14 @@ library.
 ## Not shipped
 
 - **Blender** is installed by the user; the scripts in `pipeline/` run inside it.
+- **RESTBL Calculator** (`restbl`, AGPL-3.0) is installed by the user and run as a separate program for the
+  resource size table, until the table is worked out here (`docs/plan.md`, phase 3).
+
+## Dependencies
+
 - Rust crates are listed in `Cargo.lock` and checked by `cargo deny` (`deny.toml`). The larger ones: `ruzstd`
-  (zstd, MIT), `texture2ddecoder` (ASTC and BC decoding, MIT/Apache-2.0), `png`, `serde_json`.
+  (zstd, MIT), `texture2ddecoder` (ASTC and BC decoding, MIT/Apache-2.0), `png`, `serde_json`; for the app,
+  `tauri` and `tauri-plugin-dialog` (MIT/Apache-2.0), whose HTML/CSS crates are MPL-2.0.
+- The app's web side (`app/package.json`, locked in `app/package-lock.json`): `three` (MIT, the 3D view),
+  `svelte` (MIT), `@tauri-apps/api` and `@tauri-apps/plugin-dialog` (MIT/Apache-2.0); to build it, `vite` (MIT),
+  `typescript` (Apache-2.0) and `@tauri-apps/cli` (MIT/Apache-2.0).

@@ -4,7 +4,6 @@ __pycache__/
 
 # Personal settings and project files (they hold local paths)
 /pipeline/*.json
-!/pipeline/config.example.json
 
 # Anything made from the game is never committed: models, textures, archives, scenes, exports
 *.zs
@@ -20,3 +19,8 @@ __pycache__/
 *.gltf
 /workspace/
 /mods/
+
+# The app: npm packages, the built web page, Tauri's generated schemas
+/app/node_modules/
+/app/dist/
+/app/src-tauri/gen/

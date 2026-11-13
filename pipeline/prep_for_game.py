@@ -1,6 +1,6 @@
 """Prepares a Blender scene for building the mod (modstudio replace, or Switch Toolbox's replace-model).
 
-Run by build_mod.py:
+Run by the build (crates/modstudio-core/src/build.rs: the app, `modstudio build`):
     blender --background scene.blend --python prep_for_game.py -- --config prep_config.json
 
 Exports glTF for modstudio replace (config glb_name) or FBX for Switch Toolbox's replace-model (fbx_name).
@@ -525,9 +525,41 @@ def texture_kind(name):
     return m.group(1) if m else ""
 
 
+# Roles model.json's material looks give, over the names: a texture named "..._Alb" on a mask sampler (eye
+# shadows bind theirs to _gn3) is no colour. Filled by learn_roles().
+LOOK_ROLES = {}
+# Colour textures whose alpha isn't opacity (only opaque materials use them: the Zoras' skin keeps other data
+# there), and colour textures the game tints (grey ones: a baked colour would be tinted again).
+DATA_ALPHA = set()
+TINTED = set()
+
+
+def learn_roles(model):
+    """Textures named like colour textures that no material's look draws as colour count as "aux"; colour
+    textures of opaque materials keep their alpha as data. From model.json's material looks."""
+    colours = set()
+    named = set()
+    opaque, see_through = set(), set()
+    for m in model["materials"]:
+        look = m.get("look")
+        if look is None:
+            return  # an older model.json: the names decide
+        colours.update(look.get(k) for k in ("texture", "iris", "sclera") if look.get(k))
+        named.update(t for t in m["textures"] if texture_kind(t) == "Alb")
+        if look.get("texture"):
+            mode = (m.get("alpha") or {}).get("mode")
+            (opaque if mode == "opaque" else see_through).add(look["texture"])
+            if m.get("tint"):
+                TINTED.add(look["texture"])
+    LOOK_ROLES.update({t: "aux" for t in named - colours})
+    DATA_ALPHA.update(opaque - see_through)
+
+
 def texture_role(name, roles):
     if name in roles:
         return roles[name]
+    if name in LOOK_ROLES:
+        return LOOK_ROLES[name]
     return {"Alb": "color", "Nrm": "normal"}.get(texture_kind(name), "aux")
 
 
@@ -539,6 +571,8 @@ def plain_name(name):
 def load_image(path, colorspace):
     img = bpy.data.images.load(path, check_existing=False)
     img.colorspace_settings.name = colorspace
+    # colour and alpha apart: alpha may be data (the Zoras' skin), and premultiplying blackens the colour there
+    img.alpha_mode = 'CHANNEL_PACKED'
     return img
 
 
@@ -1291,7 +1325,7 @@ def bake_group(objs, infos, textures, cfg, rep):
         if m:
             found = colour_versions(textures.src, m.group(1))
             if not found:
-                rep.error(f"{t} has colour versions, but they aren't in {textures.src} (build_mod.py decodes them); "
+                rep.error(f"{t} has colour versions, but they aren't in {textures.src} (the build decodes them); "
                           f"the others wouldn't get the baked faces")
             tasks += [(v, t) for v in found]
     guide = None
@@ -1367,8 +1401,13 @@ def bake_group(objs, infos, textures, cfg, rep):
                 run_bake(users, role, LAYOUT, cfg.get("bake_margin", 3))
             px = image_pixels(out)
 
-            # Alpha of the colour texture (when it isn't constant): the faces' materials' opacity
+            if role == "color" and (version_of or name) in TINTED:
+                rep.warn(f"{name}: the game tints this texture with its material's colour, so the baked "
+                         f"colours come out tinted again in the game")
+            # Alpha of the colour texture (when it isn't constant): the faces' materials' opacity; for an opaque
+            # material, whose alpha is data, the original's alpha where each moved face was
             if role == "color" and np.ptp(src_px[..., 3]) > 1.5 / 255:
+                data_alpha = (version_of or name) in DATA_ALPHA
                 alpha = temp.image("PREP_alpha_" + name, w, h, 'Non-Color')
                 alpha_px = src_px.copy()
                 alpha_px[..., 0] = src_px[..., 3]
@@ -1385,6 +1424,8 @@ def bake_group(objs, infos, textures, cfg, rep):
                                 copies[i] = opacity_copy(m, temp)
                                 set_target(copies[i], alpha)
                             return copies[i]
+                        if data_alpha:
+                            make = sampled(o, "alpha", alpha)
                         stack.enter_context(face_materials(o, infos[o]["moved"], make, dummy))
                     run_bake(users, "aux", LAYOUT, cfg.get("bake_margin", 3))
                 px[..., 3] = image_pixels(alpha)[..., 0]
@@ -1520,6 +1561,7 @@ def main():
     vanilla = json.load(open(cfg["vanilla_json"], encoding="utf-8"))
     model = vanilla["models"][cfg.get("model_index", 0)]
     vanilla_meshes = {m["name"]: m for m in model["meshes"]}
+    learn_roles(model)
 
     os.makedirs(os.path.join(cfg["output"], "textures"), exist_ok=True)
     for f in os.listdir(os.path.join(cfg["output"], "textures")):

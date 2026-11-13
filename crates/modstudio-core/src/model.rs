@@ -11,6 +11,7 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use crate::gltf::Glb;
+use crate::look::{AlphaMode, Appearance, Look, TextureKind, appearance, appearances};
 use crate::math::{self, Mat4};
 use crate::{Context, Error, Result};
 
@@ -73,6 +74,10 @@ pub struct MaterialInfo {
     pub name: String,
     pub textures: Vec<String>,
     pub samplers: Vec<String>,
+    /// How it's drawn with one base colour, its tint and alpha (the app's 3D view, the Blender scene;
+    /// `look.rs`): keys `look`, `tint`, `alpha`.
+    #[serde(flatten)]
+    pub appearance: Appearance,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,6 +124,16 @@ pub fn texture_names(bfres: &Bfres) -> Vec<String> {
     out
 }
 
+/// Whether texture `name` has `role` ("_Alb", "_Nrm"): `<base>_Alb`, or one of its colour versions
+/// `<base>_Alb.0`, `<base>_Alb.1`, ... (clothes the game tints per character).
+pub fn has_role(name: &str, role: &str) -> bool {
+    let base = match name.rsplit_once('.') {
+        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => name,
+    };
+    base.ends_with(role)
+}
+
 fn texture_path(romfs: &Romfs, name: &str) -> PathBuf {
     romfs.resolve(Path::new(TEXTURE_DIR).join(format!("{name}.bntx.zs")))
 }
@@ -134,10 +149,12 @@ pub fn inspect(romfs: &Romfs, decoder: &mut Decoder, bfres: &Bfres) -> Result<In
             materials: m
                 .materials
                 .iter()
-                .map(|mat| MaterialInfo {
+                .zip(appearances(romfs, decoder, m))
+                .map(|(mat, appearance)| MaterialInfo {
                     name: mat.name.clone(),
                     textures: mat.textures.clone(),
                     samplers: mat.samplers.clone(),
+                    appearance,
                 })
                 .collect(),
         })
@@ -242,7 +259,8 @@ pub fn export_lod(
         .models
         .first()
         .ok_or_else(|| Error(format!("{}: no models", model_path.display())))?;
-    let (glb, meshes, skipped) = model_glb_lod(model, &summary.textures, lod)?;
+    let looks = appearances(romfs, &mut decoder, model);
+    let (glb, meshes, skipped) = model_glb_lod(model, &summary.textures, lod, &looks)?;
     summary.glb = out_dir.join(format!("{}.glb", model.name));
     write(&summary.glb, &glb)?;
     summary.meshes = meshes;
@@ -498,15 +516,24 @@ fn shape_geometry(
 
 /// The model as `.glb`: the skeleton as nodes, one skinned mesh per shape (LOD 0), materials with their
 /// textures (`<texture>.png` beside the file). Returns the file, the number of meshes and the shapes left out.
+/// (Materials as their samplers and render settings say, without tints: [`model_glb_lod`] takes the
+/// appearances read with the textures.)
 pub fn model_glb(model: &Model, textures: &[String]) -> Result<(Vec<u8>, usize, Vec<String>)> {
-    model_glb_lod(model, textures, 0)
+    let looks: Vec<Appearance> = model
+        .materials
+        .iter()
+        .map(|m| appearance(m, |_| TextureKind::Coloured))
+        .collect();
+    model_glb_lod(model, textures, 0, &looks)
 }
 
-/// [`model_glb`] with each shape's LOD `lod` (a shape with fewer LODs: its last).
+/// [`model_glb`] with each shape's LOD `lod` (a shape with fewer LODs: its last) and each material's
+/// appearance (`looks`, in material order: [`crate::look::appearances`]).
 pub fn model_glb_lod(
     model: &Model,
     textures: &[String],
     lod: usize,
+    looks: &[Appearance],
 ) -> Result<(Vec<u8>, usize, Vec<String>)> {
     let (_, world) = bone_matrices(model)?;
     let bones = &model.skeleton.bones;
@@ -566,24 +593,49 @@ pub fn model_glb_lod(
     let materials: Vec<Value> = model
         .materials
         .iter()
-        .map(|mat| {
+        .enumerate()
+        .map(|(i, mat)| {
             let mut m = json!({
                 "name": mat.name,
                 "pbrMetallicRoughness": {"metallicFactor": 0.0, "roughnessFactor": 1.0},
                 "extras": {"textures": mat.textures, "samplers": mat.samplers},
             });
-            if let Some(t) = mat
-                .textures
-                .iter()
-                .find(|t| t.ends_with("_Alb"))
-                .and_then(|t| texture_of(t))
-            {
+            let fallback;
+            let app = match looks.get(i) {
+                Some(a) => a,
+                None => {
+                    fallback = appearance(mat, |_| TextureKind::Coloured);
+                    &fallback
+                }
+            };
+            if app.look == Look::Overlay {
+                m["alphaMode"] = json!("BLEND");
+                m["pbrMetallicRoughness"]["baseColorFactor"] = json!([1.0, 1.0, 1.0, 0.0]);
+            } else {
+                if let Some([r, g, b]) = app.tint {
+                    m["pbrMetallicRoughness"]["baseColorFactor"] = json!([r, g, b, 1.0]);
+                }
+                if let Some(alpha) = app.alpha {
+                    match alpha.mode {
+                        AlphaMode::Opaque => {}
+                        AlphaMode::Mask => {
+                            m["alphaMode"] = json!("MASK");
+                            m["alphaCutoff"] = json!(alpha.cutoff);
+                        }
+                        AlphaMode::Blend => m["alphaMode"] = json!("BLEND"),
+                    }
+                    if alpha.double_sided {
+                        m["doubleSided"] = json!(true);
+                    }
+                }
+            }
+            if let Some(t) = app.look.color_texture().and_then(&mut texture_of) {
                 m["pbrMetallicRoughness"]["baseColorTexture"] = json!({"index": t});
             }
             if let Some(t) = mat
                 .textures
                 .iter()
-                .find(|t| t.ends_with("_Nrm"))
+                .find(|t| has_role(t, "_Nrm"))
                 .and_then(|t| texture_of(t))
             {
                 m["normalTexture"] = json!({"index": t});

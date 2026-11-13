@@ -5,12 +5,31 @@
 //!   textures as PNG, and `model.json`, for Blender and previews
 //! - [`replace::replace_model`]: the model rebuilt from Blender's glTF export of the scene
 //! - [`texture::replace_textures`]: changed textures (PNG) written in the game's format
+//!
+//! And the workflow the CLI and the app share:
+//!
+//! - [`settings::Settings`]: where the game, the mods folder, the workspace and the tools are
+//! - [`catalog::list`]: the game's models by kind; [`preview::preview`]: one as a self-contained `.glb`
+//! - [`project::create`]: a project for a model (export, Blender scene, `project.json`)
+//! - [`build::build`]: the mod built from the edited scene, checked, and installed
+//! - [`mods`]: Hookshot's mods folder: mods on and off, one resource size table for all of them
 
+pub mod build;
+pub mod catalog;
+pub mod eyes;
+mod fsutil;
 pub mod gltf;
+pub mod look;
 pub mod math;
 pub mod model;
+pub mod mods;
+pub mod preview;
+pub mod progress;
+pub mod project;
 pub mod replace;
+pub mod settings;
 pub mod texture;
+pub mod tools;
 
 use std::fmt;
 

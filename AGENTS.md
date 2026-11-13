@@ -17,4 +17,11 @@ Read [README.md](README.md) and [docs/plan.md](docs/plan.md) first.
 - **Dependencies** must pass `cargo deny check` (`deny.toml`). Prefer writing small, well-defined parts (BC1/4/5
   encoding, SARC) over adding crates; never add prebuilt binaries.
 - `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` must pass.
-- The Python in `pipeline/` runs inside Blender 5.x (`bpy`); keep it working with the pinned Blender version.
+- The Python in `pipeline/` runs inside Blender 5.x (`bpy`); keep it working with the pinned Blender version. The
+  CLI and the app carry these scripts built in (`include_str!` in `modstudio-core/src/tools.rs`): rebuild after
+  changing one, or set `MODSTUDIO_PIPELINE` to the `pipeline` folder to use it as it is.
+- The app (`app/`): `npm ci`, then `npm run check` (svelte-check, no warnings) and `npm run build` must pass. Its
+  Rust side only calls `modstudio-core`; put new behaviour there, where the CLI gets it too and tests can reach it.
+- Checking the app's page: start it with `MODSTUDIO_WEBVIEW_ARGS=--remote-debugging-port=<port>` and drive it
+  through DevTools; `MODSTUDIO_SETTINGS=<file>` points it at other folders so real projects and mods stay as
+  they are. Never screenshot the desktop (other windows are the user's).
