@@ -172,10 +172,14 @@ name a colour texture the game doesn't have (child Link's hair: the tint is the 
 a tint (748, e.g. Zelda's hair) are left alone. `examples/colour_survey.rs` lists them. A re-baked texture the
 game tints gets a warning (the bake's colour would be tinted again).
 
-Found on the way: 154 meshes (128 on characters, e.g. child Zelda's hair) keep data in 16-bit float vertex colours
-with values above 1, and 25 in signed ones. Blender holds imported vertex colours as 8-bit sRGB, so these come
-back rounded and clamped: the build counts such a mesh as edited and writes the changed values. To fix: carry
-those colour sets through Blender as float attributes.
+Vertex colours: 154 meshes (128 on characters, e.g. child Zelda's hair) keep data in 16-bit float vertex colours
+with values above 1, and 25 in signed ones. Blender holds imported vertex colours as 8-bit sRGB and its glTF export
+clamps them to 0..1, so these came back changed and the mesh counted as edited. Every colour set now travels as
+the custom glTF attribute `_C<n>` (named after the game's `_c<n>`) with the game's values: Blender imports it as a
+float colour layer of that name, exports it exactly with `export_attributes`, and the build reads it by name
+(scenes made before still build from `COLOR_n`). Checked: an unedited child Zelda keeps every mesh (her hair was
+rebuilt before), and with a hair vertex moved the rebuilt hair has exactly the game's colour values, the 9 above 1
+included.
 
 ## Risks and how they are contained
 

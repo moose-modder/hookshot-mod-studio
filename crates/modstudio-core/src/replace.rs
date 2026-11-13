@@ -8,7 +8,8 @@
 //!   influences, weights in whole steps that add up exactly); a bone without a smooth matrix gives its weight to
 //!   its nearest ancestor that has one. Rigid shapes take each vertex's strongest bone (its nearest ancestor with
 //!   a rigid matrix); unskinned shapes follow their bone.
-//! - Every attribute the game's vertex buffer has is written: UVs from TEXCOORD_n, colours from COLOR_n (white
+//! - Every attribute the game's vertex buffer has is written: UVs from TEXCOORD_n, colours `_c<n>` from the
+//!   attribute `_C<n>` as they are (scenes made before it: COLOR_n, whose sRGB bytes are the game's; white
 //!   where the scene has none), tangents from TANGENT (computed from UV 0 if missing).
 //! - Every LOD of the shape gets the new mesh (simplified LODs are for later); sub-mesh counts stay the game's.
 //! - A shape the scene has no mesh for is removed (drawn as nothing), as Switch Toolbox's replace did.
@@ -23,7 +24,7 @@ use serde::Serialize;
 
 use crate::gltf::Gltf;
 use crate::math::{self, Mat4};
-use crate::model::{Loaded, bone_matrices};
+use crate::model::{COLOR_DATA, Loaded, bone_matrices};
 use crate::{Context, Error, Result};
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,8 +66,10 @@ struct SceneMesh {
     /// xyz, handedness
     tangents: Option<Vec<[f32; 4]>>,
     uvs: Vec<Vec<[f32; 2]>>,
-    /// Linear, as glTF stores them.
+    /// Linear, as glTF stores them (COLOR_n: scenes made before `_C<n>`).
     colors: Vec<Vec<[f32; 4]>>,
+    /// Colour set `_c<n>` exactly as the game stores it (the attribute `_C<n>`), by set.
+    color_data: BTreeMap<usize, Vec<[f32; 4]>>,
     /// Per vertex: (game bone, weight), strongest first, weights adding up to 1.
     influences: Vec<Vec<(usize, f32)>>,
     indices: Vec<u32>,
@@ -146,6 +149,7 @@ fn read_mesh(
         tangents: Some(Vec::new()),
         uvs: Vec::new(),
         colors: Vec::new(),
+        color_data: BTreeMap::new(),
         influences: Vec::new(),
         indices: Vec::new(),
     };
@@ -285,6 +289,18 @@ fn read_mesh(
                 out.extend((0..n).map(|v| [uv[v * 2], uv[v * 2 + 1]]));
             }
         }
+        for set in 0..8 {
+            let Some((c, w)) = get(&format!("{COLOR_DATA}{set}"))? else {
+                continue;
+            };
+            let out = mesh.color_data.entry(set).or_default();
+            if out.len() == base as usize {
+                out.extend((0..n).map(|v| {
+                    let a = if w == 4 { c[v * 4 + 3] } else { 1.0 };
+                    [c[v * w], c[v * w + 1], c[v * w + 2], a]
+                }));
+            }
+        }
         for set in 0.. {
             let Some((c, w)) = get(&format!("COLOR_{set}"))? else {
                 break;
@@ -304,6 +320,7 @@ fn read_mesh(
     let n = mesh.positions.len();
     mesh.uvs.retain(|u| u.len() == n);
     mesh.colors.retain(|c| c.len() == n);
+    mesh.color_data.retain(|_, c| c.len() == n);
     if mesh.indices.iter().any(|&i| i as usize >= n) || !mesh.indices.len().is_multiple_of(3) {
         return Err(Error(format!(
             "{}: indices don't make triangles of its vertices",
@@ -610,19 +627,26 @@ fn mesh_attributes(
             }
             _ if name.starts_with("_c") => {
                 let set: usize = name[2..].parse().unwrap_or(usize::MAX);
-                match mesh.colors.get(set) {
-                    Some(c) => c
-                        .iter()
-                        .map(|c| {
-                            [
-                                math::linear_to_srgb(c[0]),
-                                math::linear_to_srgb(c[1]),
-                                math::linear_to_srgb(c[2]),
-                                c[3],
-                            ]
-                        })
-                        .collect(),
-                    None => vec![[1.0; 4]; n],
+                if let Some(c) = mesh.color_data.get(&set) {
+                    c.clone()
+                } else if !mesh.color_data.is_empty() {
+                    // (a scene with exact colour sets that lacks this one: white, as the game's default)
+                    vec![[1.0; 4]; n]
+                } else {
+                    match mesh.colors.get(set) {
+                        Some(c) => c
+                            .iter()
+                            .map(|c| {
+                                [
+                                    math::linear_to_srgb(c[0]),
+                                    math::linear_to_srgb(c[1]),
+                                    math::linear_to_srgb(c[2]),
+                                    c[3],
+                                ]
+                            })
+                            .collect(),
+                        None => vec![[1.0; 4]; n],
+                    }
                 }
             }
             "_i0" | "_i1" | "_w0" | "_w1" => {

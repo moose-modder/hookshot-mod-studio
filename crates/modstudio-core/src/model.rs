@@ -17,6 +17,10 @@ use crate::{Context, Error, Result};
 
 /// Where the game keeps the names models refer to by ID.
 pub const EXTERNAL_STRINGS: &str = "Shader/ExternalBinaryString.bfres.zs";
+/// The glTF attribute a colour set `_c<n>` goes in: `_C<n>`, the game's values exactly. Blender imports it as a
+/// float colour layer of that name and exports it with `export_attributes`; the build reads it back by name.
+pub const COLOR_DATA: &str = "_C";
+
 /// Where textures are: one `<name>.bntx.zs` per texture.
 pub const TEXTURE_DIR: &str = "Tex";
 
@@ -323,7 +327,8 @@ struct ShapeGeometry {
     positions: Vec<f32>,
     normals: Option<Vec<f32>>,
     uvs: Vec<Vec<f32>>,
-    colors: Vec<Vec<f32>>,
+    /// Each colour set (`_c<n>`: its number) with the values as the game stores them.
+    colors: Vec<(usize, Vec<f32>)>,
     /// Bone indices and weights, `sets` x 4 per vertex.
     joints: Vec<u16>,
     weights: Vec<f32>,
@@ -482,26 +487,23 @@ fn shape_geometry(
                 .collect())
         })
         .collect::<Result<Vec<Vec<f32>>>>()?;
-    // glTF colours are linear and Blender keeps them as sRGB bytes: writing the game's values as sRGB makes
-    // the bytes in Blender the game's bytes (as with Switch Toolbox's FBX), and Blender's glTF export gives
-    // them back the same way.
+    // Colour sets go as they are, each as the custom attribute `_C<n>` (see COLOR_DATA): game meshes keep data
+    // in them (16-bit floats above 1, signed values) that Blender's vertex colours (8-bit sRGB) and its glTF
+    // colours (clamped to 0..1) would change.
     let colors = color_names
         .iter()
-        .map(|name| {
-            Ok(read(name)?
-                .expect("listed")
-                .iter()
-                .flat_map(|v| {
-                    [
-                        math::srgb_to_linear(v[0]),
-                        math::srgb_to_linear(v[1]),
-                        math::srgb_to_linear(v[2]),
-                        v[3],
-                    ]
-                })
-                .collect())
+        .filter_map(|name| Some((name[2..].parse::<usize>().ok()?, *name)))
+        .map(|(set, name)| {
+            Ok((
+                set,
+                read(name)?
+                    .expect("listed")
+                    .iter()
+                    .flat_map(|v| *v)
+                    .collect(),
+            ))
         })
-        .collect::<Result<Vec<Vec<f32>>>>()?;
+        .collect::<Result<Vec<(usize, Vec<f32>)>>>()?;
     Ok(ShapeGeometry {
         positions: pos,
         normals: nrm,
@@ -668,8 +670,8 @@ pub fn model_glb_lod(
         for (k, uv) in g.uvs.iter().enumerate() {
             attributes.insert(format!("TEXCOORD_{k}"), json!(glb.floats(uv, 2, false)));
         }
-        for (k, c) in g.colors.iter().enumerate() {
-            attributes.insert(format!("COLOR_{k}"), json!(glb.floats(c, 4, false)));
+        for (set, c) in &g.colors {
+            attributes.insert(format!("{COLOR_DATA}{set}"), json!(glb.floats(c, 4, false)));
         }
         let n = g.positions.len() / 3;
         for set in 0..g.sets {

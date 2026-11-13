@@ -61,6 +61,35 @@ impl Builder {
 /// Vertices: positions (0,0,0), (1,0,0), (0,1,0); UVs (0,0), (1,0), (0,1); vertex 1 fully on `Arm`, the
 /// others fully on `Root` (bone matrix indices 0 and 1 map to bones 0 and 1).
 pub fn tiny_bfres() -> Vec<u8> {
+    build_tiny(None)
+}
+
+/// [`tiny_bfres`] with a colour set `_c0` stored as 16-bit floats (the way some game meshes keep data in vertex
+/// colours: values above 1 and below 0), `colours` per vertex (rounded to 16-bit floats).
+pub fn tiny_bfres_coloured(colours: [[f32; 4]; 3]) -> Vec<u8> {
+    build_tiny(Some(colours))
+}
+
+/// A 16-bit float's bits (round to nearest; normal numbers and zero only, enough for tests).
+pub fn f16_bits(x: f32) -> u16 {
+    if x == 0.0 {
+        return 0;
+    }
+    let bits = x.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exp = ((bits >> 23) & 0xFF) as i32 - 127 + 15;
+    let mant = bits & 0x7F_FFFF;
+    let rounded = (mant + 0x1000) >> 13;
+    let (exp, rounded) = if rounded == 0x400 {
+        (exp + 1, 0)
+    } else {
+        (exp, rounded)
+    };
+    sign | ((exp as u16) << 10) | rounded as u16
+}
+
+fn build_tiny(colours: Option<[[f32; 4]; 3]>) -> Vec<u8> {
+    let stride: usize = if colours.is_some() { 28 } else { 20 };
     let mut b = Builder { data: Vec::new() };
     let header = b.alloc(0xF0, 8);
     b.bytes(header, b"FRES    ");
@@ -110,22 +139,24 @@ pub fn tiny_bfres() -> Vec<u8> {
         b.f32s(at + 0x30, &[1., 1., 1., 0., 0., 0., 1., x, 0., 0.]);
     }
 
-    // Vertex buffer: _p0 32_32_32 float, _u0 16_16 unorm, _i0 8_8 uint, _w0 8_8 unorm; stride 20.
+    // Vertex buffer: _p0 32_32_32 float, _u0 16_16 unorm, _i0 8_8 uint, _w0 8_8 unorm; stride 20 (and _c0
+    // 16_16_16_16 float: stride 28).
     let vb = b.alloc(0x58, 8);
     b.u64(model + 0x20, vb as u64);
     b.u16(model + 0x68, 1);
     b.bytes(vb, b"FVTX");
-    let attrs = b.alloc(4 * 0x10, 8);
-    b.u64(vb + 0x08, attrs as u64);
-    for (i, (name, format, offset)) in [
+    let mut attributes = vec![
         ("_p0", 0x1805u32, 0u16),
         ("_u0", 0x1201, 12),
         ("_i0", 0x0903, 16),
         ("_w0", 0x0901, 18),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    ];
+    if colours.is_some() {
+        attributes.push(("_c0", 0x1505, 20));
+    }
+    let attrs = b.alloc(attributes.len() * 0x10, 8);
+    b.u64(vb + 0x08, attrs as u64);
+    for (i, (name, format, offset)) in attributes.iter().copied().enumerate() {
         let at = attrs + i * 0x10;
         let s = b.string(name);
         b.u64(at, s as u64);
@@ -133,12 +164,12 @@ pub fn tiny_bfres() -> Vec<u8> {
         b.u16(at + 0x0C, offset);
     }
     let sizes = b.alloc(16, 8);
-    b.u32(sizes, 60);
+    b.u32(sizes, 3 * stride as u32);
     b.u64(vb + 0x30, sizes as u64);
     let strides = b.alloc(16, 8);
-    b.u32(strides, 20);
+    b.u32(strides, stride as u32);
     b.u64(vb + 0x38, strides as u64);
-    b.u8(vb + 0x4C, 4);
+    b.u8(vb + 0x4C, attributes.len() as u8);
     b.u8(vb + 0x4D, 1);
     b.u32(vb + 0x50, 3);
     b.u16(vb + 0x54, 2);
@@ -215,19 +246,23 @@ pub fn tiny_bfres() -> Vec<u8> {
     }
     b.u32(mesh + 0x20, (idx - gpu) as u32);
     let vertex_start = b.alloc(0, 0x100);
-    let verts = b.alloc(60, 0x100);
+    let verts = b.alloc(3 * stride, 0x100);
     b.u16(vb + 0x56, 0x100);
-    let vertex = |p: [f32; 3], uv: [u16; 2], bone: u8| {
+    let vertex = |p: [f32; 3], uv: [u16; 2], bone: u8, k: usize| {
         let mut v = Vec::new();
         p.iter().for_each(|x| v.extend_from_slice(&x.to_le_bytes()));
         uv.iter()
             .for_each(|x| v.extend_from_slice(&x.to_le_bytes()));
         v.extend_from_slice(&[bone, 0, 255, 0]);
+        if let Some(c) = colours {
+            c[k].iter()
+                .for_each(|x| v.extend_from_slice(&f16_bits(*x).to_le_bytes()));
+        }
         v
     };
-    let mut vdata = vertex([0., 0., 0.], [0, 0], 0);
-    vdata.extend(vertex([1., 0., 0.], [65535, 0], 1));
-    vdata.extend(vertex([0., 1., 0.], [0, 65535], 0));
+    let mut vdata = vertex([0., 0., 0.], [0, 0], 0, 0);
+    vdata.extend(vertex([1., 0., 0.], [65535, 0], 1, 1));
+    vdata.extend(vertex([0., 1., 0.], [0, 65535], 0, 2));
     b.bytes(verts, &vdata);
     b.u32(vb + 0x48, (verts - gpu) as u32);
     let gpu_end = b.alloc(0, 0x1000);

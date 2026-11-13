@@ -214,7 +214,10 @@ another). The app's **Settings** page writes it; `modstudio settings --hookshot 
     bones. Reshape the mesh instead.
 - Normal maps are baked in Blender's tangent space (+Y), the same convention the scene's
   "Reconstruct RG Normal" node group reads them with.
-- "the game mesh has vertex colours, this mesh has none" is fine for a mesh you haven't painted: the export leaves
-  out colour sets that are all white, and white is written back.
+- Vertex colours: each of a mesh's colour sets is a float colour layer named after it, `_C0`, `_C1`, ... with the
+  game's values as they are (game meshes keep data there: hair shading, values above 1 or below 0). Paint those
+  layers; a new mesh joined into a game mesh gets them from the nearest vertices. Scenes made before these layers
+  have 8-bit layers ("Color"), which still build.
+- "the game mesh has vertex colours, this mesh has none" is fine for a mesh you haven't painted: white is written.
 - `make_scene.py --fbx` and `prep_for_game.py`'s `fbx_name` are the older Switch Toolbox route; the build no
   longer uses them.

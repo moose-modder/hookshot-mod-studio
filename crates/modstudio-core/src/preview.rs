@@ -124,12 +124,14 @@ fn load(romfs: &Romfs, decoder: &mut Decoder, name: &str, max_size: u32) -> Resu
     Ok(Some(image))
 }
 
-/// Removes `COLOR_n` from every primitive (the accessors stay, unused).
+/// Removes the vertex colours (`COLOR_n`, `_C<n>`) from every primitive (the accessors stay, unused).
 fn drop_vertex_colours(doc: &mut Value) {
     for mesh in doc["meshes"].as_array_mut().into_iter().flatten() {
         for prim in mesh["primitives"].as_array_mut().into_iter().flatten() {
             if let Some(attributes) = prim["attributes"].as_object_mut() {
-                attributes.retain(|name, _| !name.starts_with("COLOR_"));
+                attributes.retain(|name, _| {
+                    !name.starts_with("COLOR_") && !name.starts_with(crate::model::COLOR_DATA)
+                });
             }
         }
     }

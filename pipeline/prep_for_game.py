@@ -1676,7 +1676,7 @@ def main():
                 rep.warn(f"{o.name}: has UV maps {extra_uv} / colour layers {extra_color} the game mesh doesn't have")
             if n_color and not me.color_attributes:
                 rep.warn(f"{o.name}: the game mesh has vertex colours, this mesh has none (fine if unpainted: "
-                         f"all-white colours are left out of the export, and Toolbox writes white)")
+                         f"all-white colours are left out of the export, and white is written)")
             info["game_vertices"] = vm["vertices"]
             info["game_skin_count"] = vm["skinCount"]
 
@@ -1698,7 +1698,8 @@ def main():
             objects = objects + make_lods(objects, vanilla_meshes, cfg, rep)
         select_only([arm] + objects, arm)
         if cfg.get("glb_name"):
-            # For modstudio replace: the scene as glTF, with up to 8 influences, tangents and every colour layer.
+            # For modstudio replace: the scene as glTF, with up to 8 influences, tangents, every colour layer, and
+            # the colour sets as the game stores them (the float layers _C<n>: export_attributes).
             # Blender's exporter only makes tangents for triangles: meshes with larger faces get a Triangulate
             # modifier (custom normals kept), which the export applies (on this copy; the .blend isn't saved).
             split = []
@@ -1717,7 +1718,8 @@ def main():
                                       export_apply=True, export_skins=True, export_influence_nb=8,
                                       export_all_influences=False, export_tangents=True, export_normals=True,
                                       export_texcoords=True, export_vertex_color='ACTIVE',
-                                      export_all_vertex_colors=True, export_materials='NONE',
+                                      export_all_vertex_colors=True, export_attributes=True,
+                                      export_materials='NONE',
                                       export_animations=False, export_def_bones=False,
                                       export_rest_position_armature=True, export_extras=False,
                                       export_cameras=False, export_lights=False)

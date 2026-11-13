@@ -173,6 +173,71 @@ fn export_then_replace_gives_the_same_geometry() {
     assert_eq!(read.attributes["_w0"], original.attributes["_w0"]);
 }
 
+/// Colour sets that hold data (16-bit floats above 1 and below 0, as on child Zelda's hair) come back exactly:
+/// the export writes them as `_C<n>`, the build reads them by name, whether the shape is kept or rebuilt.
+#[test]
+fn data_in_vertex_colours_survives() {
+    use modstudio_core::replace::geometry_from_gltf;
+    use modstudio_formats::bfres_write::{ShapeGeometry, write};
+    use modstudio_formats::testing::tiny_bfres_coloured;
+
+    let colours = [
+        [1.045, 0.0, 0.0612, 1.0],
+        [-0.5, 0.25, 2.0, 1.0],
+        [0.0267, -1.0, 0.5, 0.75],
+    ];
+    let file = tiny_bfres_coloured(colours);
+    let bfres = Bfres::parse(&file, None).unwrap();
+    let model = &bfres.models[0];
+    let game = ShapeGeometry::from_shape(model, &model.shapes[0]).unwrap();
+    let stored = game.attributes["_c0"].clone();
+    assert!(stored[0][0] > 1.0 && stored[1][0] < 0.0, "{stored:?}");
+
+    let (glb, _, _) = model_glb(model, &[]).unwrap();
+    let (mut json, bin) = gltf::split(&glb).unwrap();
+    let attributes = json["meshes"][0]["primitives"][0]["attributes"].clone();
+    assert!(attributes.get("_C0").is_some() && attributes.get("COLOR_0").is_none());
+    let exported = floats(&json, bin, attributes["_C0"].as_u64().unwrap());
+    assert_eq!(
+        exported,
+        stored.iter().flatten().copied().collect::<Vec<_>>()
+    );
+
+    // As exported: the shape is the game's own.
+    let (shapes, report) = geometry_from_gltf(model, &gltf::Gltf::parse(&glb).unwrap()).unwrap();
+    assert_eq!(report.shapes[0].status, "kept");
+    assert!(shapes.is_empty());
+
+    // A vertex moved: rebuilt, with the colour data as it was.
+    let mut bin = bin.to_vec();
+    let pos = attributes["POSITION"].as_u64().unwrap() as usize;
+    let view = json["accessors"][pos]["bufferView"].as_u64().unwrap() as usize;
+    let at = json["bufferViews"][view]["byteOffset"]
+        .as_u64()
+        .unwrap_or(0) as usize;
+    let x = f32::from_le_bytes(bin[at..at + 4].try_into().unwrap()) + 0.25;
+    bin[at..at + 4].copy_from_slice(&x.to_le_bytes());
+    let moved = glb_with(&json, &bin);
+    let (shapes, report) = geometry_from_gltf(model, &gltf::Gltf::parse(&moved).unwrap()).unwrap();
+    assert_eq!(report.shapes[0].status, "replaced");
+    let out = write(&bfres, &shapes).unwrap();
+    let back = Bfres::parse(&out, None).unwrap();
+    let read = ShapeGeometry::from_shape(&back.models[0], &back.models[0].shapes[0]).unwrap();
+    assert_eq!(read.attributes["_c0"], stored);
+
+    // A scene made before `_C<n>` (colours as COLOR_0, sRGB bytes as Blender held them) still builds.
+    let c0 = json["meshes"][0]["primitives"][0]["attributes"]["_C0"].take();
+    json["meshes"][0]["primitives"][0]["attributes"]
+        .as_object_mut()
+        .unwrap()
+        .remove("_C0");
+    json["meshes"][0]["primitives"][0]["attributes"]["COLOR_0"] = c0;
+    let old = glb_with(&json, &bin);
+    let (shapes, report) = geometry_from_gltf(model, &gltf::Gltf::parse(&old).unwrap()).unwrap();
+    assert_eq!(report.shapes[0].status, "replaced");
+    assert!(shapes[&0].attributes.contains_key("_c0"));
+}
+
 #[test]
 fn a_lod_the_shape_lacks_is_left_out() {
     use modstudio_core::replace::geometry_from_gltf;
