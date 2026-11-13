@@ -11,6 +11,8 @@
 4. Checks that neither program holds the home folder's path.
 5. dist/hookshot-mod-studio-source.zip: the source of the current commit (git archive), which the GPL asks to go
    with the program.
+6. With --zip: dist/HookshotModStudio-<version>-windows.zip, the folder zipped (what a release hands out; the
+   Release workflow, .github/workflows/release.yml, runs this).
 
 Needs cargo (rustup's, or ~/.cargo/bin), npm and git. Only the standard library.
 """
@@ -214,6 +216,13 @@ def main():
         print("note: the working tree has uncommitted changes; the source zip is the last commit")
     with zipfile.ZipFile(source) as z:
         print(f"source: {source.name}, {len(z.namelist())} files")
+    if "--zip" in sys.argv[1:]:
+        archive = DIST / f"HookshotModStudio-{ver}-windows.zip"
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+            for f in sorted(OUT.rglob("*")):
+                if f.is_file():
+                    z.write(f, f.relative_to(DIST).as_posix())
+        print(f"zip: {archive.name}, {archive.stat().st_size // 1024} KiB")
     print(f"done: {OUT}")
 
 

@@ -84,7 +84,13 @@ unless `npm run build` ran first.
 
 A release to hand out as a zip: `python app/scripts/make_dist.py` makes `dist/HookshotModStudio` (both programs, a
 blank `settings.json`, a README, the licenses of everything built in; no paths of the build PC in the programs)
-and `dist/hookshot-mod-studio-source.zip` (the source of the current commit, which goes with it).
+and `dist/hookshot-mod-studio-source.zip` (the source of the current commit, which goes with it); `--zip` zips the
+folder too.
+
+Releases on GitHub: set the version in `Cargo.toml`, `app/package.json` and `app/src-tauri/tauri.conf.json`, commit,
+and push a tag `v<version>`. The Release workflow (`.github/workflows/release.yml`) builds on Windows with
+`make_dist.py --zip` and attaches the zip and the source to the release of that tag. Run it by hand from the
+Actions tab for a test build (kept as the run's artifact, no release).
 
 ## Rules
 
