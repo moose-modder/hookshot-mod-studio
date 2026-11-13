@@ -4,7 +4,6 @@ import { invoke } from "@tauri-apps/api/core";
 
 export interface Tools {
   blender?: string | null;
-  restbl?: string | null;
 }
 
 export interface Settings {
@@ -21,7 +20,6 @@ export interface Status {
   mods: boolean;
   workspace: boolean;
   blender: string | null;
-  restbl: boolean;
   game_version: string | null;
   problems: string[];
 }

@@ -12,7 +12,7 @@ editing and baking happen in the user's Blender.
 | Scene creation, baking, export from Blender | `pipeline/*.py` in Blender | scenes made from the `.glb`, glTF export for the build (**done**) |
 | Rebuild the model and textures | Toolbox `replace-model` | `modstudio replace` (**done**) |
 | Run the steps (new project, build, install) | Python scripts (`extract_model.py`, `build_mod.py`, `restbl_all.py`) | `modstudio-core` (`project`, `build`, `mods`), used by the CLI and the app (**done**; the Python scripts are gone) |
-| Resource size table | `restbl.exe` (RESTBL Calculator, AGPL) | own implementation, or Hookshot adjusts the table for mod files itself |
+| Resource size table | `restbl.exe` (RESTBL Calculator, AGPL) | `restbl.rs` (the table) and `sizetable.rs` (the sizes), from the game's own table (**done**, phase 3) |
 | GUI | none | Tauri: Rust core, web UI, three.js previews (**first version done**, phase 4) |
 
 ## Phases
@@ -138,6 +138,27 @@ Checked by driving the page through WebView2's DevTools port (`MODSTUDIO_WEBVIEW
 with `MODSTUDIO_SETTINGS`): a new project from the model list, a build with install into a scratch mods folder, the
 check's result, mods off and on. Not yet: an installer people download (`npm run tauri build` makes one locally;
 releases need a CI job), thumbnails in the model list, friendlier model names.
+
+## Phase 3: the resource size table (done)
+
+The table (`restbl.rs`): `RESTBL`, version 1, 160-byte names; CRC-32 hash entries (path without `.zs` -> size,
+sorted) and name entries for paths that share a hash (10 in the game's table). The game's table reads and writes
+back byte-identical, and every model and texture has an entry.
+
+The sizes (`sizetable.rs`), from the game's own table over all its models and textures
+(`examples/restbl_probe.rs`, `restbl_fit.rs`):
+- Textures: the file's size plus a constant (280 bytes for 18,942 of 20,667, 288 for 1,721).
+- Models: the file's size plus memory that follows the structure: a fit over 6,464 models gives about 7,650 bytes
+  per shape, 620 per mesh, 410 per shader parameter, ...; vertex and index data add nothing (0.0002 bytes per
+  byte; the game uses them in place), and within groups of models of the same structure the extra moves by 0.0004
+  bytes per byte of file. No rounding (sizes are multiples of 8, not of a page).
+
+So a file the game has needs its game entry plus what it grew (models: and 1% of that to spare); a file it
+doesn't have gets an estimate (textures +288; models 1.25 times a structure estimate, which is never below the
+game's own value for any of its models; others 1.5 times their size). Compared with RESTBL Calculator over the
+installed mods: every entry the same but the edited townsman model, 1,660,344 here against its 1,751,112 (a
+general formula; the game's own value was 1,647,928). Checked in game: with this table installed, the townsman
+and an edited Malon both load.
 
 ## Materials: shader parameters and eyes
 

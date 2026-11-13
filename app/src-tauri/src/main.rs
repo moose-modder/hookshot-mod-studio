@@ -133,7 +133,6 @@ fn settings_for_hookshot(dir: PathBuf, current: Settings) -> Settings {
         install_mods: fresh.install_mods,
         tools: modstudio_core::settings::Tools {
             blender: current.tools.blender.or(fresh.tools.blender),
-            restbl: current.tools.restbl,
         },
         ..current
     }
@@ -398,9 +397,7 @@ async fn rebuild_size_table(
 }
 
 fn rebuild_table(settings: &Settings, progress: &mut Progress) -> Result<Option<PathBuf>> {
-    let work = settings.cache_dir();
-    std::fs::create_dir_all(&work).map_err(err)?;
-    mods::rebuild_size_table(settings, &work, progress).map_err(err)
+    mods::rebuild_size_table(settings, progress).map_err(err)
 }
 
 fn main() {

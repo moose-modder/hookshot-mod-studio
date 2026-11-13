@@ -4,8 +4,8 @@ Model mods for Hookshot installs, without hand-assembling tools: pick a model fr
 Blender scene, edit it, and turn the scene into a mod that Hookshot loads.
 
 > Working name. Status: **early**. The app (`app/`) and the `modstudio` CLI run the whole flow; the game's formats
-> are handled in Rust (`crates/`), the editing and baking happen in your Blender (`pipeline/`). The resource size
-> table still comes from RESTBL Calculator's `restbl`. See [docs/plan.md](docs/plan.md).
+> and the resource size table are handled in Rust (`crates/`), the editing and baking happen in your Blender
+> (`pipeline/`). See [docs/plan.md](docs/plan.md).
 
 ## What it does
 
@@ -19,11 +19,12 @@ Blender scene, edit it, and turn the scene into a mod that Hookshot loads.
    and the mod goes into Hookshot's `mods` folder with one resource size table for all mods.
 5. **Turn mods on and off.**
 
-You need a Hookshot install, [Blender](https://www.blender.org/) 5 or newer, and `restbl` from RESTBL Calculator.
+You need a Hookshot install and [Blender](https://www.blender.org/) 5 or newer.
 
 ## The app
 
-The app's first page asks for your Hookshot folder, a folder for projects, Blender and `restbl`. Then:
+The app's first page asks for your Hookshot folder (the game files and mods folder in it), a folder for
+projects, and Blender. Then:
 
 - **Models**: the game's models by kind (characters, enemies, items, ...; map pieces hidden unless asked), with a
   3D view. *Make a project* exports the model and makes its Blender scene; the project's page opens it in
@@ -40,7 +41,7 @@ The app's first page asks for your Hookshot folder, a folder for projects, Blend
 The same steps, with the same settings file:
 
 ```
-modstudio settings --hookshot "C:\Games\OOT_Remake" --restbl "C:\Tools\restbl.exe"
+modstudio settings --hookshot "C:\Games\OOT_Remake" --workspace "C:\Modding\projects"
 modstudio models hylia
 modstudio new Npc_Hylia_MN_001 --name townsman
 modstudio build <workspace>\townsman --install

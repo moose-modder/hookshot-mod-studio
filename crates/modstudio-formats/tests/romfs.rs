@@ -514,3 +514,44 @@ fn texture_layout_survey() {
     }
     report("textures", files.len(), &failures, romfs.root());
 }
+
+#[test]
+#[ignore = "needs a game dump (MODSTUDIO_ROMFS)"]
+fn size_table_reads_and_writes_back() {
+    use modstudio_formats::restbl::Restbl;
+
+    let romfs = romfs();
+    let dir = romfs.root().join("System").join("Resource");
+    let table = std::fs::read_dir(&dir)
+        .expect("System/Resource")
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.to_string_lossy().contains(".rsizetable"))
+        .expect("the game's size table");
+    let data = romfs.read(&mut romfs.decoder().unwrap(), &table).unwrap();
+    let t = Restbl::parse(&data).unwrap();
+    assert_eq!(t.to_bytes(), data, "written back byte-identical");
+    // Every model and texture has a size
+    let mut files = Vec::new();
+    files_with_suffix(&romfs.root().join("Model"), ".bfres.zs", &mut files);
+    files_with_suffix(&romfs.root().join("Tex"), ".bntx.zs", &mut files);
+    let missing: Vec<&PathBuf> = files
+        .iter()
+        .filter(|f| {
+            let rel = f
+                .strip_prefix(romfs.root())
+                .unwrap()
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            t.get(rel.trim_end_matches(".zs")).is_none()
+        })
+        .collect();
+    println!(
+        "size table: {} hash entries, {} name entries; {} models and textures, {} without a size",
+        t.hashes.len(),
+        t.names.len(),
+        files.len(),
+        missing.len()
+    );
+    assert!(missing.is_empty(), "{:?}", &missing[..missing.len().min(5)]);
+}

@@ -73,8 +73,9 @@ modstudio build <workspace>\zelda --install
    (`differs_<view>_<pose>.png`: scene | result | differences in red; the app shows them). An edit the build
    lost, a mesh that didn't come along or a vertex skinned to the wrong bone shows up here. Lighting, normal
    maps, roughness and other maps are not compared, nor are distance versions (LODs). `--no-check` skips it.
-6. **Resource size table** (`restbl` from RESTBL Calculator) for the mod on its own:
-   `romfs\System\Resource\ResourceSizeTable.Product.<version>.Nin_Ounce_NVN2.rsizetable.zs`.
+6. **Resource size table** for the mod on its own (`modstudio-core`'s `sizetable.rs`):
+   `romfs\System\Resource\ResourceSizeTable.Product.<version>.Nin_Ounce_NVN2.rsizetable.zs`, the game's table
+   with larger sizes for the files that grew (none needed when every file fits the game's sizes).
 7. **Install** (`--install`, the app's *Build and install*): replaces the `romfs` of `<mods>\<name>` with the
    mod's, without its size table. The game reads **one** table, and with several mods Hookshot takes the one of
    the mod that sorts last, so the others' grown files would fail to load (textures show as a flat default).
@@ -82,7 +83,7 @@ modstudio build <workspace>\zelda --install
    sorts last. Turning a mod on or off in the app's **Installed mods** (or `modstudio mods on|off <folder>`)
    makes it again; `modstudio mods table` does it by hand. A mod that was turned off is turned on by installing.
 
-Logs of every step are in `build` (`2_blender.log`, `5_check_scene.log`, `6_restbl.log`, ...), with
+Logs of every step are in `build` (`2_blender.log`, `5_check_scene.log`, ...), with
 `prep_report.json`, `check\check_report.json` and the build's report, `build_report.json`.
 
 ## Materials and textures
@@ -180,15 +181,15 @@ baked (no detection, unless `"detect": true`), with per-material settings:
 
 `settings.json` beside the program (the app's and the CLI's are one file when they sit in one folder, as in
 `target/release`; `MODSTUDIO_SETTINGS` or the CLI's `--settings` name another). The app's **Settings** page writes
-it; `modstudio settings --hookshot <Hookshot folder> --restbl <restbl>` too.
+it; `modstudio settings --hookshot <Hookshot folder> --workspace <dir>` too.
 
 | Key | |
 |---|---|
 | `game_romfs` | the game's files, `<Hookshot>\romfs`. Only read. |
 | `install_mods` | Hookshot's mods folder, `<Hookshot>\mods` |
 | `workspace` | where projects are kept, one folder each |
-| `tools.blender`, `tools.restbl` | Blender 5 and RESTBL Calculator's `restbl` |
-| `game_version` | optional, e.g. `"111"`; else read from the name of the game's own size table |
+| `tools.blender` | Blender 5 |
+| `game_version` | optional, e.g. `"111"`, shown on the settings page; else read from the name of the game's own size table |
 
 ## Notes
 

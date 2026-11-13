@@ -51,7 +51,7 @@
     </div>
     <div class="actions">
       {#if view}<button class="ghost" onclick={() => api.showInFolder(view!.folder)}>Show folder</button>{/if}
-      <button onclick={rebuild} disabled={task.running || !settings.status.restbl}>Rebuild size table</button>
+      <button onclick={rebuild} disabled={task.running || !settings.status.romfs}>Rebuild size table</button>
     </div>
   </header>
 

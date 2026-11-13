@@ -8,6 +8,7 @@
 //! default one). So one table is worked out over the files of every enabled mod, as Hookshot overlays them, and
 //! installed as its own mod, [`TABLE_MOD`], which sorts after the others.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -15,7 +16,7 @@ use serde::Serialize;
 use crate::fsutil::{self, is_size_table};
 use crate::progress::Progress;
 use crate::settings::Settings;
-use crate::{Context, Error, Result, args, tools};
+use crate::{Context, Error, Result, sizetable};
 
 /// The mod that holds the size table for all mods.
 pub const TABLE_MOD: &str = "zzz-ResourceSizeTable";
@@ -114,105 +115,51 @@ pub fn size_table(mods_dir: &Path) -> Option<PathBuf> {
         .map(|p| romfs.join(p))
 }
 
-/// Works out one size table for every enabled mod and installs it as [`TABLE_MOD`] (`work_dir` holds the
-/// files while it's made). Returns the table, or `None` when no mod needs one (every file fits the game's own
-/// table) — an old table is then removed.
-pub fn rebuild_size_table(
-    settings: &Settings,
-    work_dir: &Path,
-    progress: &mut Progress,
-) -> Result<Option<PathBuf>> {
+/// Works out one size table for every enabled mod ([`sizetable`]) and installs it as [`TABLE_MOD`]. Returns the
+/// table, or `None` when no mod needs one (every file fits the game's own table); an old table is then removed.
+pub fn rebuild_size_table(settings: &Settings, progress: &mut Progress) -> Result<Option<PathBuf>> {
     let mods_dir = &settings.install_mods;
     let mods: Vec<InstalledMod> = list(mods_dir)?.into_iter().filter(|m| m.enabled).collect();
     // Each file once, the last mod's (as Hookshot overlays them), by its path ignoring case.
-    let mut files: std::collections::BTreeMap<String, (PathBuf, PathBuf)> = Default::default();
+    let mut files: BTreeMap<String, (String, PathBuf)> = BTreeMap::new();
     let mut own_tables = Vec::new();
     for m in &mods {
-        let romfs = mods_dir.join(&m.folder).join("romfs");
-        for rel in fsutil::files_under(&romfs) {
-            if is_size_table(&rel) {
+        for (rel, path) in sizetable::files_of(&mods_dir.join(&m.folder).join("romfs")) {
+            if is_size_table(Path::new(&rel)) {
                 own_tables.push(m.folder.clone());
             } else {
-                let key = rel.to_string_lossy().replace('\\', "/").to_lowercase();
-                files.insert(key, (rel.clone(), romfs.join(&rel)));
+                files.insert(rel.to_lowercase(), (rel, path));
             }
         }
     }
-    let table_mod = mods_dir.join(TABLE_MOD);
     let names: Vec<&str> = mods.iter().map(|m| m.folder.as_str()).collect();
+    let table_mod = mods_dir.join(TABLE_MOD);
+    fsutil::remove_dir(&table_mod)?;
     if files.is_empty() {
-        fsutil::remove_dir(&table_mod)?;
         progress.line("No mod files: no resource size table needed");
         return Ok(None);
     }
-
-    // All mods' files in one folder, as one mod.
-    let combined = work_dir.join("AllMods");
-    fsutil::remove_dir(&combined)?;
-    for (rel, src) in files.values() {
-        let dst = combined.join("romfs").join(rel);
-        if let Some(dir) = dst.parent() {
-            std::fs::create_dir_all(dir).context(dir.display())?;
-        }
-        std::fs::copy(src, &dst).context(dst.display())?;
-    }
-    let version = settings.game_version()?;
-    let log = work_dir.join("restbl_all.log");
-    tools::run(
-        settings.restbl()?,
-        &args![&combined, "--game", &settings.game, "--version", &version],
-        &log,
-        &|_| false,
+    progress.line(format!(
+        "{} file(s) of {} mod(s) {names:?}",
+        files.len(),
+        mods.len()
+    ));
+    let files: BTreeMap<String, PathBuf> = files.into_values().collect();
+    let report = sizetable::write_table(
+        &settings.romfs()?,
+        &files,
+        &table_mod.join("romfs"),
         progress,
     )?;
-    let output = std::fs::read_to_string(&log).unwrap_or_default();
-    let resource = combined.join("romfs").join("System").join("Resource");
-    let made: Vec<PathBuf> = fsutil::files_under(&resource)
-        .into_iter()
-        .filter(|p| p.to_string_lossy().to_lowercase().contains(".rsizetable"))
-        .map(|p| resource.join(p))
-        .collect();
-    if made.is_empty() && output.contains("No RESTBL needed") {
+    if report.table.is_none() {
         fsutil::remove_dir(&table_mod)?;
-        fsutil::remove_dir(&combined)?;
-        progress.line(format!(
-            "No resource size table needed for {} mod(s) {names:?}: every file fits the game's own table",
-            mods.len()
-        ));
-        return Ok(None);
-    }
-    let [table] = made.as_slice() else {
-        return Err(Error(format!(
-            "restbl wrote {} tables in {}; expected one",
-            made.len(),
-            combined.display()
-        )));
-    };
-    fsutil::remove_dir(&table_mod)?;
-    let out = table_mod
-        .join("romfs")
-        .join("System")
-        .join("Resource")
-        .join(table.file_name().unwrap_or_default());
-    if let Some(dir) = out.parent() {
-        std::fs::create_dir_all(dir).context(dir.display())?;
-    }
-    std::fs::copy(table, &out).context(out.display())?;
-    fsutil::remove_dir(&combined)?;
-    progress.line(format!(
-        "Resource size table for {} mod(s) {names:?}: {}",
-        mods.len(),
-        out.display()
-    ));
-    for line in output.lines().filter(|l| l.contains("aren't vanilla")) {
-        progress.line(line.trim().to_owned());
     }
     if !own_tables.is_empty() {
         own_tables.sort();
         own_tables.dedup();
         progress.line(format!("(their own tables are not used: {own_tables:?})"));
     }
-    Ok(Some(out))
+    Ok(report.table)
 }
 
 #[cfg(test)]

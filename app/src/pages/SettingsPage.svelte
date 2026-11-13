@@ -37,10 +37,7 @@
     error = null;
     try {
       const clean = $state.snapshot(draft);
-      clean.tools = {
-        blender: clean.tools.blender || null,
-        restbl: clean.tools.restbl || null,
-      };
+      clean.tools = { blender: clean.tools.blender || null };
       const v = await api.saveSettings(clean);
       draft = structuredClone(v.settings);
       onsaved(v);
@@ -61,7 +58,7 @@
     <h1>Settings</h1>
     {#if !ready}
       <p class="muted">
-        Point the studio at your Hookshot install, your Blender and the size table tool. Nothing from the game
+        Point the studio at your Hookshot install, a folder for your projects, and your Blender. Nothing from the game
         leaves your PC: models are read from your own Hookshot folder, and mods go into its mods folder.
       </p>
     {/if}
@@ -135,20 +132,6 @@
         {/each}
       </div>
     {/if}
-
-    <div class="row">
-      <div class="label">
-        <h3>Size table tool</h3>
-        <p class="muted">
-          <code>restbl</code> from RESTBL Calculator: works out the game's resource size table for mods. (Built in later.)
-        </p>
-      </div>
-      <div class="field">
-        <input type="text" bind:value={draft.tools.restbl} placeholder="restbl.exe" />
-        <button onclick={async () => { const f = await pickFile("restbl", "restbl", exe); if (f) draft.tools.restbl = f; }}>Choose…</button>
-      </div>
-      <div class="check">{@render tick(status.restbl)}</div>
-    </div>
   </section>
 
   {#if status.problems.length}

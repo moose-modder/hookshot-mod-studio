@@ -21,8 +21,9 @@ library.
 ## Not shipped
 
 - **Blender** is installed by the user; the scripts in `pipeline/` run inside it.
-- **RESTBL Calculator** (`restbl`, AGPL-3.0) is installed by the user and run as a separate program for the
-  resource size table, until the table is worked out here (`docs/plan.md`, phase 3).
+- The resource size table is worked out here from the game's own table (`docs/plan.md`, phase 3); no code of
+  RESTBL Calculator (AGPL-3.0), which the pipeline ran as a separate program before, is used. Its output was
+  only compared with.
 
 ## Dependencies
 

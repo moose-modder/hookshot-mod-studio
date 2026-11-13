@@ -28,6 +28,7 @@ pub mod progress;
 pub mod project;
 pub mod replace;
 pub mod settings;
+pub mod sizetable;
 pub mod texture;
 pub mod tools;
 

@@ -28,8 +28,8 @@ pub struct Settings {
     pub workspace: PathBuf,
     #[serde(default)]
     pub tools: Tools,
-    /// The game's version for the resource size table ("111" for 1.1.1); found from the game's own table if
-    /// not set.
+    /// The game's version ("111" for 1.1.1), shown on the settings page; found from the name of the game's own
+    /// resource size table if not set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub game_version: Option<String>,
 }
@@ -38,9 +38,8 @@ pub struct Settings {
 pub struct Tools {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blender: Option<PathBuf>,
-    /// RESTBL Calculator's `restbl` (until the size table is done here, docs/plan.md phase 3).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub restbl: Option<PathBuf>,
+    // (Settings files from before the size table was worked out here have `restbl`, RESTBL Calculator's path:
+    // ignored.)
 }
 
 fn default_game() -> String {
@@ -68,7 +67,6 @@ pub struct Status {
     pub workspace: bool,
     /// Blender's version line ("Blender 5.2.0"), if it runs.
     pub blender: Option<String>,
-    pub restbl: bool,
     pub game_version: Option<String>,
     /// One line per problem, for the user.
     pub problems: Vec<String>,
@@ -118,7 +116,6 @@ impl Settings {
             workspace: home.join("HookshotModStudio"),
             tools: Tools {
                 blender: tools::find_blender().into_iter().next(),
-                restbl: None,
             },
             ..Settings::default()
         }
@@ -136,13 +133,6 @@ impl Settings {
 
     pub fn blender(&self) -> Result<&Path> {
         tool(self.tools.blender.as_deref(), "Blender")
-    }
-
-    pub fn restbl(&self) -> Result<&Path> {
-        tool(
-            self.tools.restbl.as_deref(),
-            "the resource size table calculator (restbl)",
-        )
     }
 
     /// Where the app keeps what it makes for itself (the Blender scripts, previews): `<workspace>/.modstudio`.
@@ -217,10 +207,6 @@ impl Settings {
             Ok(v) => s.blender = Some(v),
             Err(e) => s.problems.push(e.0),
         }
-        match self.restbl() {
-            Ok(_) => s.restbl = true,
-            Err(e) => s.problems.push(e.0),
-        }
         s
     }
 }
@@ -248,7 +234,7 @@ mod tests {
             "modstudio": "C:/m/modstudio.exe", "restbl": "C:/r/restbl.exe"}}"#;
         let s: Settings = serde_json::from_str(old).unwrap();
         assert_eq!(s.game_romfs, PathBuf::from("C:/Games/X/romfs"));
-        assert_eq!(s.tools.restbl, Some(PathBuf::from("C:/r/restbl.exe")));
+        assert_eq!(s.tools.blender, Some(PathBuf::from("C:/b/blender.exe")));
         let s: Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(s, Settings::default());
         assert_eq!(s.game, "oot");

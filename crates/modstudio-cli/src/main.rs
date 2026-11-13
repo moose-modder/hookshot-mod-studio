@@ -34,7 +34,7 @@ Usage:
   modstudio help
 
 Making mods (what the app does, with the same settings):
-  modstudio settings [--hookshot <dir>] [--blender <exe>] [--restbl <exe>] [--workspace <dir>]
+  modstudio settings [--hookshot <dir>] [--blender <exe>] [--workspace <dir>]
                      [--mods <dir>] [--game-romfs <dir>]
       shows the settings and whether everything a build needs is there; the options change them
       (--hookshot <dir>: the Hookshot folder, for its romfs and mods folders)
@@ -259,7 +259,7 @@ fn load_settings(args: &Args) -> Result<Settings, Failure> {
     let path = settings_path(args)?;
     if !path.is_file() {
         return Err(Failure::Failed(format!(
-            "no settings at {} yet: run `modstudio settings --hookshot <Hookshot folder> --restbl <restbl>` \
+            "no settings at {} yet: run `modstudio settings --hookshot <Hookshot folder> --workspace <dir>` \
              (or the app) first",
             path.display()
         )));
@@ -298,14 +298,9 @@ fn settings(args: &Args) -> Result<(), Failure> {
             changed = true;
         }
     }
-    for (option, field) in [
-        ("blender", &mut s.tools.blender),
-        ("restbl", &mut s.tools.restbl),
-    ] {
-        if let Some(v) = args.option(option) {
-            *field = Some(PathBuf::from(v));
-            changed = true;
-        }
+    if let Some(v) = args.option("blender") {
+        s.tools.blender = Some(PathBuf::from(v));
+        changed = true;
     }
     if changed {
         s.save(&path)?;
@@ -447,19 +442,16 @@ fn build_project(args: &Args) -> Result<(), Failure> {
 fn mods_command(args: &Args) -> Result<(), Failure> {
     let s = load_settings(args)?;
     let mut progress = Progress::stdout();
-    let work = s.cache_dir();
     let words: Vec<&str> = args.positional.iter().map(String::as_str).collect();
     match words.as_slice() {
         [] => {}
         [on @ ("on" | "off"), folder] => {
             let new = mods::set_enabled(&s.install_mods, folder, *on == "on")?;
             println!("{folder} -> {new}");
-            std::fs::create_dir_all(&work)?;
-            mods::rebuild_size_table(&s, &work, &mut progress)?;
+            mods::rebuild_size_table(&s, &mut progress)?;
         }
         ["table"] => {
-            std::fs::create_dir_all(&work)?;
-            mods::rebuild_size_table(&s, &work, &mut progress)?;
+            mods::rebuild_size_table(&s, &mut progress)?;
         }
         _ => {
             return Err(Failure::Usage(

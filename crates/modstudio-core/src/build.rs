@@ -7,7 +7,7 @@
 //! 3. The mod's model and changed textures, written under `mod/romfs`.
 //! 4. The result read back: every game mesh must keep its material, skin count and LOD count.
 //! 5. The build check (`check_result.py`): the result rendered as the scene is, and compared with it.
-//! 6. The mod's own resource size table (for using the mod on its own).
+//! 6. The mod's own resource size table (for using the mod on its own; [`sizetable`]).
 //! 7. Install, if asked: the mod's romfs into `<mods>/<name>/romfs`, and one size table for all mods
 //!    ([`mods::rebuild_size_table`]).
 //!
@@ -26,7 +26,7 @@ use crate::model::{self, Loaded, TEXTURE_DIR};
 use crate::progress::Progress;
 use crate::project::Project;
 use crate::settings::Settings;
-use crate::{Context, Error, Result, args, mods, replace, texture, tools};
+use crate::{Context, Error, Result, args, mods, replace, sizetable, texture, tools};
 
 /// The last build's report, in the work folder.
 pub const REPORT_FILE: &str = "build_report.json";
@@ -160,7 +160,6 @@ fn run(
     } else {
         None
     };
-    let restbl = settings.restbl()?;
     let model_rel = Path::new(&project.data.model);
     if !romfs.root().join(model_rel).is_file() {
         return Err(Error(format!(
@@ -339,26 +338,12 @@ fn run(
         )?);
     }
 
-    // 6. The mod's own size table (the last build's goes first: restbl would count it as one of the mod's files)
-    let resource = mod_romfs.join("System").join("Resource");
-    for rel in fsutil::files_under(&resource) {
-        if rel.to_string_lossy().to_lowercase().contains(".rsizetable") {
-            fsutil::remove_file(&resource.join(rel))?;
-        }
-    }
-    let version = settings.game_version()?;
-    progress.step(format!("Resource size table ({} {version})", settings.game));
-    tools::run(
-        restbl,
-        &args![
-            project.mod_dir(),
-            "--game",
-            &settings.game,
-            "--version",
-            &version
-        ],
-        &work.join("6_restbl.log"),
-        &|_| true,
+    // 6. The mod's own size table, for the mod on its own (an install makes one for all mods)
+    progress.step("Resource size table");
+    sizetable::write_table(
+        &romfs,
+        &sizetable::files_of(&mod_romfs),
+        &mod_romfs,
         progress,
     )?;
 
@@ -366,7 +351,7 @@ fn run(
     if options.install {
         progress.step("Installing");
         let target = install(settings, project, &mod_romfs, progress)?;
-        report.size_table = mods::rebuild_size_table(settings, &work, progress)?;
+        report.size_table = mods::rebuild_size_table(settings, progress)?;
         report.installed = Some(target);
     }
 

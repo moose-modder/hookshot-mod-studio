@@ -21,6 +21,7 @@ mod bytes;
 mod error;
 pub mod image;
 mod math_srgb;
+pub mod restbl;
 pub mod romfs;
 pub mod sarc;
 pub mod tegra;
