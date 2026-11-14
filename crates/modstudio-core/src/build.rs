@@ -343,6 +343,7 @@ fn run(
     sizetable::write_table(
         &romfs,
         &sizetable::files_of(&mod_romfs),
+        &[],
         &mod_romfs,
         progress,
     )?;

@@ -93,7 +93,7 @@
             </div>
           </div>
           {#if m.own_size_table}
-            <span class="pill" title="Its own resource size table isn't used: the shared one covers every mod">own size table</span>
+            <span class="pill" title="It comes with its own resource size table: the shared one, which covers every mod, takes over its larger sizes">own size table</span>
           {/if}
           <span class="pill" class:ok={m.enabled}>{m.enabled ? "on" : "off"}</span>
         </div>

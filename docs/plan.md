@@ -160,6 +160,23 @@ installed mods: every entry the same but the edited townsman model, 1,660,344 he
 general formula; the game's own value was 1,647,928). Checked in game: with this table installed, the townsman
 and an edited Malon both load.
 
+**Packs and other mods' tables (2026-11-13).** A GameBanana mod that makes Link into Malon crashed the game on
+loading a save (a write to address 0 while the player actor was made, right after its
+`Pack/Actor/Player_Adult.pack` was read). The table has entries for the files *inside* packs too, and the mod adds
+`Player_Malon_*` parameter files (`.bgyml`) to the player's packs; its own table had entries for them, but the
+shared table replaced it in game and knew only loose files. Now:
+- A mod's packs are opened and their files compared with the game's same pack (`pack_files`): grown or added ones
+  get entries of their own.
+- Sizes for more kinds, each covering every file of its kind in the game (`examples/restbl_packs.rs`,
+  `crates/modstudio-core/examples/restbl_estimates.rs`): parameter files 6500 plus 10 times their size (the game's
+  need 5,056 bytes and up, up to 9.2 times the size: they are read into objects; 57,752 files), animations
+  (`.anim.bfres`) 16 KB plus 1.04 times their size (unlike models, their extra grows with the file; 418 of 1,427
+  were above the model formula), everything else 1.5 times their size plus 1 KB (`.asb`: up to 1.38 times plus
+  1 KB). Grown parameter files: the game's entry plus 10 times the growth.
+- A mod's own table (for the same game version) is merged in: its entries larger than the shared table's are
+  taken over. With the Malon mod: before, 43 of the 102 entries its table changes were missing or smaller in the
+  shared one; now none (and none had to be taken over).
+
 ## Materials: shader parameters and eyes
 
 Materials are read with their shader parameters now (`bfres::ShaderAssign`, from LegacySwitchLibraries'

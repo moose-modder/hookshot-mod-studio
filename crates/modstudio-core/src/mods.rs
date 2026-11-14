@@ -6,7 +6,8 @@
 //! The game reads one resource size table (RESTBL). When several mods each ship one, Hookshot uses the last
 //! mod's, so the other mods' grown files get the game's sizes and fail to load (a texture then shows as a
 //! default one). So one table is worked out over the files of every enabled mod, as Hookshot overlays them, and
-//! installed as its own mod, [`TABLE_MOD`], which sorts after the others.
+//! installed as its own mod, [`TABLE_MOD`], which sorts after the others. A mod's own table is not lost: its
+//! entries that are larger than the shared table's are taken over ([`sizetable::write_table`]).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -32,7 +33,7 @@ pub struct InstalledMod {
     /// Model files it replaces or adds (paths in the romfs).
     pub models: Vec<String>,
     pub textures: usize,
-    /// It has its own size table, which is not used (the shared one is).
+    /// It has its own size table; the shared one replaces it in game and takes over its larger entries.
     pub own_size_table: bool,
 }
 
@@ -122,11 +123,11 @@ pub fn rebuild_size_table(settings: &Settings, progress: &mut Progress) -> Resul
     let mods: Vec<InstalledMod> = list(mods_dir)?.into_iter().filter(|m| m.enabled).collect();
     // Each file once, the last mod's (as Hookshot overlays them), by its path ignoring case.
     let mut files: BTreeMap<String, (String, PathBuf)> = BTreeMap::new();
-    let mut own_tables = Vec::new();
+    let mut own_tables: Vec<sizetable::OwnTable> = Vec::new();
     for m in &mods {
         for (rel, path) in sizetable::files_of(&mods_dir.join(&m.folder).join("romfs")) {
             if is_size_table(Path::new(&rel)) {
-                own_tables.push(m.folder.clone());
+                own_tables.push((m.folder.clone(), path));
             } else {
                 files.insert(rel.to_lowercase(), (rel, path));
             }
@@ -148,16 +149,12 @@ pub fn rebuild_size_table(settings: &Settings, progress: &mut Progress) -> Resul
     let report = sizetable::write_table(
         &settings.romfs()?,
         &files,
+        &own_tables,
         &table_mod.join("romfs"),
         progress,
     )?;
     if report.table.is_none() {
         fsutil::remove_dir(&table_mod)?;
-    }
-    if !own_tables.is_empty() {
-        own_tables.sort();
-        own_tables.dedup();
-        progress.line(format!("(their own tables are not used: {own_tables:?})"));
     }
     Ok(report.table)
 }
