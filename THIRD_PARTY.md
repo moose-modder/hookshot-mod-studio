@@ -11,6 +11,19 @@ own. The license text in `LICENSES/` ("Copyright (c) 2017 Syroot") is the one ke
 [KillzXGaming/NintenTools.Bfres](https://github.com/KillzXGaming/NintenTools.Bfres), the fork of Syroot's original
 library.
 
+## Vendored crates
+
+Copied into this repository as workspace crates, with their license files, and changed here; each crate's README
+lists the changes ("Changes in this copy").
+
+| Source | License | Used for |
+|---|---|---|
+| [havok-formats](https://github.com/Kalmarv/havok-formats) (Kalmarv), commit `fa26978` (0.10.0, 2026-11-06), in `crates/havok-formats` | GPL-3.0-or-later, [crates/havok-formats/LICENSE](crates/havok-formats/LICENSE) | reading Havok tagfiles: the game's cloth files (`.bphcl`) |
+| [havok-cloth](https://github.com/Kalmarv/havok-cloth) (Kalmarv), commit `d424ff4` (0.3.1, 2026-11-06), in `crates/havok-cloth` | GPL-3.0-or-later, [crates/havok-cloth/LICENSE](crates/havok-cloth/LICENSE) | simulating the game's cloth, for previews |
+
+Both contain no Havok SDK code (their READMEs). havok-formats depends on `primase-foundations` (Kalmarv,
+GPL-3.0-or-later; byte readers, from crates.io, its optional codecs off).
+
 ## References
 
 | Source | License | Used as |

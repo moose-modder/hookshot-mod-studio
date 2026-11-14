@@ -1,0 +1,36 @@
+[package]
+name = "havok-formats"
+description = "Bounds-checked readers of Havok tagfiles, packfiles, compressed collision meshes, cloth and spline animation, as game files store them"
+keywords = ["havok", "gamedev", "modding", "parser", "collision"]
+categories = ["parser-implementations", "game-development"]
+readme = "README.md"
+documentation = "https://docs.rs/havok-formats"
+# Vendored from https://github.com/Kalmarv/havok-formats (THIRD_PARTY.md); the package settings its workspace held
+# are written out here.
+version = "0.10.0"
+edition = "2024"
+rust-version = "1.99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Kalmarv/havok-formats"
+publish = false
+
+[dependencies]
+thiserror = { version = "=2.0.21", default-features = false, features = ["std"] }
+primase-foundations = "0.3.1"
+
+[dev-dependencies]
+primase-testdata = "0.1.8"
+
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unused_must_use = "deny"
+
+[lints.clippy]
+float_cmp = "allow"
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+iter_over_hash_type = "deny"
+disallowed_methods = "allow"
+disallowed_types = "allow"
