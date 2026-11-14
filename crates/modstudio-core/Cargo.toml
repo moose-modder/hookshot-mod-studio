@@ -17,3 +17,5 @@ serde_json = "1.0.154"
 
 [dev-dependencies]
 modstudio-formats = { path = "../modstudio-formats", features = ["testing"] }
+havok-formats = { path = "../havok-formats" }
+havok-cloth = { path = "../havok-cloth" }

@@ -204,9 +204,23 @@ fn vec4(v: Value<'_, '_>, name: &str) -> Result<[f32; 4]> {
     v.field(name)?.vector::<4>()
 }
 
-/// An `hkMatrix4` or `hkTransform` value: its 16 floats as stored (four columns of four).
+/// An `hkMatrix4` or `hkTransform` value: its 16 floats as stored (four columns of four). An `hkPreciseTransform`
+/// (SDK 2025.2: `hclCollidable::transform`) stores 20: the rotation's three columns, the translation, a
+/// `translationAdjustment` (three floats, added to the translation here) and a `userData4` word; it is read as the
+/// rotation and the adjusted translation.
 fn matrix(v: Value<'_, '_>) -> Result<[f32; 16]> {
-    v.vector::<16>()
+    if v.type_name() != "hkPreciseTransform" {
+        return v.vector::<16>();
+    }
+    let f = v.vector::<20>()?;
+    let mut m = [0f32; 16];
+    for (out, value) in m.iter_mut().zip(f) {
+        *out = value;
+    }
+    for (out, adjustment) in m.iter_mut().skip(12).zip(f.iter().skip(16).take(3)) {
+        *out += *adjustment;
+    }
+    Ok(m)
 }
 
 /// A 16-bit index stored as `hkUint16`; another width is refused.

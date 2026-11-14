@@ -1910,6 +1910,8 @@ dependencies = [
 name = "modstudio-core"
 version = "0.1.3"
 dependencies = [
+ "havok-cloth",
+ "havok-formats",
  "modstudio-formats",
  "serde",
  "serde_json",

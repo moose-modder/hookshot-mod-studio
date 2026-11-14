@@ -81,6 +81,8 @@ Run the tests with `cargo test`. The real-data and game-capture tests skip unles
 This is a copy of [Kalmarv/havok-cloth](https://github.com/Kalmarv/havok-cloth) at commit `d424ff4` (0.3.1), changed
 for Hookshot Mod Studio (2026-11-13), which simulates the cloth of The Legend of Zelda: Ocarina of Time for Switch 2:
 
-- `Cargo.toml`: havok-formats is the copy beside it (0.10.0; the original pins a 0.9 commit),
+- `Cargo.toml`: havok-formats is the copy beside it (0.10.0, with SDK 2025.2 support; the original pins a 0.9 commit),
   the profiles are left to the workspace, not published. Of `docs/`, only `behaviour.md` is kept; the README's
   pictures and `CONTRIBUTING.md` link to the original.
+- `constraints.rs`: a local range entry with its own stiffness (SDK 2025.2's `localStiffnessConstraints`) is moved by
+  it times the set's (test `an_entry_with_its_own_stiffness_moves_by_it_times_the_sets`).

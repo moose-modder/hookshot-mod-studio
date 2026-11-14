@@ -260,6 +260,19 @@ and a pack (SARC) file replacer. Checked on the dump:
 - AAMP: every cloth file's archive round-trips. BYML: 1,415 of the player packs' 1,434 parameter files byte-identical,
   the same content in the rest.
 
+**Simulation for previews (2026-11-13, branch `feat/cloth-preview`):** havok-formats and havok-cloth (Kalmarv,
+GPL-3.0-or-later, written against Sekiro and Elden Ring) are vendored in `crates/` (THIRD_PARTY.md) and read SDK
+2025.2 now: the version, `0xFF`-padded string tables, member records with flag `0x80` and one more value, type hashes
+over a type's own members (all 21,297 stored hashes reproduce), `hkPreciseTransform`, renamed members (`bufferName`,
+`shapeRadius`), `localStiffnessConstraints` (per-entry stiffness, 240 of the 1,124 local range sets), one-component
+transform set flags and `batchOffset`; each crate's README lists the changes. `modstudio-formats::phive` splits a
+cloth file. `examples/cloth_probe.rs`: every cloth of the 171 files runs. `examples/cloth_rest.rs`, child Link at
+rest: the skeleton's reference pose is every cloth's bind pose (most hair cloths' meshes are stored relative to a
+fixed frame, a translation), collidables sit exactly on their bones, and cloths not touching a collidable stay in
+place with their bones on the rest pose. Open: hair touching the head's collidables keeps moving at rest (bounded,
+a few centimetres), one strand creeps without collisions; not simulated: `hclVolumeConstraint` (12 files: adult
+Zelda, child Ganondorf, Skull Kid, ...), `hclBonePlanesConstraintSet` (3 horse files), aerodynamics (wind).
+
 ### 1. Physics editing
 
 In Blender: the scene gets the model's cloth (`make_scene.py`, from the cloth file) and the build reads it back

@@ -90,3 +90,11 @@ of Time for Switch 2. Those are tagfiles of SDK 2025.2. Changes, each commented 
 
 - `Cargo.toml`: the package settings its workspace held are written out (the copy is a member of Mod Studio's
   workspace); not published. This README links to the original's `CONTRIBUTING.md`.
+- `tagfile.rs`: SDK 2025.2 (`20250200`) is read; its type hashes cover a type's own members only
+  (`types.rs`, `MemberHashing`; all 21,297 stored hashes of the game's 171 cloth files reproduce).
+- `types.rs`: string tables padded to four bytes with `0xFF`; member records with flag `0x80`, which store one more
+  value before the offset (`Field::extra`, `DeclFlags::EXTRA_VALUE`).
+- `cloth`: `hkPreciseTransform` transforms (`hclCollidable::transform`: the translation adjustment added); buffer
+  definitions named `bufferName`; local range constraints' `shapeRadius` (in `maximumDistance`'s place) and
+  `localStiffnessConstraints` (`LocalRange::stiffness`), with non-empty capsule local ranges refused; transform set
+  usage flags of one component; deformers with `batchOffset` 0 and no `partialWrite`.

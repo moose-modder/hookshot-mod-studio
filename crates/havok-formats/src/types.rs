@@ -130,8 +130,13 @@ impl DeclFlags {
     pub const DATA_FIELD: u32 = 32;
     /// Bit 6 (value 64, `DECL_CUSTOM_SETTER`): in no type table.
     pub const CUSTOM_SETTER: u32 = 64;
-    /// The union of the bits any member record of either install stores.
-    pub const SEEN: u32 = 0x27;
+    /// Bit 7 (value 128): SDK 2025.2. The record stores one more value before the member's offset
+    /// ([`Field::extra`]). In the cloth files of Ocarina of Time (Switch 2) it is set on `hclCollidable::userData`
+    /// (`hkUint64`) and `hkPackedVector3::values` (`hkInt16[4]`), always as `0xa0`, and the value is 3 in all 326
+    /// records; what it means is not known.
+    pub const EXTRA_VALUE: u32 = 128;
+    /// The union of the bits any member record of Sekiro, Elden Ring or Ocarina of Time's cloth files stores.
+    pub const SEEN: u32 = 0xa7;
 
     /// Whether every bit of `mask` is set.
     pub fn contains(self, mask: u32) -> bool {
@@ -164,9 +169,12 @@ pub struct Field {
     pub name: String,
     /// The member's stored flags, kept whole; [`Field::decl_flags`] names the bits. The 816,249 member records of the
     /// distinct type tables of Sekiro (149,035) and Elden Ring (667,214) store `0x20` to `0x25`: `0x20` is set on every
-    /// record, and with it every combination of `0x01`, `0x02` and `0x04` occurs but `0x02` together with `0x04`. A
-    /// record without `0x20`, or with a bit outside `0x27`, is refused.
+    /// record, and with it every combination of `0x01`, `0x02` and `0x04` occurs but `0x02` together with `0x04`.
+    /// SDK 2025.2 adds `0x80` ([`DeclFlags::EXTRA_VALUE`]). A record without `0x20`, or with a bit outside `0xa7`, is
+    /// refused.
     pub flags: u64,
+    /// The value a record with [`DeclFlags::EXTRA_VALUE`] stores before the offset (SDK 2025.2); `None` without it.
+    pub extra: Option<u64>,
     /// Byte offset within the object.
     pub offset: usize,
     /// The member's type.
@@ -272,9 +280,19 @@ pub(crate) fn required<'a>(children: &[Section<'a>], names: &[[u8; 4]]) -> Resul
     Ok(result)
 }
 fn strings(section: Section<'_>) -> Result<Vec<String>> {
+    // SDK 2025.2 pads the table to a multiple of four bytes with 0xFF after the last terminator (the field names of
+    // Ocarina of Time's cloth files); no other padding is taken
+    let pad = section.payload.iter().rev().take_while(|&&b| b == 0xFF).count();
+    if pad > 3 || (pad > 0 && !section.payload.len().is_multiple_of(4)) {
+        return Err(invalid(section.offset, "invalid string table padding"));
+    }
+    let payload = section
+        .payload
+        .get(..section.payload.len().saturating_sub(pad))
+        .unwrap_or_default();
     // the table's strings are the NUL-terminated runs: the empty run after the last NUL is no string, so an index
     // equal to the table's length is out of bounds, not an empty name
-    let Some((0, strings)) = section.payload.split_last() else {
+    let Some((0, strings)) = payload.split_last() else {
         return Err(invalid(section.offset, "unterminated string table"));
     };
     strings
@@ -313,12 +331,23 @@ impl Compendium {
             return Err(invalid(ids.offset, "invalid compendium IDs"));
         }
         let ids = ids.payload.as_chunks::<8>().0.to_vec();
-        let types = read_types(required(&children, &[*b"TYPE"])?)?;
+        let types = read_types(required(&children, &[*b"TYPE"])?, MemberHashing::WithParents)?;
         Ok(Self { ids, types })
     }
 }
 
-pub(crate) fn read_types(section: Section<'_>) -> Result<Vec<Type>> {
+/// Which members a type's hash covers ([`Hashes`], step 9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MemberHashing {
+    /// Every member of the type and of its parents, the root's first: SDKs 2015.1 to 2018.1, and compendia.
+    WithParents,
+    /// The type's own members only (its parents' are in the parent's hash, which the type's starts from): SDK 2025.2.
+    /// It reproduces all 21,297 stored hashes of Ocarina of Time's 171 cloth files; with the parents' members, 100 of
+    /// the 128 in one of them.
+    Own,
+}
+
+pub(crate) fn read_types(section: Section<'_>, members: MemberHashing) -> Result<Vec<Type>> {
     let children = section.children()?;
     for s in &children {
         if ![
@@ -412,9 +441,15 @@ pub(crate) fn read_types(section: Section<'_>) -> Result<Vec<Type>> {
                         "member {name:?} has flags {flags:#x}; every member record has {FIELD_FLAGS_PRESENT:#x} set and none sets a bit outside {FIELD_FLAGS_KNOWN:#x}"
                     )));
                 }
+                let extra = if flags & FIELD_FLAGS_EXTRA != 0 {
+                    Some(c.packed()?)
+                } else {
+                    None
+                };
                 t.fields.push(Field {
                     name,
                     flags,
+                    extra,
                     offset: c.index()?,
                     type_index: c.index()?,
                 });
@@ -466,7 +501,7 @@ pub(crate) fn read_types(section: Section<'_>) -> Result<Vec<Type>> {
             format!("type {i} stores a subtype but is of kind {kind}, not a pointer (6) or an array (8)"),
         ));
     }
-    check_hashes(&types, section.offset)?;
+    check_hashes(&types, section.offset, members)?;
     Ok(types)
 }
 
@@ -539,7 +574,7 @@ const TEMPLATE_STEPS: usize = 1 << 12;
 ///    [`Type::requested_alignment`] in bits 12 to 15;
 /// 8. with presence bit 16, the type flags;
 /// 9. with presence bit 32, for every member of the type and of its parents, the root's first: the name, the offset
-///    and the hash of the member's type.
+///    and the hash of the member's type. SDK 2025.2 takes the type's own members only ([`MemberHashing::Own`]).
 ///
 /// Every number is a little-endian u32 (the low 32 bits of the stored value), names are their bytes without a
 /// terminator. A census of the games' tagfiles and compendia reproduced every stored hash with this recipe (Sekiro
@@ -548,6 +583,7 @@ const TEMPLATE_STEPS: usize = 1 << 12;
 struct Hashes<'t> {
     types: &'t [Type],
     state: Vec<HashState>,
+    members: MemberHashing,
 }
 
 /// Where a type's hash is: a type a cycle comes back to while it is being hashed counts as 0.
@@ -559,10 +595,11 @@ enum HashState {
 }
 
 impl<'t> Hashes<'t> {
-    fn new(types: &'t [Type]) -> Self {
+    fn new(types: &'t [Type], members: MemberHashing) -> Self {
         Hashes {
             types,
             state: vec![HashState::Unvisited; types.len()],
+            members,
         }
     }
 
@@ -653,11 +690,14 @@ impl<'t> Hashes<'t> {
             sig = word(sig, u64::from(flags.0));
         }
         if t.flags & 32 != 0 {
-            // the type's members after those of its parents, the root's first
+            // the type's members after those of its parents, the root's first (2025.2: its own only)
             let mut chain = Vec::new();
             let mut owner = index;
             while owner != 0 && chain.len() <= self.types.len() {
                 chain.push(owner);
+                if self.members == MemberHashing::Own {
+                    break;
+                }
                 owner = self.types.get(owner).map_or(0, |o| o.parent);
             }
             for owner in chain.iter().rev().filter_map(|&o| self.types.get(o)) {
@@ -710,8 +750,8 @@ impl<'t> Hashes<'t> {
 }
 
 /// Every stored type hash against the hash the type's description gives (see [`Hashes`]).
-fn check_hashes(types: &[Type], at: usize) -> Result<()> {
-    let mut hashes = Hashes::new(types);
+fn check_hashes(types: &[Type], at: usize, members: MemberHashing) -> Result<()> {
+    let mut hashes = Hashes::new(types, members);
     for (i, t) in types.iter().enumerate() {
         let Some(stored) = t.hash else { continue };
         let computed = hashes.hash(i, at)?;
@@ -731,8 +771,10 @@ fn check_hashes(types: &[Type], at: usize) -> Result<()> {
 /// The bits a member record's flags word has: `0x20` is set on every member of both installs.
 const FIELD_FLAGS_PRESENT: u64 = 0x20;
 /// The bits a member record's flags word may have: `0x20` and the low three, whose values the tables use in every
-/// combination but `0x02` with `0x04`.
-const FIELD_FLAGS_KNOWN: u64 = 0x27;
+/// combination but `0x02` with `0x04`, and `0x80` (SDK 2025.2), which comes with one more value in the record.
+const FIELD_FLAGS_KNOWN: u64 = 0xa7;
+/// The member record bit (SDK 2025.2) after which the record stores one more value before the offset.
+const FIELD_FLAGS_EXTRA: u64 = 0x80;
 
 /// The first type that stores a subtype though its kind (the low four bits of its format word, or its nearest parent's;
 /// 16 when none has a format) is not a pointer (6) or an array (8), with that kind. Every type that stores one is
@@ -961,6 +1003,10 @@ mod tests {
                 for &(name, flags, offset, type_index) in &s.fields {
                     record.extend(packed(index(&mut field_names, name)));
                     record.extend(packed(flags));
+                    if flags & FIELD_FLAGS_EXTRA != 0 {
+                        // SDK 2025.2: one more value, 3 in every such record of the game's files
+                        record.extend(packed(3));
+                    }
                     record.extend(packed(offset));
                     record.extend(packed(type_index as u64));
                 }
@@ -1000,7 +1046,7 @@ mod tests {
 
     fn read(bytes: &[u8]) -> Result<Vec<Type>> {
         let roots = sections(bytes)?;
-        read_types(*roots.first().expect("one section"))
+        read_types(*roots.first().expect("one section"), MemberHashing::WithParents)
     }
 
     /// An integer type; a base class with a member, a derived class that adds one and an interface; an array type and
@@ -1076,18 +1122,31 @@ mod tests {
     }
 
     #[test]
-    fn member_flags_have_bit_0x20_and_none_outside_0x27() {
-        for flags in [0x20, 0x21, 0x22, 0x23, 0x24, 0x25] {
+    fn member_flags_have_bit_0x20_and_none_outside_0xa7() {
+        for flags in [0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0xA0] {
             let types = read(&type_section(&with_member_flags(flags), &[])).expect("flags in the data");
             assert_eq!(types[2].fields[0].flags, flags);
         }
-        for flags in [0, 1, 0x05, 0x28, 0x30, 0x40, 0xA0, 0x100] {
+        for flags in [0, 1, 0x05, 0x28, 0x30, 0x40, 0x80, 0x100] {
             let error = read(&type_section(&with_member_flags(flags), &[])).unwrap_err();
             assert!(
                 error.detail.contains(&format!("has flags {flags:#x}")),
                 "{flags:#x}: {error}"
             );
         }
+    }
+
+    /// SDK 2025.2: a member record with flag 0x80 stores one more value before the offset, and the rest of the
+    /// record reads as before.
+    #[test]
+    fn a_member_record_with_flag_0x80_stores_one_more_value() {
+        let types = read(&type_section(&with_member_flags(0xA0), &[])).expect("flags in the data");
+        let plain = read(&type_section(&with_member_flags(0x20), &[])).expect("flags in the data");
+        let (f, p) = (&types[2].fields[0], &plain[2].fields[0]);
+        assert_eq!(f.extra, Some(3));
+        assert_eq!(p.extra, None);
+        assert_eq!((f.offset, f.type_index), (p.offset, p.type_index));
+        assert!(f.decl_flags().contains(DeclFlags::EXTRA_VALUE));
     }
 
     /// The six stored values of the member flags name who may reach the member and whether its value is written.
@@ -1176,6 +1235,48 @@ mod tests {
         // a table without hashes, or with some, is read all the same
         read(&type_section(&mini(), &[])).expect("no THSH");
         read(&type_section(&mini(), &MINI_HASHES[2..3])).expect("one hash");
+    }
+
+    /// SDK 2025.2 hashes a type's own members only: a derived class's hash leaves out its parent's members (the
+    /// parent's hash, which it starts from, has them), and a table storing such hashes is read with that rule only.
+    #[test]
+    fn own_member_hashing_leaves_out_the_parents_members() {
+        let types = read(&type_section(&mini(), &[])).expect("the table");
+        let hash = |members| {
+            let mut h = Hashes::new(&types, members);
+            (1..types.len())
+                .map(|i| (i, h.hash(i, 0).expect("hash")))
+                .collect::<Vec<_>>()
+        };
+        let (with_parents, own) = (hash(MemberHashing::WithParents), hash(MemberHashing::Own));
+        // Base has no parent: the same either way; Derived adds a member to Base's: not
+        assert_eq!(with_parents[1], own[1]);
+        assert_ne!(with_parents[2], own[2]);
+        let section = type_section(&mini(), &own);
+        let roots = sections(&section).expect("sections");
+        let root = *roots.first().expect("one section");
+        read_types(root, MemberHashing::Own).expect("own-member hashes");
+        assert!(read_types(root, MemberHashing::WithParents).is_err());
+    }
+
+    /// SDK 2025.2 pads a string table to four bytes with 0xFF after its last terminator; nothing else is taken.
+    #[test]
+    fn a_string_table_may_be_padded_with_0xff_to_four_bytes() {
+        let read_table = |payload: &[u8]| {
+            let mut bytes = (((8 + payload.len()) as u32) | 0x4000_0000)
+                .to_be_bytes()
+                .to_vec();
+            bytes.extend(b"FST1");
+            bytes.extend(payload);
+            let found = sections(&bytes).expect("a section");
+            strings(*found.first().expect("one section"))
+        };
+        assert_eq!(read_table(b"ab\0cd\0\xff\xff").expect("padded"), ["ab", "cd"]);
+        assert_eq!(read_table(b"ab\0cd\0").expect("unpadded"), ["ab", "cd"]);
+        // more than three, padding that doesn't end on four bytes, and no terminator before it
+        assert!(read_table(b"ab\0\xff\xff\xff\xff\xff").is_err());
+        assert!(read_table(b"abc\0d\0\xff").is_err());
+        assert!(read_table(b"ab\0cd\xff\xff").is_err());
     }
 
     #[test]

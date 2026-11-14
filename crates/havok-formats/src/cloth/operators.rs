@@ -42,7 +42,7 @@ pub struct ObjectSpaceDeformer {
     pub start_vertex: u16,
     /// `endVertexIndex`.
     pub end_vertex: u16,
-    /// `partialWrite`.
+    /// `partialWrite` (false in SDK 2025.2, which stores none).
     pub partial_write: bool,
 }
 
@@ -66,7 +66,7 @@ pub struct BoneSpaceDeformer {
     pub start_vertex: u16,
     /// `endVertexIndex`.
     pub end_vertex: u16,
-    /// `partialWrite`.
+    /// `partialWrite` (false in SDK 2025.2, which stores none).
     pub partial_write: bool,
 }
 
@@ -485,8 +485,24 @@ fn object_space_deformer(v: Value<'_, '_>) -> Result<ObjectSpaceDeformer> {
         control_bytes: bytes(v, "controlBytes")?,
         start_vertex: word(v, "startVertexIndex")?,
         end_vertex: word(v, "endVertexIndex")?,
-        partial_write: flag(v, "partialWrite")?,
+        partial_write: deformer_partial_write(v)?,
     })
+}
+
+/// A deformer's `partialWrite`. SDK 2025.2 stores none (false here) and a `batchOffset` instead, 0 in every deformer
+/// of Ocarina of Time's cloth files; another value is refused, as what it shifts is not known.
+fn deformer_partial_write(v: Value<'_, '_>) -> Result<bool> {
+    if v.has_field("partialWrite") {
+        return flag(v, "partialWrite");
+    }
+    let offset = v.field("batchOffset")?;
+    match offset.unsigned()? {
+        0 => Ok(false),
+        other => Err(invalid(
+            offset.at(),
+            format!("batchOffset {other}: only 0 is read"),
+        )),
+    }
 }
 
 fn bone_space_deformer(v: Value<'_, '_>) -> Result<BoneSpaceDeformer> {
@@ -512,7 +528,7 @@ fn bone_space_deformer(v: Value<'_, '_>) -> Result<BoneSpaceDeformer> {
         control_bytes: bytes(v, "controlBytes")?,
         start_vertex: word(v, "startVertexIndex")?,
         end_vertex: word(v, "endVertexIndex")?,
-        partial_write: flag(v, "partialWrite")?,
+        partial_write: deformer_partial_write(v)?,
     })
 }
 

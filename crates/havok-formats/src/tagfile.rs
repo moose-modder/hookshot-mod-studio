@@ -3,14 +3,15 @@
     clippy::indexing_slicing,
     clippy::cast_possible_truncation
 )]
-use crate::types::{Cursor, read_types, required};
+use crate::types::{Cursor, MemberHashing, read_types, required};
 use crate::{Compendium, Result, Type, invalid, sections};
 
-/// SDK versions whose tagfile layout this reader knows: 2015.1, 2016.2 and 2018.1. All store the same section tree and
-/// the same item and patch tables; class layouts come from each file's own type metadata, and they differ between the
-/// SDKs (a 2015.1 `hkReferencedObject` is 16 bytes, a 2016.2 one 24). Sekiro holds one 2015.1 file, an animation clip;
-/// its other tagfiles are 2016.2, and Elden Ring's are 2018.1 beside 42 of 2016.2.
-pub const SDK_VERSIONS: [[u8; 8]; 3] = [*b"20150100", *b"20160200", *b"20180100"];
+/// SDK versions whose tagfile layout this reader knows: 2015.1, 2016.2, 2018.1 and 2025.2. All store the same section
+/// tree and the same item and patch tables; class layouts come from each file's own type metadata, and they differ
+/// between the SDKs (a 2015.1 `hkReferencedObject` is 16 bytes, a 2016.2 one 24). Sekiro holds one 2015.1 file, an
+/// animation clip; its other tagfiles are 2016.2, and Elden Ring's are 2018.1 beside 42 of 2016.2. 2025.2: the cloth
+/// files (`.bphcl`) of The Legend of Zelda: Ocarina of Time for Switch 2 (Hookshot Mod Studio's copy).
+pub const SDK_VERSIONS: [[u8; 8]; 4] = [*b"20150100", *b"20160200", *b"20180100", *b"20250200"];
 
 /// What an item holds, from the top nibble of the byte stored beside its type index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,7 +94,13 @@ impl<'a> Tagfile<'a> {
         }
         let ts = required(&children, &[*b"TYPE", *b"TCRF"])?;
         let types = if ts.signature == *b"TYPE" {
-            read_types(ts)?
+            // 2025.2 hashes a type's own members only (types.rs, `MemberHashing`)
+            let members = if version == *b"20250200" {
+                MemberHashing::Own
+            } else {
+                MemberHashing::WithParents
+            };
+            read_types(ts, members)?
         } else {
             let mut c = Cursor::new(ts);
             let id: [u8; 8] = c.array()?;

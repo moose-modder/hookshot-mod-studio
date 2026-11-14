@@ -7,6 +7,7 @@
 //! - [`bntx_write`]: a texture written back with a new image, encoded by [`bc_encode`]
 //! - [`bfres`]: models: skeleton, shapes with their LOD meshes, vertex and index buffers, materials
 //! - [`bfres_write`]: a model written back with new geometry for some shapes
+//! - [`phive`]: the cloth files' wrapper around a Havok tagfile (read with the vendored `havok-formats`)
 //!
 //! The byte-level layouts are ported from Syroot's NintenTools libraries (MIT) as maintained in
 //! KillzXGaming/LegacySwitchLibraries; see `THIRD_PARTY.md`.
@@ -21,6 +22,7 @@ mod bytes;
 mod error;
 pub mod image;
 mod math_srgb;
+pub mod phive;
 pub mod restbl;
 pub mod romfs;
 pub mod sarc;

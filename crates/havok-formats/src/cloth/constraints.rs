@@ -70,12 +70,58 @@ pub struct LocalRange {
     /// `referenceVertex`: the vertex index the particle is limited relative to (16-bit; a vertex of the reference mesh
     /// buffer, whose size this reader checks against the buffer's definition).
     pub reference_vertex: u16,
-    /// `maximumDistance`.
+    /// `maximumDistance`; SDK 2025.2's `shapeRadius`, stored in its place (between `referenceVertex` and
+    /// `maxNormalDistance`), the radius of the range's shape.
     pub maximum_distance: f32,
     /// `maxNormalDistance`.
     pub max_normal_distance: f32,
     /// `minNormalDistance`.
     pub min_normal_distance: f32,
+    /// `stiffness` of an entry of `localStiffnessConstraints` (`LocalStiffnessConstraint`, SDK 2025.2: the same
+    /// members and its own stiffness); `None` for an entry of `localConstraints`, which takes the set's.
+    pub stiffness: Option<f32>,
+}
+
+/// The entries of a local range constraint set: `localConstraints`, then (SDK 2025.2) `localStiffnessConstraints`,
+/// each with its own stiffness. In Ocarina of Time's cloth files 884 of the 1,124 sets use the first and 240 the
+/// second, never both; the capsule arrays 2025.2 adds (`localCapsuleConstraints`, `localCapsuleStiffnessConstraints`)
+/// are empty in every set, and a set with entries in them is refused.
+fn local_ranges(v: Value<'_, '_>, count: usize) -> Result<Vec<LocalRange>> {
+    let entry = |c: Value<'_, '_>, stiffness: bool| -> Result<LocalRange> {
+        Ok(LocalRange {
+            particle: particle(c.field("particleIndex")?, count)?,
+            reference_vertex: index16(c.field("referenceVertex")?)?,
+            // SDK 2025.2 stores `shapeRadius` in its place
+            maximum_distance: if c.has_field("maximumDistance") {
+                real(c, "maximumDistance")?
+            } else {
+                real(c, "shapeRadius")?
+            },
+            max_normal_distance: real(c, "maxNormalDistance")?,
+            min_normal_distance: real(c, "minNormalDistance")?,
+            stiffness: if stiffness {
+                Some(real(c, "stiffness")?)
+            } else {
+                None
+            },
+        })
+    };
+    let mut out = items(v, "localConstraints", |c| entry(c, false))?;
+    if v.has_field("localStiffnessConstraints") {
+        out.extend(items(v, "localStiffnessConstraints", |c| entry(c, true))?);
+    }
+    for capsules in ["localCapsuleConstraints", "localCapsuleStiffnessConstraints"] {
+        if v.has_field(capsules) {
+            let field = v.field(capsules)?;
+            if !field.array()?.is_empty() {
+                return Err(invalid(
+                    field.at(),
+                    format!("{capsules}: capsule local ranges are not read"),
+                ));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The shape a local range constraint limits a particle to (`hclLocalRangeConstraintSet`'s `shapeType`, a 32-bit enum).
@@ -301,15 +347,7 @@ pub(super) fn constraint_set(v: Value<'_, '_>, count: usize) -> Result<Constrain
             stiffness: real(v, "stiffness")?,
             shape_type: local_range_shape(v.field("shapeType")?)?,
             apply_normal_component: flag(v, "applyNormalComponent")?,
-            constraints: items(v, "localConstraints", |c| {
-                Ok(LocalRange {
-                    particle: particle(c.field("particleIndex")?, count)?,
-                    reference_vertex: index16(c.field("referenceVertex")?)?,
-                    maximum_distance: real(c, "maximumDistance")?,
-                    max_normal_distance: real(c, "maxNormalDistance")?,
-                    min_normal_distance: real(c, "minNormalDistance")?,
-                })
-            })?,
+            constraints: local_ranges(v, count)?,
         },
         "hclTransitionConstraintSet" => ConstraintKind::Transition {
             particles: items(v, "perParticleData", |p| {

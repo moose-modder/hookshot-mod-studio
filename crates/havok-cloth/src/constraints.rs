@@ -172,7 +172,9 @@ fn restore_velocity(p: &mut Particles<'_>, i: usize, velocity: Option<V4>) {
 
 /// Local range constraints: each keeps a particle within `maximumDistance` of a vertex of the reference buffer, and,
 /// with normals, between `minNormalDistance` and `maxNormalDistance` along that vertex's normal (a sphere), or within
-/// `maximumDistance` of the normal's line (a cylinder). `stiffness` is the set's; `s` the substep's.
+/// `maximumDistance` of the normal's line (a cylinder). `stiffness` is the set's, times an entry's own where it has
+/// one (SDK 2025.2's `localStiffnessConstraints`: every set with them has stiffness 1, so whether the game multiplies
+/// or replaces does not show); `s` the substep's.
 #[allow(
     clippy::too_many_arguments,
     reason = "the set's members and the solver state, as the set applies them"
@@ -190,9 +192,9 @@ pub fn local_range(
     if s <= 0.0 {
         return;
     }
-    let k = stiffness * s;
     let with_normals = apply_normal_component && !reference.normals.is_empty();
     for c in constraints {
+        let k = c.stiffness.map_or(stiffness, |own| stiffness * own) * s;
         let i = usize::from(c.particle);
         let v = usize::from(c.reference_vertex);
         let Some(origin) = reference.world_position(v) else {

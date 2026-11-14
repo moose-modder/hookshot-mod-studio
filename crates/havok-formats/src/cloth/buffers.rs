@@ -146,7 +146,8 @@ pub struct TransformTracker {
 /// `hclTransformSetUsage`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransformSetUsage {
-    /// `perComponentFlags`: the transform and its inverse transpose; bits as stored.
+    /// `perComponentFlags`: the transform and its inverse transpose; bits as stored. SDK 2025.2 stores the
+    /// transform's only, and the second is 0.
     pub per_component_flags: [u8; 2],
     /// `perComponentTransformTrackers`.
     pub trackers: Vec<TransformTracker>,
@@ -299,7 +300,12 @@ pub(super) fn buffer_definition(v: Value<'_, '_>) -> Result<BufferDefinition> {
         },
     };
     Ok(BufferDefinition {
-        name: text(v, "name")?,
+        // SDK 2025.2 names it `bufferName` (beside `meshName`)
+        name: if v.has_field("name") {
+            text(v, "name")?
+        } else {
+            text(v, "bufferName")?
+        },
         buffer_type: int(v, "type")?,
         sub_type: int(v, "subType")?,
         vertices: uint(v, "numVertices")?,
@@ -331,6 +337,26 @@ pub(super) fn buffer_access(v: Value<'_, '_>) -> Result<BufferAccess> {
     })
 }
 
+/// `perComponentFlags` of an `hclTransformSetUsage`: two components (the transform and its inverse transpose), or
+/// one in SDK 2025.2, the transform's (the second is then 0).
+fn transform_set_flags(usage: Value<'_, '_>) -> Result<[u8; 2]> {
+    let f = usage.field("perComponentFlags")?;
+    let flags = list(f, |b| {
+        u8::try_from(b.unsigned()?).map_err(|_| invalid(b.at(), "transform set usage flags outside u8"))
+    })?;
+    match flags.as_slice() {
+        &[transform] => Ok([transform, 0]),
+        &[transform, inverse_transpose] => Ok([transform, inverse_transpose]),
+        other => Err(invalid(
+            f.at(),
+            format!(
+                "perComponentFlags: expected 1 or 2 elements, found {}",
+                other.len()
+            ),
+        )),
+    }
+}
+
 fn bit_field(v: Value<'_, '_>) -> Result<BitField> {
     let storage = v.field("storage")?;
     Ok(BitField {
@@ -344,10 +370,7 @@ pub(super) fn transform_set_access(v: Value<'_, '_>) -> Result<TransformSetAcces
     Ok(TransformSetAccess {
         transform_set: uint(v, "transformSetIndex")?,
         usage: TransformSetUsage {
-            per_component_flags: fixed(usage, "perComponentFlags", |b| {
-                u8::try_from(b.unsigned()?)
-                    .map_err(|_| invalid(b.at(), "transform set usage flags outside u8"))
-            })?,
+            per_component_flags: transform_set_flags(usage)?,
             trackers: items(usage, "perComponentTransformTrackers", |t| {
                 Ok(TransformTracker {
                     read: bit_field(t.field("read")?)?,

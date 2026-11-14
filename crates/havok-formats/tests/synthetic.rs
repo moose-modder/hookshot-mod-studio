@@ -252,13 +252,13 @@ fn repeated_zero_size_elements_are_refused() {
     assert!(error.detail.contains("zero-size"), "{error}");
 }
 
-/// The SDKs whose tagfiles are read: 2015.1 (Sekiro's one clip), 2016.2 and 2018.1; the 2018.2 string, which no file
-/// of either game has, is not.
+/// The SDKs whose tagfiles are read: 2015.1 (Sekiro's one clip), 2016.2, 2018.1 and 2025.2 (Ocarina of Time's cloth
+/// files, in Hookshot Mod Studio's copy); the 2018.2 string, which no file of either game has, is not.
 #[test]
-fn the_sdk_versions_are_2015_1_2016_2_and_2018_1() {
+fn the_sdk_versions_are_2015_1_2016_2_2018_1_and_2025_2() {
     assert_eq!(
         havok_formats::SDK_VERSIONS,
-        [*b"20150100", *b"20160200", *b"20180100"]
+        [*b"20150100", *b"20160200", *b"20180100", *b"20250200"]
     );
     for sdk in havok_formats::SDK_VERSIONS {
         let bytes = fixture_with(&sdk, packed(3));

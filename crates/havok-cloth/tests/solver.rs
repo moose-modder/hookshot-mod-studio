@@ -477,7 +477,33 @@ fn local(max: f32, min_n: f32, max_n: f32) -> LocalRange {
         maximum_distance: max,
         max_normal_distance: max_n,
         min_normal_distance: min_n,
+        stiffness: None,
     }
+}
+
+#[test]
+fn an_entry_with_its_own_stiffness_moves_by_it_times_the_sets() {
+    // 3 outside the sphere of radius 1: the set's stiffness 1 takes the particle all the way back, an entry's own
+    // 0.5 half way (SDK 2025.2's localStiffnessConstraints)
+    let inv = [1.0];
+    let buffer = reference(v(0.0, 0.0, 0.0), v(0.0, 1.0, 0.0));
+    let mut prev = [v(0.0, 0.0, 4.0)];
+    let mut pos = [v(0.0, 0.0, 4.0)];
+    let own = LocalRange {
+        stiffness: Some(0.5),
+        ..local(1.0, -10.0, 10.0)
+    };
+    constraints::local_range(
+        &[own],
+        LocalRangeShape::Sphere,
+        false,
+        1.0,
+        &buffer,
+        &mut particles(&mut pos, &mut prev, &inv),
+        1.0,
+        false,
+    );
+    assert!((pos[0].0[2] - 2.5).abs() < 0.01, "{pos:?}");
 }
 
 #[test]
