@@ -92,7 +92,9 @@ Logs of every step are in `build` (`2_blender.log`, `5_check_scene.log`, ...), w
 
 Hair, hoods, belts and capes are simulated in the game (Havok Cloth), and the simulation moves the `Ph_` bones
 their meshes are skinned to. The app simulates the model's cloth file itself (`modstudio-core`'s `cloth`), after
-letting the cloth settle at rest:
+letting the cloth settle at rest. The model's cloth file is the one the game's actors give it (read from their packs
+once and kept in `.modstudio\cloth_links.json` in the projects folder), which isn't always named after the model:
+the Great Fairy's is `Npc_U_GreantFairy`, and Dark Link wears adult Link's.
 
 - **In the app**: *Cloth physics* in the 3D view runs it live: drag the model to turn it, drag it up and let go to
   drop it (a drag beside the model still moves the camera). *Test cloth animation* moves the model through a set
@@ -153,7 +155,8 @@ The build reads it back at rest (`prep_for_game.py`: `build\cloth_edits.json`), 
 with the differences into the mod (`modstudio-core`'s `cloth_edit`): only what changed is written, the rest of the
 file stays byte for byte as the game has it, and a scene left as it was gives no cloth file at all (the game's is
 used). What it wrote is read back and simulated before it goes into the mod; the build report lists each change
-("Cloth changed"), and *Cloth physics* on *Your mod* runs the written file.
+("Cloth changed"), and *Cloth physics* on *Your mod* runs the written file. Some models share a cloth file (adult
+Link and Dark Link, ReDead and Gibdo, ...): the change then shows on the other model too, and the build says so.
 
 New colliders are named in the cloth file's own list of colliders (its parameter archive); the actor's pack has a
 list of them too (`Phive/ClothParam/<model>.phive__ClothParam.bgyml`), which the build doesn't change yet.

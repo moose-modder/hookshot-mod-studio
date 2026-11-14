@@ -229,7 +229,12 @@ fn romfs_with(state: &App, overlay: Option<&Path>) -> Result<Arc<Romfs>> {
 #[tauri::command]
 async fn has_cloth(state: State<'_, App>, path: String, overlay: Option<PathBuf>) -> Result<bool> {
     let romfs = romfs_with(&state, overlay.as_deref())?;
-    Ok(cloth::find_cloth(&romfs, &path).is_some())
+    let cache = state.settings().cache_dir();
+    tauri::async_runtime::spawn_blocking(move || {
+        cloth::find_cloth(&romfs, Some(&cache), &path).is_some()
+    })
+    .await
+    .map_err(err)
 }
 
 /// How long a step of the 3D view's cloth simulation is.
@@ -263,10 +268,13 @@ async fn cloth_open(
     overlay: Option<PathBuf>,
 ) -> Result<Option<ClothSession>> {
     let romfs = romfs_with(&state, overlay.as_deref())?;
-    let Some(live) = tauri::async_runtime::spawn_blocking(move || cloth::open_model(&romfs, &path))
-        .await
-        .map_err(err)?
-        .map_err(err)?
+    let cache = state.settings().cache_dir();
+    let Some(live) = tauri::async_runtime::spawn_blocking(move || {
+        cloth::open_model(&romfs, Some(&cache), &path)
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)?
     else {
         return Ok(None);
     };
@@ -346,7 +354,12 @@ async fn get_project(state: State<'_, App>, file: PathBuf) -> Result<ProjectView
         last_build: p.last_build(),
         mod_romfs: p.mod_romfs(),
         work_dir: p.work_dir(),
-        has_cloth: cloth::cloth_file(&settings.game_romfs, &p.data.model).is_some(),
+        has_cloth: cloth::cloth_file(
+            &settings.game_romfs,
+            Some(&settings.cache_dir()),
+            &p.data.model,
+        )
+        .is_some(),
         data: p.data,
     })
 }

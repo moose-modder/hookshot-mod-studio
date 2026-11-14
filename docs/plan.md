@@ -233,7 +233,7 @@ animations; new bones last, because what moves a new bone in game is cloth or an
   (`examples/anim_probe.rs`: the townsman's hold the rest positions of most of his bones), so a bone moved in
   Blender is put back in game, and a new bone has no animation.
 - **Cloth.** Hair, hoods, belts and capes are simulated with Havok Cloth, from
-  `Phive/Cloth/<model>.Nin_Ounce_NVN2.bphcl` (171 files). Each simulated part (child Link has 20, adult Link 22)
+  `Phive/Cloth/<name>.Nin_Ounce_NVN2.bphcl` (171 files; the model's actor pack names which). Each simulated part (child Link has 20, adult Link 22)
   runs the same operators: a particle mesh skinned to the animated bones (`hclObjectSpaceSkinPOperator`), moved and
   simulated (`hclMoveParticlesOperator`, `hclSimulateOperator`), then bones set from the simulated triangles
   (`hclSimpleMeshBoneDeformOperator`). Those are the `Ph_` bones (178 of child Link's 309; 131 are named in his
@@ -275,7 +275,7 @@ damping is 0.001 a second). Not simulated: `hclVolumeConstraint` (12 files: adul
 ...), `hclBonePlanesConstraintSet` (3 horse files), aerodynamics (wind).
 
 **Cloth preview (2026-11-14, same branch):** `modstudio-core::cloth` runs a model's cloth file
-(`Phive/Cloth/<archive>.Nin_Ounce_NVN2.bphcl`; 158 of the 171 files are named after a model's archive), read through
+(the one its actors give it: `cloth_links`, below; at first the file named after the model's archive), read through
 the romfs with a mod's overlay (a mod's own cloth file is the one simulated), against a test motion of the whole model
 (no animation is read yet): it stands, turns 60 degrees each way, runs 1.5 m and stops, jumps 35 cm and stands again
 (6.5 s for a model of child Link's size, 1.18 m; larger models move further and slower, in proportion and by the square
@@ -363,9 +363,28 @@ files have no collider on a bone to copy, 1 nothing to copy a sphere from: said 
 and a build: a copied head collider, a new sphere on the back for the hood, the sword collider deleted and the neck
 collider given to the hood, all in the written file. Not yet checked in game.
 
-**Next:** in game, each kind of edit on one character. The actor pack's `ClothParam` lists the colliders too (the
-same names as the parameter archive); the build doesn't change it: if the game wants new colliders there, that's a
-BYML and SARC write into the actor's pack (the prototype's writers, and the size table's entries for files in packs).
+Checked in game (2026-11-14): a new sphere collider behind adult Link's back, given to his hood, holds the cap out.
+The actor pack's `ClothParam` lists the colliders too (the same names as the parameter archive); the build doesn't
+change it, and the game didn't need it to.
+
+**Done (2026-11-14): every model's cloth file, from the actor packs.** Matching names found the wrong file or none
+for 17 models. `modstudio-core::cloth_links` reads each actor pack (`Pack/Actor/<actor>.pack.zs`, 8,373; BYML read
+by `modstudio-formats::byml`): the actor's `ActorParam` names its model info (`ModelProjectName`.`FmdbName`, the
+model) and its physics, whose controller set's `ClothList` names the cloth files; each file takes what it leaves out
+from its `$parent`, in the same pack. The links are kept in `<workspace>/.modstudio/cloth_links.json` and read
+again when the packs change (reading them takes 0.5 s here). Every lookup (the app's *Cloth physics*, a project's
+cloth scene, the Blender preview, the build) uses them, and falls back to a file named after the model only when
+the packs give it none. From the game (`examples/cloth_links.rs`): 176 models get cloth from 170 files
+(`Horse_Link_Body` has no actor and no model). Against the old guess: 163 agree; 9 are new, among them the Great
+Fairy (`Npc_U_GreantFairy`), Jabu-Jabu, Gibdo (ReDead's file) and Dark Link (adult Link's); 4 had the group's file
+where their own exists (Kotake, the Gerudo leader, a Goron, Nabooru's Iron Knuckle in cutscenes); 4 sub-models
+(Sheik's knife, Ganon's crystal, ...) had the group's cloth, which no actor gives them. 7 files are shared by two
+models (adult Link and Dark Link, ReDead and Gibdo, the Poes, ...): a build that changes one says which other
+model changes with it. Adult Zelda has two files (the second, a little smaller, for the actor
+`Npc_Hylia_Zelda_Adult_Scalable`): the main one is edited, and the build says the other is left as it is.
+
+**Next (put off for now):** in game, the other kinds of edit (moved, resized and deleted colliders, a collider given
+to or taken from a part, part settings).
 
 Work: the reader and editor ported to Rust (`modstudio-formats`: tagfile, AAMP, BYML writing, SARC writing), with
 the round trips above as dump tests; new objects in a tagfile (items, patches, and the type table when a type isn't

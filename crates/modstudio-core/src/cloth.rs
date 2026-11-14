@@ -1,5 +1,5 @@
 //! Cloth previews. The game simulates hair, hoods, belts and capes with Havok Cloth, from the model's cloth file
-//! (`Phive/Cloth/<model>.Nin_Ounce_NVN2.bphcl`), and the simulation sets the `Ph_` bones the drawn meshes are
+//! (`Phive/Cloth/<name>.Nin_Ounce_NVN2.bphcl`, the one its actors give it: [`cloth_sources`]), and the simulation sets the `Ph_` bones the drawn meshes are
 //! skinned to. [`simulate`] runs that file (with the vendored havok-formats and havok-cloth) against a test motion
 //! and keeps where each of those bones is in every frame; `modstudio cloth --open` makes an action of it on a Blender
 //! scene's armature (`pipeline/cloth_preview.py`), for meshes not built yet. The app's 3D view runs the simulation
@@ -28,7 +28,7 @@ use crate::math::{self, Mat4};
 use crate::progress::Progress;
 use crate::project::Project;
 use crate::settings::Settings;
-use crate::{Context, Error, Result, args, catalog, tools};
+use crate::{Context, Error, Result, args, catalog, cloth_links, tools};
 
 /// Frames a second, of the simulation and of the action made from it.
 pub const FPS: u32 = 30;
@@ -77,25 +77,41 @@ pub struct PreviewBone {
     pub frames: Vec<Mat4>,
 }
 
-/// Where a model's cloth file would be, in the romfs: named after the model's archive (158 of the 171 files are),
-/// else after the model (`model`: `Model/<archive>.<model>.bfres.zs` or a model's name).
-pub fn cloth_paths(model: &str) -> [String; 2] {
-    let (archive, name) = catalog::split_name(model);
-    [archive, name].map(|n| format!("Phive/Cloth/{n}.Nin_Ounce_NVN2.bphcl"))
+/// A model's cloth files, as romfs paths, the one to edit first (`model`: `Model/<group>.<model>.bfres.zs`): the ones
+/// the game's actors give it ([`cloth_links`]: read from the packs of `game_romfs`, kept in `cache_dir`), else a file
+/// named after the model where the game has one (for a game whose packs don't read). Empty: the model has no cloth.
+pub fn cloth_sources(game_romfs: &Path, cache_dir: Option<&Path>, model: &str) -> Vec<String> {
+    if let Ok(links) = cloth_links::links(game_romfs, cache_dir) {
+        let linked = links.cloth_of(model);
+        if !linked.is_empty() {
+            return linked.into_iter().map(str::to_owned).collect();
+        }
+    }
+    let (_, name) = catalog::split_name(model);
+    let own = format!("Phive/Cloth/{name}.Nin_Ounce_NVN2.bphcl");
+    if game_romfs.join(&own).is_file() {
+        vec![own]
+    } else {
+        Vec::new()
+    }
 }
 
-/// The cloth file of a model in the game's romfs folder, if it has one.
-pub fn cloth_file(romfs: &Path, model: &str) -> Option<PathBuf> {
-    cloth_paths(model)
+/// The cloth file of a model in the game's romfs folder ([`cloth_sources`]' first), if it has one.
+pub fn cloth_file(game_romfs: &Path, cache_dir: Option<&Path>, model: &str) -> Option<PathBuf> {
+    cloth_sources(game_romfs, cache_dir, model)
         .iter()
-        .map(|p| romfs.join(p))
+        .map(|p| game_romfs.join(p))
         .find(|p| p.is_file())
 }
 
 /// The cloth file of a model as `romfs` has it (a mod's own where an overlay has one): its path in the romfs and
 /// where it's read from.
-pub fn find_cloth(romfs: &Romfs, model: &str) -> Option<(String, PathBuf)> {
-    cloth_paths(model)
+pub fn find_cloth(
+    romfs: &Romfs,
+    cache_dir: Option<&Path>,
+    model: &str,
+) -> Option<(String, PathBuf)> {
+    cloth_sources(romfs.root(), cache_dir, model)
         .into_iter()
         .map(|p| {
             let file = romfs.resolve(&p);
@@ -104,10 +120,57 @@ pub fn find_cloth(romfs: &Romfs, model: &str) -> Option<(String, PathBuf)> {
         .find(|(_, file)| file.is_file())
 }
 
+/// What a change to `source`, one of `model`'s cloth files, means beyond the model, as lines for a build's
+/// warnings: the other models the game gives the same file (they change too), and the model's other cloth files
+/// (left as they are).
+pub fn cloth_notes(
+    game_romfs: &Path,
+    cache_dir: Option<&Path>,
+    model: &str,
+    source: &str,
+) -> Vec<String> {
+    let Ok(links) = cloth_links::links(game_romfs, cache_dir) else {
+        return Vec::new();
+    };
+    let model = model.replace('\\', "/");
+    let mut notes = Vec::new();
+    let others: Vec<String> = links
+        .models_with(source)
+        .into_iter()
+        .filter(|m| *m != model)
+        .map(crate::project::model_name)
+        .collect();
+    if !others.is_empty() {
+        notes.push(format!(
+            "{source}: the game gives this cloth to {} too, so the change shows on {} as well",
+            others.join(", "),
+            if others.len() == 1 { "it" } else { "them" }
+        ));
+    }
+    for other in links.cloth_of(&model) {
+        if other != source {
+            let actors = links
+                .models
+                .get(&model)
+                .and_then(|l| l.iter().find(|l| l.cloth == other))
+                .map(|l| l.actors.join(", "))
+                .unwrap_or_default();
+            notes.push(format!(
+                "{other}: the model's cloth for {actors} as well; this one is left as the game has it"
+            ));
+        }
+    }
+    notes
+}
+
 /// A model's cloth as `romfs` has it, settled at rest and ready to step ([`LiveCloth`]), or `None` if it has no
 /// cloth file.
-pub fn open_model(romfs: &Romfs, model: &str) -> Result<Option<LiveCloth>> {
-    let Some((source, file)) = find_cloth(romfs, model) else {
+pub fn open_model(
+    romfs: &Romfs,
+    cache_dir: Option<&Path>,
+    model: &str,
+) -> Result<Option<LiveCloth>> {
+    let Some((source, file)) = find_cloth(romfs, cache_dir, model) else {
         return Ok(None);
     };
     let bytes = std::fs::read(&file).context(file.display())?;
@@ -518,12 +581,13 @@ fn world_pose(parents: &[i16], pose: &[QsTransform]) -> Vec<ClothMat4> {
 /// `<work>/cloth_preview.json`.
 pub fn write_preview(settings: &Settings, project: &Project) -> Result<(PathBuf, Preview)> {
     let model = &project.data.model;
-    let file = cloth_file(&settings.game_romfs, model).ok_or_else(|| {
-        Error(format!(
-            "{}: the game has no cloth for this model (nothing in Phive/Cloth is named after it)",
-            crate::project::model_name(model)
-        ))
-    })?;
+    let file =
+        cloth_file(&settings.game_romfs, Some(&settings.cache_dir()), model).ok_or_else(|| {
+            Error(format!(
+                "{}: the game has no cloth for this model",
+                crate::project::model_name(model)
+            ))
+        })?;
     let bytes = std::fs::read(&file).context(file.display())?;
     let source = file
         .strip_prefix(&settings.game_romfs)
@@ -650,21 +714,26 @@ mod tests {
     }
 
     #[test]
-    fn the_cloth_file_is_named_after_the_archive_or_the_model() {
+    fn without_actor_packs_the_cloth_file_is_the_one_named_after_the_model() {
         let dir = std::env::temp_dir().join(format!("modstudio-cloth-{}", std::process::id()));
         let cloth = dir.join("Phive").join("Cloth");
         std::fs::create_dir_all(&cloth).unwrap();
         std::fs::write(cloth.join("Npc_A.Nin_Ounce_NVN2.bphcl"), b"").unwrap();
         std::fs::write(cloth.join("Npc_B_Body.Nin_Ounce_NVN2.bphcl"), b"").unwrap();
         assert_eq!(
-            cloth_file(&dir, "Model/Npc_A.Npc_A.bfres.zs"),
+            cloth_file(&dir, None, "Model/Npc_A.Npc_A.bfres.zs"),
             Some(cloth.join("Npc_A.Nin_Ounce_NVN2.bphcl"))
         );
         assert_eq!(
-            cloth_file(&dir, "Model/Npc_B.Npc_B_Body.bfres.zs"),
+            cloth_file(&dir, None, "Model/Npc_B.Npc_B_Body.bfres.zs"),
             Some(cloth.join("Npc_B_Body.Nin_Ounce_NVN2.bphcl"))
         );
-        assert_eq!(cloth_file(&dir, "Model/Npc_C.Npc_C.bfres.zs"), None);
+        // another model of the group doesn't take the group's cloth (a knife isn't dressed in its owner's)
+        assert_eq!(
+            cloth_file(&dir, None, "Model/Npc_A.Npc_A_Knife.bfres.zs"),
+            None
+        );
+        assert_eq!(cloth_file(&dir, None, "Model/Npc_C.Npc_C.bfres.zs"), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

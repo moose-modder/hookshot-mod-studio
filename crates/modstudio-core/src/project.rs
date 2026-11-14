@@ -268,7 +268,12 @@ pub fn create(
         let scripts = tools::scripts_dir(&settings.cache_dir())?;
         // the model's cloth, to edit in the scene
         let cloth_json = dir.join(crate::cloth_edit::SCENE_FILE);
-        let cloth = crate::cloth_edit::write_scene(romfs.root(), &model_path, &cloth_json)?;
+        let cloth = crate::cloth_edit::write_scene(
+            romfs.root(),
+            Some(&settings.cache_dir()),
+            &model_path,
+            &cloth_json,
+        )?;
         if let Some(c) = &cloth {
             progress.line(format!(
                 "cloth: {} collider(s), {} part(s)",

@@ -137,14 +137,16 @@ pub struct PartCollider {
     pub meets: bool,
 }
 
-/// The cloth of a model in the game's romfs, as a scene shows it, written to `path` as JSON (for `make_scene.py` or
+/// The cloth of a model in the game's romfs (the file its actors give it, [`crate::cloth::cloth_sources`]; the
+/// links kept in `cache_dir`), as a scene shows it, written to `path` as JSON (for `make_scene.py` or
 /// `cloth_scene.py`); `None` and nothing written if the model has no cloth.
 pub fn write_scene(
     romfs: &std::path::Path,
+    cache_dir: Option<&std::path::Path>,
     model: &str,
     path: &std::path::Path,
 ) -> Result<Option<ClothScene>> {
-    let Some(file) = crate::cloth::cloth_file(romfs, model) else {
+    let Some(file) = crate::cloth::cloth_file(romfs, cache_dir, model) else {
         return Ok(None);
     };
     let source = file
@@ -170,13 +172,18 @@ pub fn add_to_scene(
     let blender = settings.blender()?;
     progress.step("The model's cloth");
     let json = project.dir().join(SCENE_FILE);
-    let scene =
-        write_scene(&settings.game_romfs, &project.data.model, &json)?.ok_or_else(|| {
-            Error(format!(
-                "{}: the game has no cloth for this model",
-                crate::project::model_name(&project.data.model)
-            ))
-        })?;
+    let scene = write_scene(
+        &settings.game_romfs,
+        Some(&settings.cache_dir()),
+        &project.data.model,
+        &json,
+    )?
+    .ok_or_else(|| {
+        Error(format!(
+            "{}: the game has no cloth for this model",
+            crate::project::model_name(&project.data.model)
+        ))
+    })?;
     progress.line(format!(
         "{}: {} collider(s), {} part(s)",
         scene.source,

@@ -301,10 +301,13 @@ fn run(
     }
     progress.check()?;
 
-    // 3b. The cloth: the scene's, written into the game's cloth file where it differs (an earlier build's file goes
-    // first)
-    for rel in cloth::cloth_paths(&project.data.model) {
-        fsutil::remove_file(&mod_romfs.join(rel))?;
+    // 3b. The cloth: the scene's, written into the game's cloth file where it differs (an earlier build's files go
+    // first, whichever cloth file they were)
+    let cloth_dir = mod_romfs.join("Phive").join("Cloth");
+    for rel in fsutil::files_under(&cloth_dir) {
+        if rel.to_string_lossy().ends_with(".bphcl") {
+            fsutil::remove_file(&cloth_dir.join(rel))?;
+        }
     }
     let cloth_edits = work.join(cloth_edit::EDITS_FILE);
     if cloth_edits.is_file() {
@@ -339,6 +342,16 @@ fn run(
                     edited.source
                 ));
                 report.cloth = applied.changes;
+                // another model given the same file changes too; the model's other cloth files don't
+                for w in cloth::cloth_notes(
+                    romfs.root(),
+                    Some(&settings.cache_dir()),
+                    &project.data.model,
+                    &edited.source,
+                ) {
+                    progress.warn(w.clone());
+                    report.warnings.push(w);
+                }
             }
             None => progress.line("as the game has it: the game's cloth file is used"),
         }

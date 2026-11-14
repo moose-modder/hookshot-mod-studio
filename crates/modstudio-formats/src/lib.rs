@@ -7,6 +7,7 @@
 //! - [`bntx_write`]: a texture written back with a new image, encoded by [`bc_encode`]
 //! - [`bfres`]: models: skeleton, shapes with their LOD meshes, vertex and index buffers, materials
 //! - [`bfres_write`]: a model written back with new geometry for some shapes
+//! - [`byml`]: parameter files (`*.bgyml`: an actor pack's model info and physics controllers), read
 //! - [`aamp`]: parameter archives (the cloth files' lists of meshes and colliders), read and written
 //! - [`phive`]: the cloth files' wrapper around a Havok tagfile (read with the vendored `havok-formats`)
 //!
@@ -20,6 +21,7 @@ pub mod bfres;
 pub mod bfres_write;
 pub mod bntx;
 pub mod bntx_write;
+pub mod byml;
 mod bytes;
 mod error;
 pub mod image;

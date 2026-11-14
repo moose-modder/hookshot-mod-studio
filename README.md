@@ -64,7 +64,7 @@ And the format tools: `inspect`, `export` (`.glb` + PNG + `model.json`), `replac
 
 | Path | |
 |---|---|
-| `crates/modstudio-formats` | the game's file formats: zstd with the game's dictionaries, SARC, BNTX, BFRES (reading and writing), the cloth files' wrapper |
+| `crates/modstudio-formats` | the game's file formats: zstd with the game's dictionaries, SARC, BYML (reading), BNTX, BFRES (reading and writing), the cloth files' wrapper and parameter archives |
 | `crates/havok-formats`, `crates/havok-cloth` | Havok tagfiles and the cloth simulation, vendored from Kalmarv's crates and adapted to the game's Havok version (THIRD_PARTY.md) |
 | `crates/modstudio-core` | what the CLI and the app do: export, replace, previews, settings, projects, builds, installed mods |
 | `crates/modstudio-cli` | `modstudio`, the command line |
