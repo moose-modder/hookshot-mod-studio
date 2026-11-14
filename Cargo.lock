@@ -1816,7 +1816,7 @@ dependencies = [
 
 [[package]]
 name = "modstudio-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "modstudio-core",
  "modstudio-formats",
@@ -1829,7 +1829,7 @@ dependencies = [
 
 [[package]]
 name = "modstudio-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "modstudio-core",
  "modstudio-formats",
@@ -1838,7 +1838,7 @@ dependencies = [
 
 [[package]]
 name = "modstudio-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "modstudio-formats",
  "serde",
@@ -1847,7 +1847,7 @@ dependencies = [
 
 [[package]]
 name = "modstudio-formats"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "png",
  "ruzstd",
