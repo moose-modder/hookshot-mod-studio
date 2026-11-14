@@ -4,6 +4,8 @@
 //! - Positions, normals and tangents are taken to the rest pose through the export's own joints and inverse bind
 //!   matrices (so the armature's orientation in Blender doesn't matter), then stored as the shape stores them:
 //!   in model space for smooth skinning, in the bone's space for rigid (1 influence) and unskinned (0) shapes.
+//! - A scene whose skeleton is the game's at another size (a glTF import into a Blender scene with unit scale
+//!   0.01 makes it 100 times larger) is taken back to the game's size first, with a warning.
 //! - Influences are matched to the game's bones by name. Smooth shapes keep their skin count (the strongest
 //!   influences, weights in whole steps that add up exactly); a bone without a smooth matrix gives its weight to
 //!   its nearest ancestor that has one. Rigid shapes take each vertex's strongest bone (its nearest ancestor with
@@ -41,6 +43,10 @@ pub struct ShapeReport {
 pub struct GeometryReport {
     pub shapes: Vec<ShapeReport>,
     pub warnings: Vec<String>,
+    /// For a scene at another size than the game's: what took it to the game's size and place (glTF space,
+    /// column-major).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scene_to_game: Option<Mat4>,
 }
 
 impl GeometryReport {
@@ -75,10 +81,13 @@ struct SceneMesh {
     indices: Vec<u32>,
 }
 
+/// `world`: every node's transform, already taken to the game's size and place (`to_game`, identity for a scene at
+/// the game's size).
 fn read_mesh(
     gltf: &Gltf,
     node: &crate::gltf::MeshNode,
     world: &[Mat4],
+    to_game: &Mat4,
     bones: &BTreeMap<&str, usize>,
     report: &mut GeometryReport,
 ) -> Result<SceneMesh> {
@@ -224,7 +233,7 @@ fn read_mesh(
                 let total: f32 = (0..4).map(|r| m[r * 5]).sum::<f32>() / 4.0;
                 if total.abs() < 1e-6 {
                     // No weights: the rest pose is the mesh as stored.
-                    *m = math::IDENTITY;
+                    *m = *to_game;
                 }
             }
         }
@@ -773,6 +782,84 @@ fn moved_bones(
     ));
 }
 
+/// How far the scene's size may be from the game's before it's taken back to the game's (moving bones on purpose
+/// doesn't come near it).
+const SCENE_SIZE_TOLERANCE: f64 = 0.1;
+
+/// A bone's place in the scene and in the game.
+type BonePlaces = ([f32; 3], [f32; 3]);
+
+/// The scene at another size than the game: when the scene's skeleton is the game's, scaled (Blender's glTF import
+/// scales a model 100 times into a scene whose unit scale is 0.01; a scaled armature does the same), the transform
+/// that takes the scene to the game's size and place, and the scene's size relative to the game's. The game keeps
+/// its skeleton, so meshes left at another size are drawn at that size around it (a 100 times larger Link, with
+/// the camera inside him).
+fn scene_to_game(pairs: &[BonePlaces]) -> Option<(Mat4, f64)> {
+    if pairs.len() < 3 {
+        return None;
+    }
+    let n = pairs.len() as f64;
+    let centre = |pick: fn(&BonePlaces) -> [f32; 3]| -> [f64; 3] {
+        [0, 1, 2].map(|c| pairs.iter().map(|p| f64::from(pick(p)[c])).sum::<f64>() / n)
+    };
+    let (cs, cg) = (centre(|p| p.0), centre(|p| p.1));
+    let (mut spread_scene, mut spread_game, mut cov) = (0f64, 0f64, 0f64);
+    for (x, g) in pairs {
+        for c in 0..3 {
+            let (dx, dg) = (f64::from(x[c]) - cs[c], f64::from(g[c]) - cg[c]);
+            spread_scene += dx * dx;
+            spread_game += dg * dg;
+            cov += dx * dg;
+        }
+    }
+    if spread_scene < 1e-12 || spread_game < 1e-12 {
+        return None;
+    }
+    // Least squares: game = s * (scene - cs) + cg
+    let s = cov / spread_scene;
+    if s <= 0.0 || (s.ln()).abs() < (1.0 + SCENE_SIZE_TOLERANCE).ln() {
+        return None;
+    }
+    // Only a skeleton that is the game's, scaled: what's left after scaling it back is small against its size.
+    let residual: f64 = pairs
+        .iter()
+        .map(|(x, g)| {
+            (0..3)
+                .map(|c| (s * (f64::from(x[c]) - cs[c]) + cg[c] - f64::from(g[c])).powi(2))
+                .sum::<f64>()
+        })
+        .sum();
+    if residual > 0.05f64.powi(2) * spread_game {
+        return None;
+    }
+    let t = [0, 1, 2].map(|c| (cg[c] - s * cs[c]) as f32);
+    let s32 = s as f32;
+    #[rustfmt::skip]
+    let m = [
+        s32, 0., 0., 0.,
+        0., s32, 0., 0.,
+        0., 0., s32, 0.,
+        t[0], t[1], t[2], 1.,
+    ];
+    Some((m, 1.0 / s))
+}
+
+/// "100 times", "2.5 times", "1/100 of": how the scene's size compares with the game's.
+fn size_words(size: f64) -> String {
+    let num = |x: f64| {
+        if (x - x.round()).abs() < 0.05 * x {
+            format!("{}", x.round())
+        } else {
+            format!("{x:.2}")
+        }
+    };
+    if size >= 1.0 {
+        format!("{} times the game's size", num(size))
+    } else {
+        format!("1/{} of the game's size", num(1.0 / size))
+    }
+}
+
 /// "<mesh>.lod<n>" (n >= 1): the scene's version of the mesh's LOD n.
 fn lod_of(name: &str) -> (&str, usize) {
     match name.rsplit_once(".lod") {
@@ -979,7 +1066,7 @@ pub fn geometry_from_gltf(
 ) -> Result<(BTreeMap<usize, ShapeGeometry>, GeometryReport)> {
     let mut report = GeometryReport::default();
     let (_, game_world) = bone_matrices(model)?;
-    let scene_world = gltf.world_matrices()?;
+    let mut scene_world = gltf.world_matrices()?;
     let bones: BTreeMap<&str, usize> = model
         .skeleton
         .bones
@@ -987,6 +1074,28 @@ pub fn geometry_from_gltf(
         .enumerate()
         .map(|(i, b)| (b.name.as_str(), i))
         .collect();
+    // A scene at another size than the game's is taken to the game's size first.
+    let pairs: Vec<BonePlaces> = scene_world
+        .iter()
+        .enumerate()
+        .filter_map(|(node, m)| {
+            let &b = bones.get(gltf.node_name(node).as_str())?;
+            let g = &game_world[b];
+            Some(([m[12], m[13], m[14]], [g[12], g[13], g[14]]))
+        })
+        .collect();
+    let mut to_game = math::IDENTITY;
+    if let Some((m, size)) = scene_to_game(&pairs) {
+        report.warn(format!(
+            "The scene is {} (its skeleton is the game's, scaled): the model was taken back to the game's size, as the game keeps its skeleton. A scaled armature does this, or a glTF import into a Blender scene whose unit scale isn't 1 (0.01 makes models 100 times larger); keep both at 1.",
+            size_words(size)
+        ));
+        for w in scene_world.iter_mut() {
+            *w = math::mul(&m, w);
+        }
+        to_game = m;
+        report.scene_to_game = Some(m);
+    }
     // Per shape, the scene's mesh of each LOD (0: the mesh itself).
     moved_bones(model, gltf, &game_world, &scene_world, &bones, &mut report);
     let mut by_shape: BTreeMap<usize, Vec<Option<SceneMesh>>> = BTreeMap::new();
@@ -1023,7 +1132,14 @@ pub fn geometry_from_gltf(
             ));
             continue;
         }
-        slots[lod] = Some(read_mesh(gltf, &node, &scene_world, &bones, &mut report)?);
+        slots[lod] = Some(read_mesh(
+            gltf,
+            &node,
+            &scene_world,
+            &to_game,
+            &bones,
+            &mut report,
+        )?);
     }
     let mut out = BTreeMap::new();
     for (si, shape) in model.shapes.iter().enumerate() {
@@ -1127,6 +1243,74 @@ pub fn replace_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A small skeleton in the game (child Link's proportions: about 1.2 m).
+    fn skeleton() -> Vec<[f32; 3]> {
+        vec![
+            [0.0, 0.0, 0.0],
+            [0.0, 0.6, 0.0],
+            [0.0, 0.9, 0.05],
+            [0.0, 1.15, 0.0],
+            [0.2, 0.85, 0.0],
+            [-0.2, 0.85, 0.0],
+            [0.1, 0.3, 0.0],
+            [-0.1, 0.3, 0.0],
+        ]
+    }
+
+    #[test]
+    fn scene_at_another_size_goes_back_to_the_games() {
+        let game = skeleton();
+        // 100 times larger and moved, as a glTF import into a scene with unit scale 0.01 (plus an offset)
+        let scene: Vec<[f32; 3]> = game
+            .iter()
+            .map(|p| [p[0] * 100.0 + 3.0, p[1] * 100.0, p[2] * 100.0 - 1.0])
+            .collect();
+        let pairs: Vec<_> = scene.iter().copied().zip(game.iter().copied()).collect();
+        let (m, size) = scene_to_game(&pairs).expect("a scaled skeleton");
+        assert!((size - 100.0).abs() < 1e-3, "{size}");
+        for (x, g) in &pairs {
+            let back = math::transform_point(&m, *x);
+            for c in 0..3 {
+                assert!((back[c] - g[c]).abs() < 1e-4, "{back:?} {g:?}");
+            }
+        }
+        // Any size, not only 100 (inches: 39.37)
+        for f in [0.001f32, 0.02, 0.5, 0.85, 1.2, 2.5, 10.0, 39.37, 1000.0] {
+            let pairs: Vec<_> = game
+                .iter()
+                .map(|p| ([p[0] * f - 0.5, p[1] * f + 2.0, p[2] * f], *p))
+                .collect();
+            let (m, size) = scene_to_game(&pairs).unwrap_or_else(|| panic!("size {f}"));
+            assert!((size / f64::from(f) - 1.0).abs() < 1e-4, "{f}: {size}");
+            for (x, g) in &pairs {
+                let back = math::transform_point(&m, *x);
+                for c in 0..3 {
+                    assert!((back[c] - g[c]).abs() < 1e-4, "{f}: {back:?} {g:?}");
+                }
+            }
+        }
+        assert_eq!(size_words(size), "100 times the game's size");
+        assert_eq!(size_words(0.01), "1/100 of the game's size");
+        assert_eq!(size_words(2.5), "2.50 times the game's size");
+    }
+
+    #[test]
+    fn scene_at_the_games_size_is_left_alone() {
+        let game = skeleton();
+        let same: Vec<_> = game.iter().copied().zip(game.iter().copied()).collect();
+        assert!(scene_to_game(&same).is_none());
+        // Bones moved on purpose (arms 10 cm out): not a scaled skeleton
+        let mut moved = same.clone();
+        moved[4].0[0] += 0.1;
+        moved[5].0[0] -= 0.1;
+        assert!(scene_to_game(&moved).is_none());
+        // 5% larger: within the tolerance
+        let slightly: Vec<_> = game.iter().map(|p| (p.map(|x| x * 1.05), *p)).collect();
+        assert!(scene_to_game(&slightly).is_none());
+        // Too few bones to tell
+        assert!(scene_to_game(&same[..2]).is_none());
+    }
 
     #[test]
     fn weights_add_up_in_whole_steps() {

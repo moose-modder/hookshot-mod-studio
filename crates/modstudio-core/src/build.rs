@@ -334,6 +334,7 @@ fn run(
             &mod_romfs,
             &vanilla,
             &prep_report,
+            summary.geometry.scene_to_game.as_ref(),
             progress,
         )?);
     }
@@ -491,6 +492,8 @@ fn compare_models(
 }
 
 /// Step 5: renders the scene and the built model the same way and compares them (check_result.py).
+/// `scene_to_game`: what took a scene at another size than the game's to the game's (the result is taken back
+/// to the scene's size for the comparison).
 #[allow(clippy::too_many_arguments)]
 fn check_scene(
     blender: &Path,
@@ -500,6 +503,7 @@ fn check_scene(
     mod_romfs: &Path,
     vanilla: &Value,
     prep_report: &Value,
+    scene_to_game: Option<&[f32; 16]>,
     progress: &mut Progress,
 ) -> Result<CheckSummary> {
     progress.step("Comparing the result with the scene");
@@ -536,6 +540,9 @@ fn check_scene(
         "exclude".into(),
         prep.get("exclude").cloned().unwrap_or(json!([])),
     );
+    if let Some(m) = scene_to_game {
+        config.insert("scene_to_game".into(), json!(m.to_vec()));
+    }
     let config_path = check.join("check_config.json");
     write_json(&config_path, &Value::Object(config))?;
     let script = scripts.join("check_result.py");

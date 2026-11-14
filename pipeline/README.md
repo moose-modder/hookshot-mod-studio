@@ -216,6 +216,13 @@ it; `modstudio settings --hookshot <Hookshot folder> --workspace <dir>` too.
     townsman's animations hold the rest positions of most of his bones, `examples/anim_probe.rs`), so it would
     be put back. The mesh stays as modelled and bends around the bone's place in the game; the log lists moved
     bones. Reshape the mesh instead.
+  - **Scene size.** The model has to be at the game's size: the game keeps its skeleton, so a model built 100
+    times larger is drawn 100 times larger around it (the camera ends up inside it and it looks like nothing is
+    there). Keep the scene's unit scale at 1: Blender's glTF import into a scene with unit scale 0.01 makes the
+    model 100 times larger, and a scaled armature does the same. When the scene's skeleton is the game's at
+    another size, the build takes the model back to the game's size and warns ("The scene is 100 times the
+    game's size ..."). Models with a single bone (props) can't be told apart from a deliberately larger prop:
+    they're built as the scene has them.
 - Normal maps are baked in Blender's tangent space (+Y), the same convention the scene's
   "Reconstruct RG Normal" node group reads them with.
 - Vertex colours: each of a mesh's colour sets is a float colour layer named after it, `_C0`, `_C1`, ... with the

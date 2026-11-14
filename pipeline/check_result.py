@@ -12,8 +12,9 @@ in game. A second render with one flat colour per mesh tells which mesh each pix
 
 The scene side (the meshes the build uses, as prep_for_game.py collects them) frames the views and writes its
 renders; the result side imports the built model (modstudio export with the mod overlaid, materials made as
-make_scene.py makes them), renders, compares and writes check_report.json, with an image of each view that
-differs (scene | result | differences in red).
+make_scene.py makes them; a scene the build took to the game's size has the result taken back to its size),
+renders, compares and writes check_report.json, with an image of each view that differs (scene | result |
+differences in red).
 """
 
 import argparse
@@ -438,6 +439,23 @@ def scene_side(cfg):
         json.dump({"views": views, "bounds": bounds, "index": index, "unflattened": left}, f, indent=2)
 
 
+def to_scene_size(cfg):
+    """A scene at another size than the game's was taken to the game's size by the build (cfg scene_to_game: glTF
+    space, column-major): the result goes back to the scene's size, so both sides render alike."""
+    m = cfg.get("scene_to_game")
+    if not m:
+        return
+    gltf = Matrix([m[0::4], m[1::4], m[2::4], m[3::4]])
+    # Blender (x, y, z) is glTF (x, z, -y)
+    to_gltf = Matrix(((1, 0, 0, 0), (0, 0, 1, 0), (0, -1, 0, 0), (0, 0, 0, 1)))
+    back = (to_gltf.inverted() @ gltf @ to_gltf).inverted()
+    for o in bpy.context.scene.objects:
+        if o.parent is None:
+            o.matrix_world = back @ o.matrix_world
+    bpy.context.view_layer.update()
+    log(f"result taken to the scene's size ({back.to_scale()[0]:.4g} times the game's)")
+
+
 def result_side(cfg):
     import make_scene
     with open(os.path.join(cfg["out"], "scene.json"), encoding="utf-8") as f:
@@ -448,6 +466,7 @@ def result_side(cfg):
     folder = os.path.dirname(os.path.abspath(cfg["result_glb"]))
     with open(os.path.join(folder, "model.json"), encoding="utf-8") as f:
         make_scene.build_materials(json.load(f), folder)
+    to_scene_size(cfg)
     objects = [o for o in bpy.context.scene.objects if o.type == 'MESH']
     index, left = render_all(objects, arm, cfg, scene["views"], "result", set(cfg["game_bones"]))
     scene_index = {int(k): v for k, v in scene["index"].items()}
