@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use modstudio_core::progress::Progress;
 use modstudio_core::project::{self, Project};
 use modstudio_core::settings::Settings;
-use modstudio_core::{build, catalog, model, mods};
+use modstudio_core::{build, catalog, cloth, model, mods};
 use modstudio_formats::bntx::Bntx;
 use modstudio_formats::romfs::{self, Romfs};
 
@@ -48,6 +48,10 @@ Making mods (what the app does, with the same settings):
       into Hookshot's mods folder and makes one resource size table for all mods
   modstudio mods [on <folder> | off <folder> | table]
       the mods in Hookshot's mods folder; turn one on or off; make the size table for all mods again
+  modstudio cloth <project> [--open]
+      the game's cloth for the project's model (hair, hoods, capes) simulated against a test motion, written
+      to build/cloth_preview.json; --open opens the scene in Blender with it as the armature's action
+      \"Cloth preview\" (play it to see the meshes swing)
 
 These take --settings <file> (default: settings.json beside modstudio, which is the app's when the two sit in
 one folder).
@@ -70,7 +74,7 @@ impl<E: std::fmt::Display> From<E> for Failure {
 }
 
 /// Options that take no value.
-const FLAGS: [&str; 4] = ["install", "no-check", "skip-blender", "all"];
+const FLAGS: [&str; 5] = ["install", "no-check", "skip-blender", "all", "open"];
 
 /// Positional arguments, `--name value` options and `--flag`s.
 struct Args {
@@ -439,6 +443,35 @@ fn build_project(args: &Args) -> Result<(), Failure> {
     }
 }
 
+fn cloth_command(args: &Args) -> Result<(), Failure> {
+    let [path] = args.positional(1)? else {
+        unreachable!()
+    };
+    let s = load_settings(args)?;
+    let p = Project::load(Path::new(path))?;
+    let preview = if args.flag("open") {
+        cloth::open_preview(&s, &p, &mut Progress::stdout())?
+    } else {
+        let (file, preview) = cloth::write_preview(&s, &p)?;
+        println!("Wrote {}", file.display());
+        for w in &preview.warnings {
+            println!("note: {w}");
+        }
+        preview
+    };
+    println!(
+        "{}: {} part(s) moving {} bone(s), {} frames at {} fps (model {:.2} m, test motion at {:.2} times its size)",
+        preview.source,
+        preview.parts.len(),
+        preview.bones.len(),
+        preview.frames,
+        preview.fps,
+        preview.size,
+        preview.motion_scale
+    );
+    Ok(())
+}
+
 fn mods_command(args: &Args) -> Result<(), Failure> {
     let s = load_settings(args)?;
     let mut progress = Progress::stdout();
@@ -509,6 +542,7 @@ fn main() -> ExitCode {
         "new" => Args::parse(&raw[1..]).and_then(|a| new_project(&a)),
         "build" => Args::parse(&raw[1..]).and_then(|a| build_project(&a)),
         "mods" => Args::parse(&raw[1..]).and_then(|a| mods_command(&a)),
+        "cloth" => Args::parse(&raw[1..]).and_then(|a| cloth_command(&a)),
         other => Err(Failure::Usage(format!("unknown command {other:?}"))),
     };
     match result {

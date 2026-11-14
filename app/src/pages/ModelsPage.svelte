@@ -177,7 +177,7 @@
 
       <div class="detail">
         <div class="view">
-          <Viewer {glb} loading={loadingPreview} error={previewError} />
+          <Viewer {glb} loading={loadingPreview} error={previewError} cloth={selected ? { path: selected.path } : null} />
         </div>
         {#if selected}
           <div class="info card">

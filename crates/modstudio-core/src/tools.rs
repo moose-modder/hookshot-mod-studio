@@ -13,7 +13,7 @@ use crate::progress::{CANCELLED, Progress};
 use crate::{Context, Error, Result};
 
 /// The Blender scripts (`pipeline/`), built in: the app writes them out where Blender can run them.
-pub const SCRIPTS: [(&str, &str); 4] = [
+pub const SCRIPTS: [(&str, &str); 5] = [
     (
         "make_scene.py",
         include_str!("../../../pipeline/make_scene.py"),
@@ -29,6 +29,10 @@ pub const SCRIPTS: [(&str, &str); 4] = [
     (
         "scene_nodes.py",
         include_str!("../../../pipeline/scene_nodes.py"),
+    ),
+    (
+        "cloth_preview.py",
+        include_str!("../../../pipeline/cloth_preview.py"),
     ),
 ];
 
@@ -132,6 +136,11 @@ pub fn blender_version(exe: &Path) -> Result<String> {
 
 /// Opens `blend` in Blender for editing (Blender keeps running on its own).
 pub fn open_in_blender(exe: &Path, blend: &Path) -> Result<()> {
+    open_in_blender_with(exe, blend, &[])
+}
+
+/// Opens `blend` in Blender with more arguments after it (a `--python` script to run once it's open).
+pub fn open_in_blender_with(exe: &Path, blend: &Path, extra: &[OsString]) -> Result<()> {
     // blender-launcher.exe starts Blender on Windows without a console window.
     let launcher = exe.with_file_name("blender-launcher.exe");
     let exe = if cfg!(windows) && launcher.is_file() {
@@ -141,6 +150,7 @@ pub fn open_in_blender(exe: &Path, blend: &Path) -> Result<()> {
     };
     Command::new(&exe)
         .arg(blend)
+        .args(extra)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

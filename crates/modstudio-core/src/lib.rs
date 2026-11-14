@@ -12,10 +12,12 @@
 //! - [`catalog::list`]: the game's models by kind; [`preview::preview`]: one as a self-contained `.glb`
 //! - [`project::create`]: a project for a model (export, Blender scene, `project.json`)
 //! - [`build::build`]: the mod built from the edited scene, checked, and installed
+//! - [`cloth`]: the game's cloth simulated against a test motion, for a preview in Blender
 //! - [`mods`]: Hookshot's mods folder: mods on and off, one resource size table for all of them
 
 pub mod build;
 pub mod catalog;
+pub mod cloth;
 pub mod eyes;
 mod fsutil;
 pub mod gltf;

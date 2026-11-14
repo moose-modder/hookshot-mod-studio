@@ -15,7 +15,7 @@ use modstudio_core::model::{self, Loaded};
 use modstudio_core::progress::{Event, Progress};
 use modstudio_core::project::{self, Project, ProjectFile};
 use modstudio_core::settings::{Settings, Status};
-use modstudio_core::{mods, preview, tools};
+use modstudio_core::{cloth, mods, preview, tools};
 use modstudio_formats::romfs::Romfs;
 use serde::Serialize;
 use tauri::ipc::Response;
@@ -36,6 +36,9 @@ struct App {
     /// Running tasks' cancel flags.
     tasks: Mutex<HashMap<u64, Arc<AtomicBool>>>,
     next_task: AtomicU64,
+    /// The 3D view's running cloth simulations, by id.
+    cloths: Mutex<HashMap<u64, cloth::LiveCloth>>,
+    next_cloth: AtomicU64,
 }
 
 impl App {
@@ -200,14 +203,7 @@ async fn model_preview(
     path: String,
     overlay: Option<PathBuf>,
 ) -> Result<Response> {
-    let romfs = match &overlay {
-        None => state.romfs()?,
-        Some(dir) => Arc::new(
-            Romfs::open(&state.settings().game_romfs)
-                .map_err(err)?
-                .with_overlay(dir),
-        ),
-    };
+    let romfs = romfs_with(&state, overlay.as_deref())?;
     let glb = tauri::async_runtime::spawn_blocking(move || {
         preview::preview(&romfs, Path::new(&path), 1024).map(|p| p.glb)
     })
@@ -215,6 +211,112 @@ async fn model_preview(
     .map_err(err)?
     .map_err(err)?;
     Ok(Response::new(glb))
+}
+
+/// The game's romfs, with a mod's `romfs` folder on top when one is given.
+fn romfs_with(state: &App, overlay: Option<&Path>) -> Result<Arc<Romfs>> {
+    match overlay {
+        None => state.romfs(),
+        Some(dir) => Ok(Arc::new(
+            Romfs::open(&state.settings().game_romfs)
+                .map_err(err)?
+                .with_overlay(dir),
+        )),
+    }
+}
+
+/// Whether a model has cloth (as the romfs, with the overlay, has it).
+#[tauri::command]
+async fn has_cloth(state: State<'_, App>, path: String, overlay: Option<PathBuf>) -> Result<bool> {
+    let romfs = romfs_with(&state, overlay.as_deref())?;
+    Ok(cloth::find_cloth(&romfs, &path).is_some())
+}
+
+/// How long a step of the 3D view's cloth simulation is.
+const CLOTH_STEP: f32 = 1.0 / 60.0;
+/// At most this many cloth simulations are kept (the oldest goes): a page that never closed its own doesn't pile up.
+const CLOTH_SESSIONS: usize = 4;
+
+/// A running cloth simulation of the 3D view's model.
+#[derive(Serialize)]
+struct ClothSession {
+    id: u64,
+    source: String,
+    size: f32,
+    parts: Vec<String>,
+    /// The bones the cloth moves, with their rest place in the model.
+    bones: Vec<cloth::LiveBone>,
+    warnings: Vec<String>,
+    /// Where they are now: settled at rest.
+    places: Vec<[f32; 16]>,
+    /// How long a step is.
+    step: f32,
+    /// The test motion, a place of the model for every step.
+    test_motion: Vec<[f32; 16]>,
+}
+
+/// Starts simulating a model's cloth (as the romfs, with the overlay, has it), settled at rest; `None`: no cloth.
+#[tauri::command]
+async fn cloth_open(
+    state: State<'_, App>,
+    path: String,
+    overlay: Option<PathBuf>,
+) -> Result<Option<ClothSession>> {
+    let romfs = romfs_with(&state, overlay.as_deref())?;
+    let Some(live) = tauri::async_runtime::spawn_blocking(move || cloth::open_model(&romfs, &path))
+        .await
+        .map_err(err)?
+        .map_err(err)?
+    else {
+        return Ok(None);
+    };
+    let id = state.next_cloth.fetch_add(1, Ordering::Relaxed);
+    let session = ClothSession {
+        id,
+        source: live.source.clone(),
+        size: live.size,
+        parts: live.parts.clone(),
+        bones: live.bones.clone(),
+        warnings: live.warnings.clone(),
+        places: live.places(),
+        step: CLOTH_STEP,
+        test_motion: cloth::test_motion_frames(live.size, 1.0 / CLOTH_STEP),
+    };
+    let mut cloths = state.cloths.lock().expect("cloths lock");
+    while cloths.len() >= CLOTH_SESSIONS {
+        let Some(&oldest) = cloths.keys().min() else {
+            break;
+        };
+        cloths.remove(&oldest);
+    }
+    cloths.insert(id, live);
+    Ok(Some(session))
+}
+
+/// Steps a cloth simulation once for each place of the model in `models` (column-major 4x4s, at most 8), and returns
+/// where its bones are then: 16 little-endian floats each, in the order `cloth_open` listed them.
+#[tauri::command]
+async fn cloth_step(state: State<'_, App>, id: u64, models: Vec<[f32; 16]>) -> Result<Response> {
+    let mut cloths = state.cloths.lock().expect("cloths lock");
+    let live = cloths
+        .get_mut(&id)
+        .ok_or_else(|| "this cloth simulation was closed".to_owned())?;
+    for model in models.iter().take(8) {
+        live.step(model, CLOTH_STEP).map_err(err)?;
+    }
+    let bytes: Vec<u8> = live
+        .places()
+        .iter()
+        .flatten()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    Ok(Response::new(bytes))
+}
+
+/// Ends a cloth simulation.
+#[tauri::command]
+fn cloth_close(state: State<'_, App>, id: u64) {
+    state.cloths.lock().expect("cloths lock").remove(&id);
 }
 
 // ---------------------------------------------------------------- projects
@@ -429,6 +531,8 @@ fn main() {
             romfs: Mutex::new(None),
             tasks: Mutex::new(HashMap::new()),
             next_task: AtomicU64::new(1),
+            cloths: Mutex::new(HashMap::new()),
+            next_cloth: AtomicU64::new(1),
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -444,6 +548,10 @@ fn main() {
             new_task_id,
             cancel_task,
             open_in_blender,
+            has_cloth,
+            cloth_open,
+            cloth_step,
+            cloth_close,
             show_in_folder,
             read_image,
             list_mods,

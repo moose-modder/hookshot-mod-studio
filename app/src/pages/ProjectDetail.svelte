@@ -167,7 +167,13 @@
           <button class="tab" class:on={tab === "game"} onclick={() => setTab("game")}>The game's model</button>
         </div>
         <div class="view">
-          <Viewer {glb} loading={loadingPreview} error={previewError} empty="Build the mod to see it here" />
+          <Viewer
+            {glb}
+            loading={loadingPreview}
+            error={previewError}
+            empty="Build the mod to see it here"
+            cloth={{ path: view.data.model, overlay: tab === "mod" ? view.mod_romfs : undefined }}
+          />
         </div>
       </section>
 

@@ -54,6 +54,7 @@ import sys
 import time
 
 import numpy as np
+from mathutils import Matrix
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scene_nodes import FINGERPRINT, RG_GROUP, material_fingerprint, rg_normal_group  # noqa: E402
@@ -205,6 +206,13 @@ def collect_objects(cfg, rep):
     arm = bpy.data.objects.get(cfg["armature"])
     if arm is None or arm.type != 'ARMATURE':
         raise RuntimeError(f"Armature {cfg['armature']!r} not found")
+    # The build reads the rest pose: an action (the cloth preview's, cloth_preview.py) or a pose left in the scene
+    # would move the meshes the textures are baked from and the check renders. The .blend isn't saved.
+    if arm.animation_data is not None:
+        arm.animation_data_clear()
+    for pb in arm.pose.bones:
+        pb.matrix_basis = Matrix.Identity(4)
+    bpy.context.view_layer.update()
 
     suffix = cfg.get("work_suffix", "_WORK")
     exclude = cfg.get("exclude", [])

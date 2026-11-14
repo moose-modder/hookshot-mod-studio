@@ -33,6 +33,10 @@ projects, and Blender. Then:
   and its report afterwards: which meshes were kept or replaced, textures changed, warnings, and whether the
   result looks like your scene (with pictures where it doesn't). The 3D view switches between your mod and the
   game's model.
+- **Cloth physics** (in the 3D view, for models with hair, hoods or capes): the model's cloth simulated live, as
+  the game does it. Drag the model to turn it or lift it and drop it, and the cloth swings; *Test cloth animation*
+  moves it through a set turn, run and jump. On a project's *Your mod* tab it runs the built mod: your meshes, and
+  the mod's own cloth file where it has one.
 - **Installed mods**: Hookshot's mods folder, mods on and off, the shared size table. Hookshot reads its mods
   when it starts.
 
@@ -46,6 +50,7 @@ modstudio models hylia
 modstudio new Npc_Hylia_MN_001 --name townsman
 modstudio build <workspace>\townsman --install
 modstudio mods off TownsmanMod
+modstudio cloth <workspace>\townsman --open
 ```
 
 And the format tools: `inspect`, `export` (`.glb` + PNG + `model.json`), `replace`, `texture`, `decompress`
@@ -55,7 +60,8 @@ And the format tools: `inspect`, `export` (`.glb` + PNG + `model.json`), `replac
 
 | Path | |
 |---|---|
-| `crates/modstudio-formats` | the game's file formats: zstd with the game's dictionaries, SARC, BNTX, BFRES (reading and writing) |
+| `crates/modstudio-formats` | the game's file formats: zstd with the game's dictionaries, SARC, BNTX, BFRES (reading and writing), the cloth files' wrapper |
+| `crates/havok-formats`, `crates/havok-cloth` | Havok tagfiles and the cloth simulation, vendored from Kalmarv's crates and adapted to the game's Havok version (THIRD_PARTY.md) |
 | `crates/modstudio-core` | what the CLI and the app do: export, replace, previews, settings, projects, builds, installed mods |
 | `crates/modstudio-cli` | `modstudio`, the command line |
 | `app/` | the app: Tauri (`app/src-tauri`, Rust) with a Svelte page and a three.js 3D view (`app/src`) |

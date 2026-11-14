@@ -10,6 +10,7 @@ rebuilding, set `MODSTUDIO_PIPELINE` to this folder.
 | `prep_for_game.py` | a build's Blender step: bakes the scene's look into the game's textures, exports glTF |
 | `check_result.py` | the build check: renders the scene and the built model the same way and compares them |
 | `scene_nodes.py` | shared by the others: the RG normal node group, material fingerprints |
+| `cloth_preview.py` | the cloth preview: the game's cloth, simulated, as an action on the scene's armature |
 
 **Save the .blend in Blender before building.** The build reads the file from disk and never changes it.
 
@@ -85,6 +86,35 @@ modstudio build <workspace>\zelda --install
 
 Logs of every step are in `build` (`2_blender.log`, `5_check_scene.log`, ...), with
 `prep_report.json`, `check\check_report.json` and the build's report, `build_report.json`.
+
+## Cloth preview
+
+Hair, hoods, belts and capes are simulated in the game (Havok Cloth), and the simulation moves the `Ph_` bones
+their meshes are skinned to. The app simulates the model's cloth file itself (`modstudio-core`'s `cloth`), after
+letting the cloth settle at rest:
+
+- **In the app**: *Cloth physics* in the 3D view runs it live: drag the model to turn it, drag it up and let go to
+  drop it (a drag beside the model still moves the camera). *Test cloth animation* moves the model through a set
+  motion (it turns to both sides, runs and stops, jumps; a larger model moves further and slower). On a project's
+  *Your mod* tab it runs the built mod: the built model, and the mod's own cloth file where the mod has one (else
+  the game's). This is where a build's result is checked.
+- **In Blender, before building** (to see the scene's meshes swing without a build):
+
+  ```
+  modstudio cloth <workspace>\zelda --open
+  ```
+
+  Blender opens the scene with the result as the armature's action **Cloth preview** (`cloth_preview.py`); press
+  Space to play it. If the scene was already open in Blender, this is a second copy: save your work in one of them
+  only. Without `--open`, only `build\cloth_preview.json` is written. The action only poses the armature; the
+  build drops it and puts every bone at rest before it reads the scene, so it can stay in the .blend.
+
+Either way:
+- It's a preview: the vendored havok-cloth's simulation of the game's own cloth data (`docs/plan.md`), not the
+  game's code. The notes list what it leaves out (volume and bone plane constraints in a few files, wind), and
+  colliders the cloth starts deep inside at rest (they fit the model's animated poses, which aren't read yet).
+- Meshes swing with the bones they're weighted to: reshaped hair swings in the preview, as in game, as long as it
+  keeps its weights on the `Ph_` bones.
 
 ## Materials and textures
 

@@ -152,6 +152,32 @@ export interface ProjectView {
   work_dir: string;
 }
 
+/** A column-major 4x4 matrix, in the game's space (y up, metres; glTF's and three.js's too). */
+export type Matrix = number[];
+
+/** A model's cloth, simulated live by the app (cloth_open; modstudio-core's cloth::LiveCloth). */
+export interface ClothSession {
+  id: number;
+  source: string;
+  size: number;
+  parts: string[];
+  /** The bones the cloth moves, with their rest place in the model. */
+  bones: { name: string; rest: Matrix }[];
+  warnings: string[];
+  /** Where those bones are, settled at rest. */
+  places: Matrix[];
+  /** How long a step is, in seconds. */
+  step: number;
+  /** The test motion: a place of the model for every step. */
+  test_motion: Matrix[];
+}
+
+/** Where the 3D view's model comes from, for its cloth: the model's path, and a mod's romfs on top. */
+export interface ClothSource {
+  path: string;
+  overlay?: string;
+}
+
 export interface InstalledMod {
   name: string;
   folder: string;
@@ -181,6 +207,12 @@ export const api = {
   listProjects: () => invoke<ProjectSummary[]>("list_projects"),
   getProject: (file: string) => invoke<ProjectView>("get_project", { file }),
   openInBlender: (file: string) => invoke<void>("open_in_blender", { file }),
+  hasCloth: (s: ClothSource) => invoke<boolean>("has_cloth", { path: s.path, overlay: s.overlay ?? null }),
+  clothOpen: (s: ClothSource) =>
+    invoke<ClothSession | null>("cloth_open", { path: s.path, overlay: s.overlay ?? null }),
+  /** One step for each place of the model; the bones' places after them (16 floats each). */
+  clothStep: (id: number, models: number[][]) => invoke<ArrayBuffer>("cloth_step", { id, models }),
+  clothClose: (id: number) => invoke<void>("cloth_close", { id }),
   showInFolder: (path: string) => invoke<void>("show_in_folder", { path }),
   readImage: (path: string) => invoke<ArrayBuffer>("read_image", { path }),
   listMods: () => invoke<ModsView>("list_mods"),

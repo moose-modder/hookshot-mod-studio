@@ -6,15 +6,21 @@
 //!
 //!     cargo run --release -p modstudio-core --example cloth_rest -- <file.bphcl> [N]
 //!
-//! Environment switches, to narrow down what moves the particles: `CLOTH_DROP=<kind>` leaves out the constraint sets
-//! of that kind (`StandardLink`, `LocalRange`, ...), `CLOTH_NOCOLLIDE` clears every particle's collision mask,
-//! `CLOTH_COLLIDERS` lists each collidable's stored place against its bone times its offset, `CLOTH_INFO` prints each
-//! simulated mesh's settings.
+//! Environment switches, to narrow down what moves the particles: `CLOTH_ONLY=<part of a name>` runs only those
+//! cloths, `CLOTH_GRAVITY` keeps the file's gravity, `CLOTH_TRACE` prints how far the particles went in each second,
+//! `CLOTH_DROP=<kind>` leaves out the constraint sets of that kind (`StandardLink`, `LocalRange`, ...),
+//! `CLOTH_NOCOLLIDE` clears every particle's collision mask. And to look at the data: `CLOTH_COLLIDERS` lists each
+//! collidable's stored place against its bone times its offset, `CLOTH_DEPTH` how deep the particles start inside each
+//! collidable, `CLOTH_SHAPES=<part of a name>` those collidables' shapes, `CLOTH_BEND` (and `CLOTH_BEND_LINKS`) what
+//! each bend stiffness link pushes at rest, `CLOTH_CHAIN=<bone>` a bone's parents, `CLOTH_INFO` each simulated mesh's
+//! settings, solve order and constraint sets.
 //!
-//! Child Link (2026-11-13): the rest pose is the bind pose of every cloth; the belts, skirt and hood stay in place and
-//! their bones on their rest pose, and every collidable sits on its bone (0 apart). Hair and strands touching the head's
-//! collidables keep moving (a few centimetres, bounded); without collisions they keep still but for one strand that
-//! creeps.
+//! Child Link (2026-11-13): the rest pose is the bind pose of every cloth, and every collidable sits on its bone (0
+//! apart). With gravity, as in the game, every part settles within a second (under 0.07 mm a second after that).
+//! Without it, parts that touch a collidable keep moving by millimetres to centimetres a second: nothing presses them
+//! onto it, and their damping (0.001 a second) keeps what the contacts and constraints trade. One strand
+//! (FrontHair_A_R) also creeps without collisions: some of the hair's bend stiffness links push along their hinge at
+//! rest (as stored: the bend formula itself checks out, `CLOTH_BEND_LINKS`), which gravity outweighs.
 
 use havok_cloth::instance::ClothInstance;
 use havok_cloth::matrix::Mat4;
@@ -41,13 +47,30 @@ fn main() {
         skeletons.len()
     );
     let (mut worst_particle, mut worst_bone, mut worst_axis) = (0f32, 0f32, 0f32);
-    for data in &physics.cloths {
+    // CLOTH_ONLY=<part of a name>: only the cloths whose name has it
+    let only = std::env::var("CLOTH_ONLY").unwrap_or_default();
+    for data in physics.cloths.iter().filter(|d| d.name.contains(&only)) {
         let set = &data.transform_sets[0];
         let Some(skeleton) = skeletons.iter().find(|s| s.name == set.name) else {
             println!("{}: no skeleton {}", data.name, set.name);
             continue;
         };
         let rest = world_pose(&skeleton.parents, &skeleton.reference_pose);
+        // CLOTH_CHAIN=<bone>: that bone's parents up to the root
+        if let Some(bone) = std::env::var_os("CLOTH_CHAIN") {
+            let bone = bone.to_string_lossy().into_owned();
+            if let Some(mut i) = skeleton.bones.iter().position(|b| b.name == bone) {
+                let mut chain = vec![bone.clone()];
+                while let Ok(p) = usize::try_from(skeleton.parents[i]) {
+                    chain.push(format!(
+                        "{} (at y {:.3})",
+                        skeleton.bones[p].name, rest[p].cols[3].0[1]
+                    ));
+                    i = p;
+                }
+                println!("    {}: {}", skeleton.name, chain.join(" < "));
+            }
+        }
         // CLOTH_DROP=<kind>: that kind of constraint set left out, to see which one moves the particles
         let mut data = data.clone();
         if let Some(drop) = std::env::var_os("CLOTH_DROP") {
@@ -63,7 +86,41 @@ fn main() {
             }
         }
         if std::env::var_os("CLOTH_INFO").is_some() {
+            for op in &data.operators {
+                if let OperatorKind::Simulate { configs, .. } = &op.kind {
+                    for c in configs {
+                        println!(
+                            "    config {}: substeps {}, iterations {}, all collidables {}, used {:?}, order {:?}, adapt {}",
+                            c.name,
+                            c.sub_steps,
+                            c.solve_iterations,
+                            c.use_all_instance_collidables,
+                            c.instance_collidables_used
+                                .iter()
+                                .map(|&u| u8::from(u))
+                                .collect::<Vec<_>>(),
+                            c.constraint_execution,
+                            c.adapt_constraint_stiffness
+                        );
+                    }
+                }
+            }
             for sim in &data.sim_cloths {
+                println!(
+                    "    sets: {}",
+                    sim.constraint_sets
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| format!(
+                            "{i} {}",
+                            format!("{:?}", c.kind)
+                                .split([' ', '(', '{'])
+                                .next()
+                                .unwrap_or("")
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
                 println!(
                     "    {}: damping/s {}, transfer motion {} ({:?}), collidables {}, masks {:?}, max radius {}, total mass {}",
                     sim.name,
@@ -81,6 +138,177 @@ fn main() {
             }
         }
         let data = &data;
+        // CLOTH_BEND: each bend stiffness set's push at the sim cloth's own rest pose (zero where the rest curvature is
+        // read right), as written, with the rest curvature's sign flipped, and with no rest curvature
+        if std::env::var_os("CLOTH_BEND").is_some() {
+            // the file's rest pose of each sim cloth, and where one step at rest without collisions puts the particles
+            let mut loose = data.clone();
+            for sim in &mut loose.sim_cloths {
+                sim.static_collision_masks.iter_mut().for_each(|m| *m = 0);
+            }
+            let mut probe = ClothInstance::new(&loose).expect("instance");
+            probe.transform_sets[0] = rest.clone();
+            for sim in &mut probe.sims {
+                sim.gravity = havok_cloth::simd::V4([0.0; 4]);
+            }
+            probe.step(1.0 / 30.0, &mut []).expect("step");
+            for sim in &data.sim_cloths {
+                println!(
+                    "    {}: poses {:?}",
+                    sim.name,
+                    sim.poses
+                        .iter()
+                        .map(|p| p.name.as_str())
+                        .collect::<Vec<_>>()
+                );
+            }
+            let sources: [(&str, Vec<Vec<[f32; 4]>>); 3] = [
+                (
+                    "file pose",
+                    data.sim_cloths
+                        .iter()
+                        .map(|s| {
+                            s.poses
+                                .first()
+                                .map(|p| p.positions.clone())
+                                .unwrap_or_default()
+                        })
+                        .collect(),
+                ),
+                (
+                    "file pose 2",
+                    data.sim_cloths
+                        .iter()
+                        .map(|s| {
+                            s.poses
+                                .get(1)
+                                .map(|p| p.positions.clone())
+                                .unwrap_or_default()
+                        })
+                        .collect(),
+                ),
+                (
+                    "one step",
+                    probe
+                        .sims
+                        .iter()
+                        .map(|s| s.positions.iter().map(|p| p.0).collect())
+                        .collect(),
+                ),
+            ];
+            for (source, all) in &sources {
+                for (sim, positions) in data.sim_cloths.iter().zip(all) {
+                    if positions.is_empty() {
+                        continue;
+                    }
+                    for set in &sim.constraint_sets {
+                        let cloth::ConstraintKind::BendStiffness {
+                            links,
+                            max_rest_pose_height_sq,
+                            clamp_bend_stiffness,
+                            use_rest_pose_config,
+                        } = &set.kind
+                        else {
+                            continue;
+                        };
+                        let mut worst = [0f32; 3];
+                        for link in links {
+                            let p = link.particles.map(|i| positions[usize::from(i)]);
+                            let sub =
+                                |a: [f32; 4], b: [f32; 4]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+                            let cross = |a: [f32; 3], b: [f32; 3]| {
+                                [
+                                    a[1] * b[2] - a[2] * b[1],
+                                    a[2] * b[0] - a[0] * b[2],
+                                    a[0] * b[1] - a[1] * b[0],
+                                ]
+                            };
+                            let len =
+                                |a: [f32; 3]| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+                            let mut bend = [0f32; 3];
+                            for (q, w) in p.iter().zip(link.weights) {
+                                for k in 0..3 {
+                                    bend[k] += q[k] * w;
+                                }
+                            }
+                            let (ca, cb, cd) = (sub(p[0], p[2]), sub(p[1], p[2]), sub(p[3], p[2]));
+                            let (nc, nd) = (cross(cd, ca), cross(cb, cd));
+                            let (lc, ld) = (len(nc), len(nd));
+                            let mut offset = [0f32; 3];
+                            for k in 0..3 {
+                                offset[k] = nc[k] / lc.max(1e-12) + nd[k] / ld.max(1e-12);
+                            }
+                            let lo = len(offset).max(1e-12);
+                            let current = lc * ld
+                                / (cd[0] * cd[0] + cd[1] * cd[1] + cd[2] * cd[2]).max(1e-12);
+                            for (v, sign) in [(0, 1.0), (1, -1.0)] {
+                                let mut r = bend;
+                                for k in 0..3 {
+                                    r[k] += sign * link.rest_curvature * current * offset[k] / lo;
+                                }
+                                worst[v] = worst[v].max(len(r));
+                            }
+                            worst[2] = worst[2].max(len(bend));
+                            if std::env::var_os("CLOTH_BEND_LINKS").is_some() {
+                                let along = (bend[0] * offset[0]
+                                    + bend[1] * offset[1]
+                                    + bend[2] * offset[2])
+                                    / lo;
+                                let base = len(cd);
+                                let hinge =
+                                    (bend[0] * cd[0] + bend[1] * cd[1] + bend[2] * cd[2]) / base;
+                                println!(
+                                    "      link {:?} w {:?}: |bend| {:.3e}, along offset {:.3e}, along hinge {:.3e}, rest curvature {:.4}, heights {:.4} {:.4}, hinge {:.4}, needed/curvature {:.4}",
+                                    link.particles,
+                                    link.weights,
+                                    len(bend),
+                                    along,
+                                    hinge,
+                                    link.rest_curvature,
+                                    lc / base,
+                                    ld / base,
+                                    base,
+                                    -along / link.rest_curvature
+                                );
+                            }
+                        }
+                        println!(
+                            "    bend stiffness ({source}): {} links, rest pose config {use_rest_pose_config}, clamp {clamp_bend_stiffness} ({max_rest_pose_height_sq}); largest push at rest: as written {:.2e}, sign flipped {:.2e}, flat {:.2e}",
+                            links.len(),
+                            worst[0],
+                            worst[1],
+                            worst[2]
+                        );
+                    }
+                }
+            }
+        }
+        // CLOTH_SHAPES=<part of a collidable's name>: those collidables' shapes and places, and the particles' extent
+        if let Some(which) = std::env::var_os("CLOTH_SHAPES") {
+            let which = which.to_string_lossy().into_owned();
+            for sim in &data.sim_cloths {
+                for c in sim.collidables.iter().filter(|c| c.name.contains(&which)) {
+                    println!(
+                        "    {}: at {:?}, x axis {:?}, y axis {:?}: {:?}",
+                        c.name,
+                        &c.transform[12..15],
+                        &c.transform[0..3],
+                        &c.transform[4..7],
+                        c.shape
+                    );
+                }
+                if let Some(pose) = sim.poses.first() {
+                    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                    for p in &pose.positions {
+                        for k in 0..3 {
+                            lo[k] = lo[k].min(p[k]);
+                            hi[k] = hi[k].max(p[k]);
+                        }
+                    }
+                    println!("    {} particles from {lo:?} to {hi:?}", sim.name);
+                }
+            }
+        }
         if std::env::var_os("CLOTH_COLLIDERS").is_some() {
             for sim in &data.sim_cloths {
                 let Some(map) = &sim.collidable_transform_map else {
@@ -201,10 +429,64 @@ fn main() {
                 c[12], c[13], c[14], c[0], c[1], c[2], c[4], c[5], c[6]
             );
         }
+        // CLOTH_DEPTH: per collidable, how deep the particles that meet it start inside it (where one step at rest
+        // without collisions puts them, the collidable at its stored place), less the particle's radius
+        if std::env::var_os("CLOTH_DEPTH").is_some() {
+            let mut loose = data.clone();
+            for sim in &mut loose.sim_cloths {
+                sim.static_collision_masks.iter_mut().for_each(|m| *m = 0);
+            }
+            let mut probe = ClothInstance::new(&loose).expect("instance");
+            probe.transform_sets[0] = rest.clone();
+            for sim in &mut probe.sims {
+                sim.gravity = havok_cloth::simd::V4([0.0; 4]);
+            }
+            probe.step(1.0 / 30.0, &mut []).expect("step");
+            for (sim, state) in data.sim_cloths.iter().zip(&probe.sims) {
+                for (index, c) in sim.collidables.iter().enumerate() {
+                    let shape = havok_cloth::collide::WorldShape::new(
+                        &c.shape,
+                        &Mat4::from_columns(c.transform),
+                    );
+                    let mask = 1u32 << index.min(30);
+                    let (mut met, mut inside, mut deepest) = (0, 0, 0f32);
+                    for (i, p) in sim.particles.iter().enumerate() {
+                        if sim
+                            .static_collision_masks
+                            .get(i)
+                            .is_none_or(|m| m & mask == 0)
+                        {
+                            continue;
+                        }
+                        met += 1;
+                        let at = state.positions[i];
+                        let depth = shape.closest(at, p.radius).distance - p.radius;
+                        if depth < 0.0 {
+                            inside += 1;
+                            deepest = deepest.min(depth);
+                        }
+                    }
+                    if met > 0 {
+                        println!(
+                            "    {:30} {:14} enabled {:5}: {met:3} particles meet it, {inside:3} start inside, deepest {deepest:.4}",
+                            c.name,
+                            format!("{:?}", c.shape)
+                                .split([' ', '{'])
+                                .next()
+                                .unwrap_or(""),
+                            c.enabled
+                        );
+                    }
+                }
+            }
+        }
         let mut instance = ClothInstance::new(data).expect("instance");
         instance.transform_sets[0] = rest.clone();
-        for sim in &mut instance.sims {
-            sim.gravity = havok_cloth::simd::V4([0.0; 4]);
+        // CLOTH_GRAVITY: the file's gravity kept (the cloth hangs and settles instead of keeping its rest shape)
+        if std::env::var_os("CLOTH_GRAVITY").is_none() {
+            for sim in &mut instance.sims {
+                sim.gravity = havok_cloth::simd::V4([0.0; 4]);
+            }
         }
         let start: Vec<Vec<[f32; 4]>> = instance
             .sims
@@ -228,9 +510,26 @@ fn main() {
             .iter()
             .map(|s| s.positions.iter().map(|p| p.0).collect())
             .collect();
-        for _ in 1..steps {
+        // CLOTH_TRACE: how far the particles went in each second (30 steps), to tell settling from moving on
+        let trace = std::env::var_os("CLOTH_TRACE").is_some();
+        let mut window = first.clone();
+        let mut seconds = Vec::new();
+        for i in 1..steps {
             instance.transform_sets[0] = rest.clone();
             instance.step(1.0 / 30.0, &mut []).expect("step");
+            if trace && i % 30 == 0 {
+                let mut most = 0f32;
+                for (state, w) in instance.sims.iter().zip(&mut window) {
+                    for (p, q) in state.positions.iter().zip(w.iter_mut()) {
+                        most = most.max(dist(p.0, *q));
+                        *q = p.0;
+                    }
+                }
+                seconds.push(format!("{most:.1e}"));
+            }
+        }
+        if trace {
+            println!("    per second: {}", seconds.join(" "));
         }
         let mut moved = 0f32;
         for (state, start) in instance.sims.iter().zip(&first) {

@@ -269,9 +269,43 @@ transform set flags and `batchOffset`; each crate's README lists the changes. `m
 cloth file. `examples/cloth_probe.rs`: every cloth of the 171 files runs. `examples/cloth_rest.rs`, child Link at
 rest: the skeleton's reference pose is every cloth's bind pose (most hair cloths' meshes are stored relative to a
 fixed frame, a translation), collidables sit exactly on their bones, and cloths not touching a collidable stay in
-place with their bones on the rest pose. Open: hair touching the head's collidables keeps moving at rest (bounded,
-a few centimetres), one strand creeps without collisions; not simulated: `hclVolumeConstraint` (12 files: adult
-Zelda, child Ganondorf, Skull Kid, ...), `hclBonePlanesConstraintSet` (3 horse files), aerodynamics (wind).
+place with their bones on the rest pose. With gravity every part settles within a second; the motion it kept at
+rest in the first tests came from leaving gravity out (nothing presses the cloth onto its collidables, and the files'
+damping is 0.001 a second). Not simulated: `hclVolumeConstraint` (12 files: adult Zelda, child Ganondorf, Skull Kid,
+...), `hclBonePlanesConstraintSet` (3 horse files), aerodynamics (wind).
+
+**Cloth preview (2026-11-14, same branch):** `modstudio-core::cloth` runs a model's cloth file
+(`Phive/Cloth/<archive>.Nin_Ounce_NVN2.bphcl`; 158 of the 171 files are named after a model's archive), read through
+the romfs with a mod's overlay (a mod's own cloth file is the one simulated), against a test motion of the whole model
+(no animation is read yet): it stands, turns 60 degrees each way, runs 1.5 m and stops, jumps 35 cm and stands again
+(6.5 s for a model of child Link's size, 1.18 m; larger models move further and slower, in proportion and by the square
+root, up to 4 times). The cloth first settles at rest for 2 s, unrecorded. Out come the places, frame by frame, of the
+bones the cloth sets (`hclSimpleMeshBoneDeformOperator`; child Link: 108, simulated in 0.14 s).
+- **In the app** (the main way), live: *Cloth physics* in the 3D view of the Models page and of a project's tabs.
+  `cloth::LiveCloth` (settled at rest, then stepped wherever the caller has the model) is kept by the app
+  (`cloth_open`, `cloth_step` at 1/60 s a step, `cloth_close`); the page sends where the model is for each step and
+  poses the model's own skeleton (the preview `.glb`'s) with the answer: each cloth bone at its rest place moved as
+  the simulation moved it, every other bone following its parent. A drag that starts on the model turns it (sideways)
+  and lifts it (up; let go, it falls); a drag elsewhere moves the camera. *Test cloth animation* sends the test
+  motion instead, from where the model faces, the run shown in place. On *Your mod* it runs the built model with the
+  mod's cloth file, so it checks what a build wrote. Checked in the app (DevTools screenshots, synthetic drags in the
+  page): child Link turned by a drag, lifted and dropped, and through the test motion, the cap swinging and
+  settling; physics off puts him back at rest.
+- **In Blender** before a build: `modstudio cloth <project> --open` writes `build/cloth_preview.json` and
+  `pipeline/cloth_preview.py` makes the action "Cloth preview" of it on the scene's armature; the build drops any
+  action and pose before it reads the scene. The posed bones are within 0.03 mm of the simulation, in a scene at the
+  game's size and at 100 times it.
+
+All 171 files run (the largest swings are a horse's tail in the turn, about 2 m, and the Deku Tree's beard). A part
+that starts more than a tenth of the model's size inside a collidable is named in the notes (2 files: King Zora's
+floor and ground collidables, and the `Skl_Root` and floor collidables of a townsman, `Npc_Hylia_MU_005`; they most
+likely fit the models' animated poses, not the rest pose). It is havok-cloth's simulation of the game's data, not the
+game's: no capture from the game has been compared yet.
+
+How this serves the editing steps: the preview reads cloth files with the same reader the physics editing step will
+write them for, and it simulates the file the build wrote. A written cloth file that the reader refuses (type hashes,
+layout) or that simulates wrongly shows in the app before the game. Step 1's check list adds: every edited cloth file
+read back and simulated, as the game's are.
 
 ### 1. Physics editing
 
@@ -284,8 +318,8 @@ In Blender: the scene gets the model's cloth (`make_scene.py`, from the cloth fi
   collidable and its shape.
 - **Simulation settings** of each part (gravity, damping, constraint stiffness) as custom properties on the same
   empty. Which ones the files use and what they do is to be found out file by file.
-- Blender can't run Havok Cloth: how a change swings shows in game only. The build report lists what changed in
-  each part.
+- How a change swings: *Play cloth* on the project's *Your mod* tab runs the cloth file the build wrote (above); the
+  game has the last word. The build report lists what changed in each part.
 
 Work: the reader and editor ported to Rust (`modstudio-formats`: tagfile, AAMP, BYML writing, SARC writing), with
 the round trips above as dump tests; new objects in a tagfile (items, patches, and the type table when a type isn't
