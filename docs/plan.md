@@ -464,7 +464,11 @@ bones stay within 6.5 cm of the animation (`examples/cloth_anim.rs`).
 - `modstudio anim <project> --list | --add`; the app's 3D view has *Add to the scene* on a project's page; the project
   keeps which animations it added (`scene_anims`); the build report lists "Animations changed".
 
-**Next:** in game, an edited idle. Then: bones the game's animation doesn't move (a new bone animation in the file:
+Checked in game (2026-11-14): adult Link's three standing idles (`Wait`, `Wait_Sword`, `Wait_Sword_Shield`, in
+`Player_Adult_04_Animation`) with the head turned 30 degrees in Blender: the tilt plays in game, and nothing else
+changes.
+
+**Next:** bones the game's animation doesn't move (a new bone animation in the file:
 the name in the string table, the bone array grown); fewer keys than one a frame; animations of another length.
 
 ### 3. New bones (custom skeletons)
