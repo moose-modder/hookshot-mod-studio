@@ -25,6 +25,7 @@ editing and baking happen in the user's Blender.
    Texture encoding: BC1/BC4/BC5 written here; BC7 to decide (a source-built crate, or BC3 instead).
 3. **RESTBL** or the Hookshot-side alternative.
 4. **App**: model list (search, categories; Land hidden), previews, projects, mods on/off.
+5. **Physics, animations, new bones** (planned, in that order: see the last sections).
 
 `.bfres.mc` (MeshCodec-compressed) models are left for later: 5 files in the game use it, and those checked so far
 (Impa) also exist as `.bfres.zs`, which is what is read.
@@ -218,6 +219,99 @@ float colour layer of that name, exports it exactly with `export_attributes`, an
 (scenes made before still build from `COLOR_n`). Checked: an unedited child Zelda keeps every mesh (her hair was
 rebuilt before), and with a hair vertex moved the rebuilt hair has exactly the game's colour values, the 9 above 1
 included.
+
+## Next: physics, animations, new bones (planned)
+
+Asked for by testers (2026-11-13): editing the physics files (`.bphcl`), custom skeletons, and animations. A mod
+made here changes meshes and textures; the game's skeleton, cloth and animations stay as they are. All three are
+edited in Blender, as meshes and textures are. Physics comes first (its format work is furthest along), then
+animations; new bones last, because what moves a new bone in game is cloth or an animation.
+
+### How the game moves a character (found so far)
+
+- **Bones.** The skeleton is the model's (child Link: 309 bones). Animations set the animated bones' places
+  (`examples/anim_probe.rs`: the townsman's hold the rest positions of most of his bones), so a bone moved in
+  Blender is put back in game, and a new bone has no animation.
+- **Cloth.** Hair, hoods, belts and capes are simulated with Havok Cloth, from
+  `Phive/Cloth/<model>.Nin_Ounce_NVN2.bphcl` (171 files). Each simulated part (child Link has 20, adult Link 22)
+  runs the same operators: a particle mesh skinned to the animated bones (`hclObjectSpaceSkinPOperator`), moved and
+  simulated (`hclMoveParticlesOperator`, `hclSimulateOperator`), then bones set from the simulated triangles
+  (`hclSimpleMeshBoneDeformOperator`). Those are the `Ph_` bones (178 of child Link's 309; 131 are named in his
+  cloth file), and the drawn meshes are skinned to them. So reshaped hair already swings in game as long as it
+  keeps its weights on the `Ph_` bones.
+- **The cloth file**: a Phive header (offsets and sizes of the two parts), a Havok tagfile (`TAG0`: every object
+  described by the file's own type table, arrays and pointers as item numbers, a patch list of where pointers are)
+  and after it an AAMP parameter archive that lists the simulated meshes and colliders by name. The actor's packs
+  hold `Phive/ClothParam/<model>.phive__ClothParam.bgyml` (`MeshList`, `CollidableList`: which colliders are on).
+- **Colliders** belong to each simulated mesh: its list of collidables (a shape on a bone, at an offset from it)
+  and, per particle, a mask of the colliders it meets. Child Link's hood collides with the shield and sword on his
+  back through colliders on bone `Pod_A`.
+- **The game takes all of this from a mod**: the GameBanana PlayableMalonTunic mod (made with other tools) ships
+  its own cloth files, cloth parameters in the player's packs, and 190 animation files.
+
+### What exists
+
+Prototype scripts from fixing that mod (adult Malon's back hair given the gear colliders Link's hood has; in game:
+not yet confirmed), outside this repository: a tagfile reader that decodes every object by its types, an editor
+that grows arrays in place (later data, items and pointer patches move), an AAMP reader and writer, a BYML writer
+and a pack (SARC) file replacer. Checked on the dump:
+- The game's 171 cloth files rebuilt without edits: the content is identical in all of them. 121 headers give the
+  tagfile's size rounded up to 16 where the editor writes the exact size (as the Malon mod's files do, which load).
+- AAMP: every cloth file's archive round-trips. BYML: 1,415 of the player packs' 1,434 parameter files byte-identical,
+  the same content in the rest.
+
+### 1. Physics editing
+
+In Blender: the scene gets the model's cloth (`make_scene.py`, from the cloth file) and the build reads it back
+(`prep_for_game.py`), written into the mod with the model:
+- **Colliders** as objects on their bones (a capsule or sphere parented to the bone, named after the collider),
+  moved and scaled like anything else. Which colliders each simulated part meets: a custom property on the part (an
+  empty per simulated part, named after it), e.g. the gear colliders on Malon's hair. Colliders a file doesn't
+  have (child Malon's hair lacks the gear colliders child Link's hood has) become new objects in the tagfile: a
+  collidable and its shape.
+- **Simulation settings** of each part (gravity, damping, constraint stiffness) as custom properties on the same
+  empty. Which ones the files use and what they do is to be found out file by file.
+- Blender can't run Havok Cloth: how a change swings shows in game only. The build report lists what changed in
+  each part.
+
+Work: the reader and editor ported to Rust (`modstudio-formats`: tagfile, AAMP, BYML writing, SARC writing), with
+the round trips above as dump tests; new objects in a tagfile (items, patches, and the type table when a type isn't
+in the file yet); the parameter archive and the packs kept in step. The size table already handles `.bphcl` files
+and packs. Checks: every game cloth file rebuilt unchanged; in game, each kind of edit on one character.
+
+Not in this step: a cloth whose particle mesh changes shape (a longer cape needs a new simulation mesh, its
+constraints and skinning; Havok's own tools make those). It comes with new bones (step 3).
+
+### 2. Animations
+
+- 1,427 `.anim.bfres` files. The player's are in bundles (`Player_Child_01_Animation` ... `_04`, `_Cba`, `_Demo`),
+  cutscenes in their own files (`Dm_*`).
+- In Blender: the model's animations as actions on the scene's armature (a bundle holds many; the scene gets the
+  ones picked), edited with Blender's tools; the build writes the changed actions back into their files. Cloth
+  follows edited animations as it is: the simulated parts are skinned to the animated bones.
+- Work: skeletal animations read (curves per bone: keys, interpolation, quantised values; LegacySwitchLibraries
+  has the format), exported to glTF for Blender, Blender's export (sampled per frame) read back and written as
+  curves. To find out first: whether animations bind bones by name or by number (new bones depend on it too). The
+  size table already estimates animations. Checks: every game animation round-tripped unchanged; in game, an
+  edited idle.
+- The largest of the three. Other tools already write animations (the Malon mod's 190), so the format is known
+  to be writable.
+
+### 3. New bones (custom skeletons)
+
+- In Blender: added in edit mode and weighted, as today; the build writes them into the skeleton instead of
+  giving their weights to the nearest game parent.
+- A new bone moves in game only if something drives it, hence last:
+  - an **animation**: its curves added in the actions edited in step 2; in the others it keeps its place on its
+    parent (to check: what the game does with a bone an animation has no curve for);
+  - **cloth**: new `Ph_` bones driven by a new simulated part (a ponytail, a longer cape), on step 1. The simulated
+    part is the hardest piece (particle mesh, constraints, operators): most likely an existing part of the same
+    kind (a hair strand) copied and fitted to the new bones, its particle mesh a mesh in the scene.
+- Moving existing bones would mean editing every animation that sets them: not planned (reshape the mesh instead).
+- Work: the skeleton written with added bones (bone list, smooth and rigid matrix lists, inverse matrices, the
+  meshes' skin indices). The writer edits the file's front part in place today; it would lay it out again. To find
+  out first: where bone names live and how a new name is added (names in 6,406 models are IDs into the shared
+  `ExternalBinaryString.bfres`, phase 1), and what the 55 `*_Animation.Skeleton.bfres` files are for.
 
 ## Risks and how they are contained
 
