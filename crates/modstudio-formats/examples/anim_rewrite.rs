@@ -4,14 +4,19 @@
 //! the same values at every frame and between frames, and the counts (each bone's first curve, the animation's
 //! curves and its baked size) are right.
 //!
-//!     cargo run --release -p modstudio-formats --example anim_rewrite -- <romfs> [name filter] [--max N]
+//! With `--add`, every animation also gets a track for a bone it doesn't have (`ModStudio_Test`: a nod about x, as
+//! Euler angles in even animations and a quaternion in odd ones; added before the edits in some, after in others),
+//! checked to read back with its values, its bind index and its first curve, the game's tracks as before.
+//!
+//!     cargo run --release -p modstudio-formats --example anim_rewrite -- <romfs> [name filter] [--max N] [--add]
 
 use std::path::Path;
 use std::time::Instant;
 
 use modstudio_formats::bfres::ExternalStrings;
+use modstudio_formats::bfres_anim::target;
 use modstudio_formats::bfres_anim::{self, BoneAnim, Curve, curve_flags};
-use modstudio_formats::bfres_anim_write::{self, AnimWriter, BoneEdit, CurveEdit};
+use modstudio_formats::bfres_anim_write::{self, AnimWriter, BoneEdit, CurveEdit, NewTrack};
 use modstudio_formats::romfs::Romfs;
 
 fn angle(a: [f32; 4], b: [f32; 4]) -> f32 {
@@ -78,8 +83,77 @@ fn difference(a: &Curve, b: &Curve, frames: i32) -> f32 {
     worst
 }
 
+const TEST_BONE: &str = "ModStudio_Test";
+
+/// The nod a test track makes: about x, from 0 to 0.8 radians over the animation.
+fn nod(frames: i32, f: i32) -> f32 {
+    0.8 * f as f32 / frames.max(1) as f32
+}
+
+fn test_track(frames: i32, quaternion: bool) -> NewTrack {
+    let n = frames.max(0) + 1;
+    let curves = if frames <= 0 {
+        Vec::new()
+    } else if quaternion {
+        vec![CurveEdit::Quaternion {
+            values: (0..n)
+                .map(|f| {
+                    let h = nod(frames, f) / 2.0;
+                    [h.sin(), 0.0, 0.0, h.cos()]
+                })
+                .collect(),
+        }]
+    } else {
+        vec![CurveEdit::Scalar {
+            target: target::ROTATE_X,
+            values: (0..n).map(|f| nod(frames, f)).collect(),
+        }]
+    };
+    NewTrack {
+        name: TEST_BONE.into(),
+        quaternion,
+        flags: 1 << 23,
+        edit: BoneEdit {
+            base_scale: [1.0; 3],
+            base_rotation: [0.0, 0.0, 0.0, 1.0],
+            base_translation: [0.1, 0.0, 0.0],
+            curves,
+        },
+    }
+}
+
+/// The test track as read back: its problem, if any.
+fn check_test_track(b: &BoneAnim, frames: i32, quaternion: bool) -> Option<String> {
+    if b.name != TEST_BONE || b.quaternion() != quaternion {
+        return Some(format!(
+            "the new track is {} (quaternion {})",
+            b.name,
+            b.quaternion()
+        ));
+    }
+    if b.base_translation != Some([0.1, 0.0, 0.0]) {
+        return Some(format!("its base translation {:?}", b.base_translation));
+    }
+    for f in 0..=frames.max(0) {
+        let want = nod(frames, f);
+        let got = if frames <= 0 {
+            0.0
+        } else if quaternion {
+            let q = b.curves.first()?.quat_at(f as f32)?;
+            2.0 * q[0].atan2(q[3])
+        } else {
+            b.curves.first()?.value_at(f as f32)
+        };
+        if (got - want).abs() > 1e-4 {
+            return Some(format!("frame {f}: {got} where {want}"));
+        }
+    }
+    None
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let add = args.iter().any(|a| a == "--add");
     let Some(root) = args.first() else {
         eprintln!("usage: anim_rewrite <romfs> [name filter] [--max N]");
         std::process::exit(2);
@@ -125,13 +199,31 @@ fn main() {
         }
         let mut w = AnimWriter::new(&data).unwrap();
         let mut edited = Vec::new();
-        for a in &original.anims {
+        let mut adding_failed = None;
+        for (k, a) in original.anims.iter().enumerate() {
+            let track = test_track(a.frame_count, k % 2 == 1);
+            if add
+                && k % 4 < 2
+                && let Err(e) = w.add_bones(&data, a, std::slice::from_ref(&track))
+            {
+                adding_failed = Some(format!("{f} / {}: adding a track: {e}", a.name));
+            }
             for (i, b) in a.bones.iter().enumerate() {
                 if let Some(e) = edit_of(b, a.frame_count, i % 2 == 0) {
                     w.edit_bone(&data, a, i, &e).unwrap();
                     edited.push((a.name.clone(), i));
                 }
             }
+            if add
+                && k % 4 >= 2
+                && let Err(e) = w.add_bones(&data, a, std::slice::from_ref(&track))
+            {
+                adding_failed = Some(format!("{f} / {}: adding a track: {e}", a.name));
+            }
+        }
+        if let Some(e) = adding_failed {
+            bad.push(e);
+            continue;
         }
         bones_edited += edited.len();
         let out = match w.finish(&original.anims) {
@@ -158,7 +250,39 @@ fn main() {
             }
         };
         let mut fine = true;
-        for (a, b) in original.anims.iter().zip(&written.anims) {
+        for (k, (a, b)) in original.anims.iter().zip(&written.anims).enumerate() {
+            let extra = usize::from(add);
+            if b.bones.len() != a.bones.len() + extra || b.bind_indices.len() != b.bones.len() {
+                bad.push(format!(
+                    "{f} / {}: {} tracks ({} bind indices) where {}",
+                    a.name,
+                    b.bones.len(),
+                    b.bind_indices.len(),
+                    a.bones.len() + extra
+                ));
+                fine = false;
+                continue;
+            }
+            if add {
+                if let Some(e) =
+                    check_test_track(b.bones.last().expect("a track"), a.frame_count, k % 2 == 1)
+                {
+                    bad.push(format!("{f} / {}: {e}", a.name));
+                    fine = false;
+                }
+                let last = b.bones.last().expect("a track");
+                let before: i32 = b.bones[..b.bones.len() - 1]
+                    .iter()
+                    .map(|x| x.curves.len() as i32)
+                    .sum();
+                if last.begin_curve != before {
+                    bad.push(format!(
+                        "{f} / {}: the new track's first curve {} where {before}",
+                        a.name, last.begin_curve
+                    ));
+                    fine = false;
+                }
+            }
             let curves: usize = b.bones.iter().map(|x| x.curves.len()).sum();
             if b.curve_count as usize != curves
                 || b.baked_size != bfres_anim_write::baked_size(curves, b.frame_count)

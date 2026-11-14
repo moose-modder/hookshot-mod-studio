@@ -179,9 +179,11 @@ new curves for that, with a key at every frame; the rest of the animation file s
 report lists each animation changed ("Animations changed"), and *Animations* on *Your mod* plays the result (with the
 cloth following, with *Cloth physics* on).
 
+A bone the action moves that the game's animation has no track for (a new bone, or one of the game's the animation
+leaves at rest) gets a track in it: the build lists them ("track(s) added"). A new bone animated this way moves in
+game in that animation; in the others it follows its parent.
+
 What isn't written (the build says so where it applies):
-- Bones the game's animation doesn't move: an animation only moves the bones it has curves or values for, and a
-  bone isn't added to it.
 - A different length: the game's animation keeps its frame count. Frames past it are left out; a shorter action holds
   its last frame.
 - Motion between whole frames: keys are read at every frame. A few of the game's curves (some bosses') have keys
@@ -315,8 +317,8 @@ it; `modstudio settings --hookshot <Hookshot folder> --workspace <dir>` too.
   - A **new bone** (e.g. for an antenna; added in edit mode, parented, weighted): the build adds it to the
     skeleton, on its parent (the nearest bone above it; the game's root for one without), at its place relative to
     that parent as the scene has it, and the meshes keep their weights on it (the build lists the bones added).
-    No animation of the game's moves it, so in game it follows its parent (as the game's own bones do that its
-    animations don't know). Rigid meshes (one bone per vertex: eyes) can't go on a new bone; their weights go to the
+    In game it follows its parent (as the game's own bones do that their animations don't know), except in the
+    animations you give it motion in (*Editing animations*). Rigid meshes (one bone per vertex: eyes) can't go on a new bone; their weights go to the
     nearest parent that can hold one.
   - A **moved bone** (in edit mode): the game's animations set each animated bone's own position (the
     townsman's animations hold the rest positions of most of his bones, `examples/anim_probe.rs`), so it would

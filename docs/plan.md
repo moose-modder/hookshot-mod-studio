@@ -468,8 +468,8 @@ Checked in game (2026-11-14): adult Link's three standing idles (`Wait`, `Wait_S
 `Player_Adult_04_Animation`) with the head turned 30 degrees in Blender: the tilt plays in game, and nothing else
 changes.
 
-**Next:** bones the game's animation doesn't move (a new bone animation in the file:
-the name in the string table, the bone array grown); fewer keys than one a frame; animations of another length.
+**Next:** fewer keys than one a frame; animations of another length. (Bones the game's animation doesn't move:
+done with new bones, step 3 (4).)
 
 ### 3. New bones (custom skeletons)
 
@@ -546,7 +546,30 @@ too); (5) cloth on new bones.
 on a new bone under `Wrist_R` (its skin index 279, so the 16-bit format): it stays in his hand as he moves. The
 game takes a skeleton with bones after its own, their inverse bind matrices, and the widened skin indices.
 
-**Next:** (4) animations moving new bones.
+**Done (2026-11-14): (4) for the game's actor animations: tracks added to animations.**
+- The game's animation files keep their tracks' names as strings in the file (all 3.1 million), and its animations
+  name bones their models don't have: 204 of the 580 models given animation files by their actors get tracks for
+  bones they lack (`examples/anim_names_probe.rs`), so the game skips names it doesn't find, and a file shared by two
+  models (adult Link's with Dark Link) can take a bone only one has.
+- A track's flag bits 24 to 27 (scale uniform, scale volume one, no rotation, no translation) come from its base
+  values, each cleared where a curve moves that part: so in 99.8% of the game's tracks, the others with fewer set.
+  The writer worked them out for new tracks, and edited tracks now keep only the ones that still hold (before, a bone
+  that didn't turn and was made to kept "no rotation").
+- `bfres_anim_write::AnimWriter::add_bones`: the animation's track array written again after the file's data (the
+  game's tracks copied with their pointers listed as they were, the new ones after), its bind indices too (unset:
+  bound by name), the names after the data. Checked on all 1,427 files (22,875 animations, one track added to each,
+  Euler or quaternion, before or after edits to the game's tracks): every one reads back, the new track's values
+  as written, the game's tracks as before (`examples/anim_rewrite.rs --add`).
+- `anim_edit::apply`: a bone the scene's action moves that the animation has no track for gets one (its rotation
+  kept as its nearest animated parent's is, bit 23 from it), against the built model's skeleton (with its new bones).
+  Through Blender: the plume in adult Link's hand on a new bone, swung 60 degrees each way ten times over his three
+  standing idles: the tracks read back as that (`examples/anim_track_check.rs`).
+
+Checked in game (2026-11-14): the plume swings as written in adult Link's standing idles, and stays still in his hand
+when he runs or jumps (animations without its track). A new bone moves in the game's animations given a track for it.
+
+**Next:** the `_Demo` skeletons (cutscene animations: whether a bone their skeleton files don't have plays); then
+(5) cloth on new bones.
 
 ## Risks and how they are contained
 

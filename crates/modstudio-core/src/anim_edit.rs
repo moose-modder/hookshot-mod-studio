@@ -8,14 +8,15 @@
 //! may be at another size or orientation than the game's). Each bone's own translation, rotation and scale (relative
 //! to its parent) are compared with the game's animation; a bone whose translation, rotation or scale moved gets
 //! new curves for that (a key at every frame; Euler angles kept near the frame before's, so they don't jump a turn),
-//! and keeps its other curves as they are. A bone the game's animation doesn't move isn't added to it: a warning
-//! says so. The animation keeps its length.
+//! and keeps its other curves as they are. A bone the scene moves that the game's animation has no track for (a bone
+//! added to the model, or one of the game's it leaves at rest) gets one: its rotation kept as its nearest animated
+//! parent's is (Euler angles or a quaternion). The animation keeps its length.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-use modstudio_formats::bfres_anim::{self, BoneAnim, target};
-use modstudio_formats::bfres_anim_write::{AnimWriter, BoneEdit, CurveEdit};
+use modstudio_formats::bfres_anim::{self, BoneAnim, SkeletalAnim, target};
+use modstudio_formats::bfres_anim_write::{AnimWriter, BoneEdit, CurveEdit, NewTrack};
 use modstudio_formats::romfs::Romfs;
 use serde::{Deserialize, Serialize};
 
@@ -403,8 +404,69 @@ fn bone_edit(
     }
 }
 
-/// The scene's game animations ([`EDITS_FILE`] at `edits`, with the skeleton of `model`) written into the game's
-/// animation files (read through `romfs`) where they differ: each file with at least one change, compressed.
+/// A bone's track as it is where an animation has none: at rest, no curves (its rotation a quaternion or not).
+fn untracked(name: &str, quaternion: bool) -> BoneAnim {
+    BoneAnim {
+        at: 0,
+        name: name.to_owned(),
+        flags: if quaternion {
+            modstudio_formats::bfres_anim::bone_flags::QUATERNION
+        } else {
+            0
+        },
+        begin_rotate: 3,
+        begin_translate: if quaternion { 4 } else { 6 },
+        begin_base_translate: 7,
+        begin_curve: 0,
+        base_scale: None,
+        base_rotation: None,
+        base_translation: None,
+        curves: Vec::new(),
+    }
+}
+
+/// The track of `anim` a new track for bone `i` takes after: its nearest parent's that has one, else the first.
+fn reference_track<'a>(
+    anim: &'a SkeletalAnim,
+    skeleton: &[SkelBone],
+    i: usize,
+) -> Option<&'a BoneAnim> {
+    let mut at = skeleton[i].parent;
+    let mut steps = 0;
+    while let Some(p) = at {
+        if let Some(b) = anim.bones.iter().find(|b| b.name == skeleton[p].name) {
+            return Some(b);
+        }
+        steps += 1;
+        if steps > skeleton.len() {
+            break;
+        }
+        at = skeleton[p].parent;
+    }
+    anim.bones.first()
+}
+
+/// A track's curves made `n` values long: a longer scene than the game's animation is cut to it; a shorter one
+/// holds its last frame.
+fn fit_to(edit: &mut BoneEdit, n: usize) {
+    for c in &mut edit.curves {
+        match c {
+            CurveEdit::Scalar { values, .. } => {
+                let last = *values.last().expect("a value");
+                values.resize(n, last);
+            }
+            CurveEdit::Quaternion { values } => {
+                let last = *values.last().expect("a value");
+                values.resize(n, last);
+            }
+            CurveEdit::Keep(_) => {}
+        }
+    }
+}
+
+/// The scene's game animations ([`EDITS_FILE`] at `edits`) written into the game's animation files (read through
+/// `romfs`) where they differ: each file with at least one change, compressed. `model`: the model whose skeleton the
+/// scene's armature is (a path in the romfs, or the built model's own path when the build added bones to it).
 pub fn apply(romfs: &Romfs, model: &str, edits: &Path) -> Result<Applied> {
     let text = std::fs::read_to_string(edits).context(edits.display())?;
     let scene: SceneEdits = serde_json::from_str(&text).context(edits.display())?;
@@ -492,47 +554,61 @@ pub fn apply(romfs: &Romfs, model: &str, edits: &Path) -> Result<Applied> {
                     s: l.s[..frames].to_vec(),
                 };
                 let mut edit = bone_edit(bone, skel, &trimmed, [moved, turned, stretched], frames);
-                // a longer scene than the game's animation is cut to it; a shorter one holds its last frame
-                let n = anim.frame_count.max(0) as usize + 1;
-                for c in &mut edit.curves {
-                    match c {
-                        CurveEdit::Scalar { values, .. } => {
-                            let last = *values.last().expect("a value");
-                            values.resize(n, last);
-                        }
-                        CurveEdit::Quaternion { values } => {
-                            let last = *values.last().expect("a value");
-                            values.resize(n, last);
-                        }
-                        CurveEdit::Keep(_) => {}
-                    }
-                }
+                fit_to(&mut edit, anim.frame_count.max(0) as usize + 1);
                 writer.edit_bone(&data, anim, bi, &edit).context(file)?;
                 changed_bones.push(bone.name.clone());
             }
-            // bones the scene moves that the game's animation doesn't
+            // bones the scene moves that the game's animation has no track for: tracks added
             let animated: std::collections::HashSet<&str> =
                 anim.bones.iter().map(|b| b.name.as_str()).collect();
-            let left: Vec<&str> = skeleton
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| !animated.contains(b.name.as_str()))
-                .filter(|(i, b)| {
-                    let l = &locals[*i];
-                    (0..frames).any(|f| {
-                        distance(l.t[f], b.translation) > MOVE
-                            || degrees_between(l.r[f], b.rotation) > TURN
-                            || distance(l.s[f], b.scale) > STRETCH
-                    })
-                })
-                .map(|(_, b)| b.name.as_str())
-                .collect();
-            if !left.is_empty() {
-                applied.warnings.push(format!(
-                    "{label}: {} bone(s) move in the scene that the game's animation doesn't animate, so their motion is left out: {}{}",
-                    left.len(),
-                    left.iter().take(6).copied().collect::<Vec<_>>().join(", "),
-                    if left.len() > 6 { ", ..." } else { "" }
+            let mut tracks = Vec::new();
+            for (si, skel) in skeleton.iter().enumerate() {
+                if animated.contains(skel.name.as_str()) {
+                    continue;
+                }
+                let l = &locals[si];
+                let moved = (0..frames).any(|f| distance(l.t[f], skel.translation) > MOVE);
+                let turned = (0..frames).any(|f| degrees_between(l.r[f], skel.rotation) > TURN);
+                let stretched = (0..frames).any(|f| distance(l.s[f], skel.scale) > STRETCH);
+                if !(moved || turned || stretched) {
+                    continue;
+                }
+                let reference = reference_track(anim, &skeleton, si);
+                let quaternion = reference.is_some_and(|r| r.quaternion());
+                let flags = reference.map_or(1 << 23, |r| r.flags & (1 << 23));
+                let trimmed = Locals {
+                    t: l.t[..frames].to_vec(),
+                    r: l.r[..frames].to_vec(),
+                    s: l.s[..frames].to_vec(),
+                };
+                let mut edit = bone_edit(
+                    &untracked(&skel.name, quaternion),
+                    skel,
+                    &trimmed,
+                    [moved, turned, stretched],
+                    frames,
+                );
+                fit_to(&mut edit, anim.frame_count.max(0) as usize + 1);
+                tracks.push(NewTrack {
+                    name: skel.name.clone(),
+                    quaternion,
+                    flags,
+                    edit,
+                });
+            }
+            if !tracks.is_empty() {
+                writer.add_bones(&data, anim, &tracks).context(file)?;
+                any = true;
+                applied.changes.push(format!(
+                    "{label}: {} track(s) added: {}{}",
+                    tracks.len(),
+                    tracks
+                        .iter()
+                        .take(8)
+                        .map(|t| t.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    if tracks.len() > 8 { ", ..." } else { "" }
                 ));
             }
             if !changed_bones.is_empty() {

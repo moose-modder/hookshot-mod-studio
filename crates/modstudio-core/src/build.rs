@@ -383,7 +383,14 @@ fn run(
     let anim_edits = work.join(anim_edit::EDITS_FILE);
     if anim_edits.is_file() {
         progress.step("Animations");
-        let applied = anim_edit::apply(&romfs, &project.data.model, &anim_edits)?;
+        // the skeleton the scene's armature is: the built model's (with the bones the build added) where written
+        let built = mod_romfs.join(&project.data.model);
+        let skeleton_model = if built.is_file() {
+            built.to_string_lossy().into_owned()
+        } else {
+            project.data.model.clone()
+        };
+        let applied = anim_edit::apply(&romfs, &skeleton_model, &anim_edits)?;
         for w in &applied.warnings {
             progress.warn(w.clone());
             report.warnings.push(w.clone());

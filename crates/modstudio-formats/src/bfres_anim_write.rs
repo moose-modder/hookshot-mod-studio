@@ -12,6 +12,17 @@
 //! (unsigned, times a scale plus the minimum). A bone whose rotation is a quaternion gets one quaternion curve (four
 //! f32 per key). An animation's curve count, its baked size (curves x (4 x frames + 32), rounded up to 8: so in
 //! all 22,875 of the game's), and each bone's index of its first curve are counted again.
+//!
+//! An animation can also be given tracks for bones it doesn't move ([`AnimWriter::add_bones`]): bones added to the
+//! model, or the game's own its animation leaves at rest. Animations bind to bones by name, and the game skips a
+//! name its model hasn't (its own animations name bones 204 of the 580 models given them lack), so a file shared by
+//! several models can take a bone only one of them has. The animation's track array is written again after the
+//! file's data (the game's tracks copied, the new ones after), with its bind indices, and the new names.
+//!
+//! A track's flags say, besides which base values and curves it has, whether its scale is uniform, its scale's volume
+//! one, its rotation none and its translation none (bits 24 to 27): from its base values, each cleared where a curve
+//! moves that part. So in 99.8% of the game's 3.1 million tracks; the others have fewer set. Edited tracks keep only
+//! the ones that still hold (a bone that didn't turn and now does mustn't keep "no rotation").
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -38,6 +49,48 @@ pub struct BoneEdit {
     pub base_rotation: [f32; 4],
     pub base_translation: [f32; 3],
     pub curves: Vec<CurveEdit>,
+}
+
+/// A track for a bone an animation doesn't move yet ([`AnimWriter::add_bones`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewTrack {
+    /// The bone's name (animations bind to bones by name).
+    pub name: String,
+    /// Its rotation a quaternion (its base rotation one, and its rotation one quaternion curve), else Euler angles.
+    pub quaternion: bool,
+    /// Its flags besides the base, curve, rotation and transform ones (most of the game's tracks have bit 23).
+    pub flags: u32,
+    pub edit: BoneEdit,
+}
+
+/// A track's size.
+const TRACK_SIZE: usize = 0x38;
+
+/// The transform bits of a track's flags (24 to 27: scale uniform, scale volume one, no rotation, no translation).
+const TRANSFORM_BITS: u32 = 0x0F00_0000;
+
+/// The transform bits ([`TRANSFORM_BITS`]) a track's base values give, each cleared where one of its curves
+/// (`targets`) moves that part.
+pub fn transform_bits(edit: &BoneEdit, quaternion: bool, targets: &[u32]) -> u32 {
+    let moved = |lo: u32, hi: u32| targets.iter().any(|t| (lo..=hi).contains(t));
+    let (s, r, t) = (edit.base_scale, edit.base_rotation, edit.base_translation);
+    let mut bits = 0;
+    if !moved(0x04, 0x0C) {
+        if s[0] == s[1] && s[1] == s[2] {
+            bits |= 1 << 24;
+        }
+        if s[0] * s[1] * s[2] == 1.0 {
+            bits |= 1 << 25;
+        }
+    }
+    let no_rotation = r[0] == 0.0 && r[1] == 0.0 && r[2] == 0.0 && (!quaternion || r[3] == 1.0);
+    if !moved(0x20, 0x2C) && no_rotation {
+        bits |= 1 << 26;
+    }
+    if !moved(0x10, 0x18) && t == [0.0; 3] {
+        bits |= 1 << 27;
+    }
+    bits
 }
 
 /// An entry of the relocation table: at `pos`, `structs` times: `ptrs` pointers (8 bytes each), then `pad` words
@@ -72,6 +125,8 @@ pub struct AnimWriter {
     relocated: HashSet<usize>,
     /// Per animation (its offset): per bone, its curve count now (edited bones), to count again at the end.
     counts: BTreeMap<usize, BTreeMap<usize, usize>>,
+    /// Per animation given new tracks (its offset): where its track array is now, and how many tracks it gained.
+    moved: BTreeMap<usize, (usize, usize)>,
 }
 
 fn write_f32(buf: &mut [u8], at: usize, v: f32) {
@@ -174,7 +229,26 @@ impl AnimWriter {
             entries,
             relocated,
             counts: BTreeMap::new(),
+            moved: BTreeMap::new(),
         })
+    }
+
+    /// The bytes at `at` as they are now.
+    fn get(&self, at: usize, len: usize) -> Vec<u8> {
+        if at + len <= self.head.len() {
+            self.head[at..at + len].to_vec()
+        } else {
+            let t = at - self.base;
+            self.tail[t..t + len].to_vec()
+        }
+    }
+
+    /// Where track `index` of `anim` is now (its array moves when tracks are added).
+    fn record(&self, anim: &SkeletalAnim, index: usize) -> usize {
+        match self.moved.get(&anim.at) {
+            Some(&(array, _)) => array + index * TRACK_SIZE,
+            None => anim.bones[index].at,
+        }
     }
 
     /// Room for `size` bytes after the file's own data, aligned to `align`: its position in the written file.
@@ -352,23 +426,152 @@ impl AnimWriter {
             .bones
             .get(index)
             .ok_or_else(|| invalid(format!("animation {}: no bone {index}", anim.name)))?;
-        let quaternion = bone.quaternion();
+        let rec = self.record(anim, index);
+        let n = self.write_track(
+            data,
+            anim.frame_count,
+            rec,
+            Some(bone),
+            &bone.name,
+            bone.flags,
+            edit,
+        )?;
+        self.counts.entry(anim.at).or_default().insert(index, n);
+        Ok(())
+    }
+
+    /// Gives `anim` a track for each of `tracks`' bones (none of which it has): its track array written again after
+    /// the file's data, the game's tracks as they are now (edited ones too) and the new ones after, with their bind
+    /// indices (unset, as the game's are: bound by name) and names. Once per animation; its own tracks may be
+    /// edited before or after.
+    pub fn add_bones(
+        &mut self,
+        data: &[u8],
+        anim: &SkeletalAnim,
+        tracks: &[NewTrack],
+    ) -> Result<()> {
+        if tracks.is_empty() {
+            return Ok(());
+        }
+        if self.moved.contains_key(&anim.at) {
+            return Err(invalid(format!(
+                "animation {}: tracks added twice",
+                anim.name
+            )));
+        }
+        let mut names: HashSet<&str> = anim.bones.iter().map(|b| b.name.as_str()).collect();
+        for t in tracks {
+            if !names.insert(t.name.as_str()) {
+                return Err(invalid(format!(
+                    "animation {}: it has a track for {} already",
+                    anim.name, t.name
+                )));
+            }
+            if t.name.len() > u16::MAX as usize {
+                return Err(invalid(format!("a bone name of {} bytes", t.name.len())));
+            }
+        }
+        let n = anim.bones.len();
+        let total = n + tracks.len();
+        if total > u16::MAX as usize {
+            return Err(unsupported(format!(
+                "animation {}: {total} tracks",
+                anim.name
+            )));
+        }
+        // the game's tracks, copied, their pointers listed as they were (by runs, a word at a time)
+        let array = self.alloc(total * TRACK_SIZE, 8);
+        for (i, b) in anim.bones.iter().enumerate() {
+            let raw = self.get(b.at, TRACK_SIZE);
+            self.put(array + i * TRACK_SIZE, &raw);
+        }
+        for w in 0..TRACK_SIZE / 8 {
+            let mut i = 0;
+            while i < n {
+                if !self.relocated.contains(&(anim.bones[i].at + w * 8)) {
+                    i += 1;
+                    continue;
+                }
+                let start = i;
+                while i < n
+                    && i - start < u16::MAX as usize
+                    && self.relocated.contains(&(anim.bones[i].at + w * 8))
+                {
+                    self.relocated.insert(array + i * TRACK_SIZE + w * 8);
+                    i += 1;
+                }
+                self.entries.push(Entry {
+                    pos: (array + start * TRACK_SIZE + w * 8) as u32,
+                    structs: (i - start) as u16,
+                    ptrs: 1,
+                    pad: (TRACK_SIZE / 8 - 1) as u8,
+                });
+            }
+        }
+        self.point(anim.at + 0x28, array);
+        let bind_at = data.offset_at(anim.at + 0x20)?;
+        if bind_at != 0 {
+            let bind = self.alloc(total * 2, 8);
+            for i in 0..total {
+                let v = anim.bind_indices.get(i).copied().unwrap_or(0xFFFF);
+                self.put(bind + i * 2, &v.to_le_bytes());
+            }
+            self.point(anim.at + 0x20, bind);
+        }
+        self.put(anim.at + 0x4C, &(total as u16).to_le_bytes());
+        self.moved.insert(anim.at, (array, tracks.len()));
+        for (j, t) in tracks.iter().enumerate() {
+            let rec = array + (n + j) * TRACK_SIZE;
+            let name = self.alloc(2 + t.name.len() + 1, 8);
+            self.put(name, &(t.name.len() as u16).to_le_bytes());
+            self.put(name + 2, t.name.as_bytes());
+            self.point(rec, name);
+            // the two unused pointer words, null and listed as the game's are
+            self.point(rec + 0x18, 0);
+            self.point(rec + 0x20, 0);
+            let quaternion = if t.quaternion {
+                bone_flags::QUATERNION
+            } else {
+                0
+            };
+            let flags =
+                (t.flags & !(CURVE_BITS | bone_flags::QUATERNION)) | quaternion | TRANSFORM_BITS;
+            let count =
+                self.write_track(data, anim.frame_count, rec, None, &t.name, flags, &t.edit)?;
+            self.counts.entry(anim.at).or_default().insert(n + j, count);
+        }
+        Ok(())
+    }
+
+    /// Writes a track's curves, base values and flags into the track at `rec`: `bone` the game's it was (whose
+    /// curves can be kept), else a new one (`flags`: what it starts from). Its number of curves.
+    #[allow(clippy::too_many_arguments)]
+    fn write_track(
+        &mut self,
+        data: &[u8],
+        frame_count: i32,
+        rec: usize,
+        bone: Option<&BoneAnim>,
+        name: &str,
+        flags: u32,
+        edit: &BoneEdit,
+    ) -> Result<usize> {
+        let quaternion = flags & bone_flags::QUATERNION != 0;
         // the curves, in the game's order
         let mut curves: Vec<(u32, bool, &CurveEdit)> = Vec::new();
         for c in &edit.curves {
             let (t, q) = match c {
                 CurveEdit::Keep(i) => {
-                    let kept: &Curve = bone.curves.get(*i).ok_or_else(|| {
-                        invalid(format!("bone {}: no curve {i} to keep", bone.name))
-                    })?;
+                    let kept: &Curve = bone
+                        .and_then(|b| b.curves.get(*i))
+                        .ok_or_else(|| invalid(format!("bone {name}: no curve {i} to keep")))?;
                     (kept.target, kept.flags & curve_flags::QUATERNION != 0)
                 }
                 CurveEdit::Scalar { target, .. } => (*target, false),
                 CurveEdit::Quaternion { .. } => {
                     if !quaternion {
                         return Err(invalid(format!(
-                            "bone {}: a quaternion curve on a bone of Euler angles",
-                            bone.name
+                            "bone {name}: a quaternion curve on a bone of Euler angles"
                         )));
                     }
                     (target::ROTATE_X, true)
@@ -376,42 +579,43 @@ impl AnimWriter {
             };
             if quaternion && !q && (0x20..=0x2C).contains(&t) {
                 return Err(invalid(format!(
-                    "bone {}: an angle curve on a quaternion bone",
-                    bone.name
+                    "bone {name}: an angle curve on a quaternion bone"
                 )));
             }
             if curves.iter().any(|(other, _, _)| *other == t) {
-                return Err(invalid(format!(
-                    "bone {}: two curves for 0x{t:x}",
-                    bone.name
-                )));
+                return Err(invalid(format!("bone {name}: two curves for 0x{t:x}")));
             }
             curves.push((t, q, c));
         }
         curves.sort_by_key(|(t, _, _)| curve_order(*t));
         if curves.len() > u8::MAX as usize {
-            return Err(invalid(format!("bone {}: too many curves", bone.name)));
+            return Err(invalid(format!("bone {name}: too many curves")));
         }
-        // a new array of curve headers (kept ones copied: their frames and keys stay where they are)
-        let array = self.alloc(curves.len().max(1) * 0x30, 8);
         let mut bits = 0;
-        for (i, (t, q, c)) in curves.iter().enumerate() {
-            let header = array + i * 0x30;
-            bits |= curve_bit(*t, *q);
-            match c {
-                CurveEdit::Keep(k) => {
-                    let from = bone.curves[*k].at;
-                    let raw = data.slice_at(from, 0x30)?.to_vec();
-                    let frames_at = u64::from_le_bytes(raw[0..8].try_into().expect("8")) as usize;
-                    let keys_at = u64::from_le_bytes(raw[8..16].try_into().expect("8")) as usize;
-                    self.put(header + 0x10, &raw[0x10..]);
-                    self.set_listed(header, frames_at);
-                    self.set_listed(header + 8, keys_at);
+        if curves.is_empty() {
+            // none: a null pointer, as the game's tracks without curves have
+            self.put(rec + 0x08, &0u64.to_le_bytes());
+        } else {
+            // a new array of curve headers (kept ones copied: their frames and keys stay where they are)
+            let array = self.alloc(curves.len() * 0x30, 8);
+            for (i, (t, q, c)) in curves.iter().enumerate() {
+                let header = array + i * 0x30;
+                bits |= curve_bit(*t, *q);
+                match (c, bone) {
+                    (CurveEdit::Keep(k), Some(bone)) => {
+                        let from = bone.curves[*k].at;
+                        let raw = data.slice_at(from, 0x30)?.to_vec();
+                        let frames_at =
+                            u64::from_le_bytes(raw[0..8].try_into().expect("8")) as usize;
+                        let keys_at =
+                            u64::from_le_bytes(raw[8..16].try_into().expect("8")) as usize;
+                        self.put(header + 0x10, &raw[0x10..]);
+                        self.set_listed(header, frames_at);
+                        self.set_listed(header + 8, keys_at);
+                    }
+                    _ => self.new_curve(header, c, frame_count)?,
                 }
-                _ => self.new_curve(header, c, anim.frame_count)?,
             }
-        }
-        if !curves.is_empty() {
             // the new headers' pointers, listed by one entry
             self.entries.push(Entry {
                 pos: array as u32,
@@ -419,8 +623,8 @@ impl AnimWriter {
                 ptrs: 2,
                 pad: 4,
             });
+            self.point(rec + 0x08, array);
         }
-        self.point(bone.at + 0x08, array);
         // the base values: in place where the bone had all three, else a new block
         let mut base = Vec::with_capacity(40);
         for v in edit
@@ -433,25 +637,27 @@ impl AnimWriter {
         }
         let base_flags =
             bone_flags::BASE_SCALE | bone_flags::BASE_ROTATE | bone_flags::BASE_TRANSLATE;
-        let old_base = data.offset_at(bone.at + 0x10)?;
-        if old_base != 0 && bone.flags & base_flags == base_flags {
+        let old_base = match bone {
+            Some(b) if b.flags & base_flags == base_flags => data.offset_at(b.at + 0x10)?,
+            _ => 0,
+        };
+        if old_base != 0 {
             self.put(old_base, &base);
         } else {
             let at = self.alloc(base.len(), 8);
             self.put(at, &base);
-            self.point(bone.at + 0x10, at);
+            self.point(rec + 0x10, at);
         }
-        let flags = (bone.flags & !CURVE_BITS) | bits | base_flags;
-        self.put(bone.at + 0x28, &flags.to_le_bytes());
+        // the transform bits that still hold
+        let targets: Vec<u32> = curves.iter().map(|(t, _, _)| *t).collect();
+        let transform = flags & TRANSFORM_BITS & transform_bits(edit, quaternion, &targets);
+        let flags = (flags & !(CURVE_BITS | TRANSFORM_BITS)) | bits | base_flags | transform;
+        self.put(rec + 0x28, &flags.to_le_bytes());
         // where its rotation and translation slots begin: scale 0 to 2, rotation 3 to 5 (one slot for a
         // quaternion), translation after; the base translation after scale and a 4-float rotation
         let begin_translate: u8 = if quaternion { 4 } else { 6 };
-        self.put(bone.at + 0x2C, &[3, begin_translate, curves.len() as u8, 7]);
-        self.counts
-            .entry(anim.at)
-            .or_default()
-            .insert(index, curves.len());
-        Ok(())
+        self.put(rec + 0x2C, &[3, begin_translate, curves.len() as u8, 7]);
+        Ok(curves.len())
     }
 
     /// Counts the edited animations' curves again (each bone's first, the animation's total and its baked size),
@@ -462,10 +668,15 @@ impl AnimWriter {
             let Some(edited) = counts.get(&a.at) else {
                 continue;
             };
+            let added = self.moved.get(&a.at).map_or(0, |&(_, k)| k);
             let mut total = 0usize;
-            for (i, b) in a.bones.iter().enumerate() {
-                self.put(b.at + 0x30, &(total as i32).to_le_bytes());
-                total += edited.get(&i).copied().unwrap_or(b.curves.len());
+            for i in 0..a.bones.len() + added {
+                let rec = self.record(a, i);
+                self.put(rec + 0x30, &(total as i32).to_le_bytes());
+                total += edited
+                    .get(&i)
+                    .copied()
+                    .unwrap_or_else(|| a.bones.get(i).map_or(0, |b| b.curves.len()));
             }
             self.put(a.at + 0x44, &(total as i32).to_le_bytes());
             self.put(a.at + 0x48, &baked_size(total, a.frame_count).to_le_bytes());
@@ -541,4 +752,183 @@ pub fn check_relocations(data: &[u8]) -> Result<usize> {
         }
     }
     Ok(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bfres_anim;
+    use crate::testing::tiny_anim;
+
+    fn wave(frames: usize, from: f32, to: f32) -> Vec<f32> {
+        (0..frames)
+            .map(|f| from + (to - from) * f as f32 / (frames - 1) as f32)
+            .collect()
+    }
+
+    fn plume() -> NewTrack {
+        NewTrack {
+            name: "Plume".into(),
+            quaternion: false,
+            flags: 1 << 23,
+            edit: BoneEdit {
+                base_scale: [1.0; 3],
+                base_rotation: [0.0, 0.0, 0.0, 1.0],
+                base_translation: [0.2, 0.0, 0.0],
+                curves: vec![CurveEdit::Scalar {
+                    target: target::ROTATE_X,
+                    values: wave(11, 0.0, 1.0),
+                }],
+            },
+        }
+    }
+
+    fn arm_turning() -> BoneEdit {
+        BoneEdit {
+            base_scale: [1.0; 3],
+            base_rotation: [0.0, 0.0, 0.5, 1.0],
+            base_translation: [1.0, 0.0, 0.0],
+            curves: vec![CurveEdit::Scalar {
+                target: target::ROTATE_Z,
+                values: wave(11, 0.5, -0.5),
+            }],
+        }
+    }
+
+    /// The tiny animation with `Arm` turning and a track for `Plume` added, the edit before the new track or after.
+    fn written(edit_first: bool) -> Vec<u8> {
+        let data = tiny_anim();
+        let file = bfres_anim::parse(&data, None).unwrap();
+        let anim = &file.anims[0];
+        let mut w = AnimWriter::new(&data).unwrap();
+        if edit_first {
+            w.edit_bone(&data, anim, 1, &arm_turning()).unwrap();
+            w.add_bones(&data, anim, &[plume()]).unwrap();
+        } else {
+            w.add_bones(&data, anim, &[plume()]).unwrap();
+            w.edit_bone(&data, anim, 1, &arm_turning()).unwrap();
+        }
+        w.finish(&file.anims).unwrap()
+    }
+
+    #[test]
+    fn a_track_is_added_for_a_new_bone() {
+        let original = bfres_anim::parse(&tiny_anim(), None).unwrap();
+        let root = &original.anims[0].bones[0];
+        for edit_first in [true, false] {
+            let out = written(edit_first);
+            check_relocations(&out).unwrap();
+            let back = bfres_anim::parse(&out, None).unwrap();
+            let a = &back.anims[0];
+            let names: Vec<&str> = a.bones.iter().map(|b| b.name.as_str()).collect();
+            assert_eq!(names, ["Root", "Arm", "Plume"]);
+            assert_eq!(a.bind_indices, [0xFFFF; 3]);
+            assert_eq!(a.curve_count, 2);
+            assert_eq!(a.baked_size, baked_size(2, 10));
+            assert_eq!(
+                a.bones.iter().map(|b| b.begin_curve).collect::<Vec<_>>(),
+                [0, 0, 1]
+            );
+            // Root as it was
+            assert_eq!(a.bones[0].flags, root.flags);
+            assert_eq!(a.bones[0].base_rotation, root.base_rotation);
+            assert!(a.bones[0].curves.is_empty());
+            // Arm turning, Plume nodding, each to within a step of its 16-bit values
+            let arm = a.bones[1].curve(target::ROTATE_Z).unwrap();
+            let p = &a.bones[2];
+            let nod = p.curve(target::ROTATE_X).unwrap();
+            for f in 0..=10 {
+                let t = f as f32 / 10.0;
+                assert!((arm.value_at(f as f32) - (0.5 - t)).abs() < 1e-4);
+                assert!((nod.value_at(f as f32) - t).abs() < 1e-4);
+            }
+            assert_eq!(p.base_translation, Some([0.2, 0.0, 0.0]));
+            assert_eq!(p.base_rotation, Some([0.0, 0.0, 0.0, 1.0]));
+            assert!(!p.quaternion());
+            // bit 23 as given; base values and the X angle curve; scale uniform and one, but it turns and isn't at
+            // its parent's origin
+            assert_eq!(p.flags, 1 << 23 | 0x38 | 1 << 9 | 0x0300_0000);
+            assert_eq!(
+                (p.begin_rotate, p.begin_translate, p.begin_base_translate),
+                (3, 6, 7)
+            );
+            // written again with nothing changed, it stays the same
+            let again = AnimWriter::new(&out).unwrap().finish(&back.anims).unwrap();
+            assert_eq!(
+                bfres_anim::parse(&again, None).unwrap().anims[0]
+                    .bones
+                    .len(),
+                3
+            );
+        }
+    }
+
+    #[test]
+    fn an_edit_drops_the_transform_bits_that_no_longer_hold() {
+        let data = tiny_anim();
+        let file = bfres_anim::parse(&data, None).unwrap();
+        let anim = &file.anims[0];
+        // Root: no rotation, no translation; now it turns about y
+        assert_eq!(anim.bones[0].flags & TRANSFORM_BITS, 0x0F00_0000);
+        let mut w = AnimWriter::new(&data).unwrap();
+        let turn = BoneEdit {
+            base_scale: [1.0; 3],
+            base_rotation: [0.0, 0.0, 0.0, 1.0],
+            base_translation: [0.0; 3],
+            curves: vec![CurveEdit::Scalar {
+                target: target::ROTATE_Y,
+                values: wave(11, 0.0, 0.3),
+            }],
+        };
+        w.edit_bone(&data, anim, 0, &turn).unwrap();
+        let out = w.finish(&file.anims).unwrap();
+        let root = &bfres_anim::parse(&out, None).unwrap().anims[0].bones[0];
+        assert_eq!(root.flags & TRANSFORM_BITS, 0x0B00_0000);
+        assert_eq!(root.flags & CURVE_BITS, 1 << 10);
+    }
+
+    #[test]
+    fn a_track_isnt_added_twice() {
+        let data = tiny_anim();
+        let file = bfres_anim::parse(&data, None).unwrap();
+        let anim = &file.anims[0];
+        let mut w = AnimWriter::new(&data).unwrap();
+        let mut arm = plume();
+        arm.name = "Arm".into();
+        assert!(w.add_bones(&data, anim, &[arm]).is_err());
+        assert!(w.add_bones(&data, anim, &[plume(), plume()]).is_err());
+        w.add_bones(&data, anim, &[plume()]).unwrap();
+        let mut other = plume();
+        other.name = "Other".into();
+        assert!(w.add_bones(&data, anim, &[other]).is_err());
+    }
+
+    #[test]
+    fn transform_bits_from_base_values_and_curves() {
+        let still = BoneEdit {
+            base_scale: [1.0; 3],
+            base_rotation: [0.0, 0.0, 0.0, 1.0],
+            base_translation: [0.0; 3],
+            curves: vec![],
+        };
+        assert_eq!(transform_bits(&still, false, &[]), 0x0F00_0000);
+        assert_eq!(transform_bits(&still, true, &[]), 0x0F00_0000);
+        // a quaternion of w 0 is a half turn
+        let mut half = still.clone();
+        half.base_rotation = [0.0, 0.0, 0.0, 0.0];
+        assert_eq!(transform_bits(&half, true, &[]), 0x0B00_0000);
+        assert_eq!(transform_bits(&half, false, &[]), 0x0F00_0000);
+        // stretched: uniform but not one; curves clear their part
+        let mut big = still.clone();
+        big.base_scale = [2.0; 3];
+        assert_eq!(transform_bits(&big, false, &[]), 0x0D00_0000);
+        assert_eq!(
+            transform_bits(&still, false, &[target::SCALE_Y]),
+            0x0C00_0000
+        );
+        assert_eq!(
+            transform_bits(&still, false, &[target::TRANSLATE_Z]),
+            0x0700_0000
+        );
+    }
 }

@@ -301,6 +301,89 @@ fn build_tiny(colours: Option<[[f32; 4]; 3]>) -> Vec<u8> {
     b.data
 }
 
+/// A BFRES 10.4 animation file (`.anim.bfres`) with one skeletal animation `Wave` (Euler, looping, 10 frames) of
+/// two bones, `Root` and `Arm`, each with all three base values and no curves: `Root` at rest, `Arm` at x = 1 turned
+/// 0.5 radians about z. Its relocation table has one section, listing its pointers as the game's files do (a bone
+/// without curves has its curve pointer null and unlisted; the two unused pointer words after the base values are
+/// listed).
+pub fn tiny_anim() -> Vec<u8> {
+    let mut b = Builder { data: Vec::new() };
+    let header = b.alloc(0xF0, 8);
+    b.bytes(header, b"FRES    ");
+    b.u32(header + 0x08, 0x000A_0400);
+    b.u16(header + 0x0C, 0xFEFF);
+    let mut listed: Vec<usize> = Vec::new();
+    let anim = b.alloc(0x50, 8);
+    b.u64(header + 0x58, anim as u64);
+    b.u16(header + 0xE2, 1);
+    listed.extend([header + 0x20, header + 0x58]);
+    b.bytes(anim, b"FSKA");
+    // Euler, looping
+    b.u32(anim + 0x04, 1 << 12 | 1 << 2);
+    let bind = b.alloc(4, 8);
+    b.u16(bind, 0xFFFF);
+    b.u16(bind + 2, 0xFFFF);
+    b.u64(anim + 0x20, bind as u64);
+    let bones = b.alloc(2 * 0x38, 8);
+    b.u64(anim + 0x28, bones as u64);
+    listed.extend([anim + 0x08, anim + 0x10, anim + 0x20, anim + 0x28]);
+    b.u32(anim + 0x40, 10);
+    b.u16(anim + 0x4C, 2);
+    let rest: [([f32; 3], [f32; 4], [f32; 3]); 2] = [
+        ([1.0; 3], [0.0, 0.0, 0.0, 1.0], [0.0; 3]),
+        ([1.0; 3], [0.0, 0.0, 0.5, 1.0], [1.0, 0.0, 0.0]),
+    ];
+    let mut base_blocks = Vec::new();
+    for (s, r, tr) in rest {
+        let at = b.alloc(40, 8);
+        b.f32s(at, &s);
+        b.f32s(at + 12, &r);
+        b.f32s(at + 28, &tr);
+        base_blocks.push(at);
+    }
+    for (i, base) in base_blocks.into_iter().enumerate() {
+        let at = bones + i * 0x38;
+        b.u64(at + 0x10, base as u64);
+        // base scale, rotation and translation; bit 23; scale uniform and one; rotation zero for Root only;
+        // translation zero for Root only
+        let zero = if i == 0 { 0x0C00_0000 } else { 0 };
+        b.u32(at + 0x28, 0x38 | 1 << 23 | 0x0300_0000 | zero);
+        b.bytes(at + 0x2C, &[3, 6, 0, 7]);
+        listed.extend([at, at + 0x10, at + 0x18, at + 0x20]);
+    }
+    // the strings
+    let file_name = b.string("tiny_anim");
+    b.u64(header + 0x20, file_name as u64);
+    let name = b.string("Wave");
+    b.u64(anim + 0x08, name as u64);
+    let path = b.string("");
+    b.u64(anim + 0x10, path as u64);
+    for (i, n) in ["Root", "Arm"].into_iter().enumerate() {
+        let s = b.string(n);
+        b.u64(bones + i * 0x38, s as u64);
+    }
+    let end = b.data.len();
+    listed.sort();
+    let rlt = b.alloc(0x10 + 0x18 + listed.len() * 8, 8);
+    b.bytes(rlt, b"_RLT");
+    b.u32(rlt + 4, rlt as u32);
+    b.u32(rlt + 8, 1);
+    b.u32(rlt + 0x10 + 8, 0);
+    b.u32(rlt + 0x10 + 12, end as u32);
+    b.u32(rlt + 0x10 + 16, 0);
+    b.u32(rlt + 0x10 + 20, listed.len() as u32);
+    let entries = rlt + 0x10 + 0x18;
+    for (k, at) in listed.into_iter().enumerate() {
+        b.u32(entries + k * 8, at as u32);
+        b.u16(entries + k * 8 + 4, 1);
+        b.u8(entries + k * 8 + 6, 1);
+    }
+    b.u32(header + 0x18, rlt as u32);
+    let len = b.data.len() as u32;
+    b.u32(header + 0x1C, len);
+    b.data
+}
+
 /// A BNTX with one `width` x `height` RGBA8 texture called `name` laid out for `gob`: pixel (x, y) is
 /// `[x, y, x ^ y, 255]` (as bytes).
 pub fn tiny_bntx(name: &str, width: u32, height: u32, gob: Gob) -> Vec<u8> {
