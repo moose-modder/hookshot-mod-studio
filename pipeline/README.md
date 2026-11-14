@@ -90,8 +90,8 @@ Logs of every step are in `build` (`2_blender.log`, `5_check_scene.log`, ...), w
 
 The game draws each mesh with its own material and that material's textures; Blender materials don't come
 along. So the build bakes what the scene shows into the model's own textures (the ones named after the model,
-e.g. `Mt_Skin_Npc_U_GreatFairy_Alb`; shared `CmnTex_*` and detail textures are never changed). Nothing needs
-configuring for this:
+e.g. `Mt_Skin_Npc_U_GreatFairy_Alb`; shared `CmnTex_*` and detail textures are never baked into), and takes
+painted textures as they are. Nothing needs configuring for this:
 
 - **Custom materials.** Give the faces you change their own material (anything not named like the mesh's game
   material; a `.001` copy counts as the game material). Shader nodes, extra UV maps, attributes and masks all
@@ -112,8 +112,12 @@ configuring for this:
      roughness, not the leaves' that were there), blending with the sampled ones as the change fades. Merge-rule
      materials with `source_uv` settings keep their own sampling. Metallic and specular settings don't darken
      the colour.
-- **Painted textures.** If a scene image of one of those textures was painted on (it differs from the game's),
-  the painted version is used. Pack or save the image so the `.blend` has it.
+- **Painted textures.** If a scene image of any texture the model uses differs from the game's, it's used:
+  painted in Blender, edited in another program, or a new picture opened in the texture's image node (whatever
+  its file is called) or named after the texture. Pack or save the image so the `.blend` has it. A texture not
+  named after the model (props' textures are often named after their material, e.g. `Kokiri_WoodBoard_A_01_Alb`;
+  `CmnTex_*` ones are shared) may be used by other models too: they all get the painted version, and the build
+  warns. Putting a new picture in a game material's image node doesn't count as changing the material.
 - **Changes inside a game material** (new nodes in `Mt_Face`, e.g. a mask that recolours part of the texture,
   or a changed value, link or image) are baked the same way: the material counts as a custom one, and the faces
   that look different are moved and baked. `make_scene.py` stamps each material with a fingerprint of its nodes
@@ -124,8 +128,8 @@ configuring for this:
   others and bakes the moved faces into every one: for each version the scene's images of version 0 show that
   version while baking, so a material that mixes in the original colour (stripes over the shirt) comes out in
   each character's colour. A painted texture changes version 0 only.
-- Only this model's meshes are kept clear of. A texture file another model also uses (unusual: they're named
-  after the model) isn't checked.
+- Bakes keep clear of this model's meshes only. A texture file another model also uses (unusual for the
+  model's own textures: they're named after the model) isn't checked.
 
 The log lists per mesh how many faces were baked, the new layout (`resolution_vs_original`: texel size of the
 baked faces relative to the rest; a warning below 0.5) and per texture the share of pixels changed.

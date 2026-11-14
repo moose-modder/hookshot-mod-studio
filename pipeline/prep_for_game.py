@@ -15,12 +15,14 @@ For every mesh parented to the armature:
   * The mesh data gets the object's name (Assimp, and so Toolbox, matches meshes by mesh data name).
 
 The game draws every mesh with its own material and that material's textures; Blender materials don't
-survive. So what the scene shows is put into the model's own textures (the ones named after the model,
-never shared CmnTex_* ones):
+survive. So what the scene shows is put into the model's textures:
 
-  * Painted textures: a scene image of one of those textures that differs from the game's is used.
-  * Custom materials: faces on any material other than the mesh's game material are baked (a game material
-    changed in place, i.e. with nodes the import doesn't make, counts as a custom one):
+  * Painted textures: a scene image of any texture the model uses that differs from the game's is used (the
+    image in the texture's node of a game material, whatever it's called, or an image named after the texture).
+    One not named after the model may be shared with other models: a warning says so.
+  * Custom materials: faces on any material other than the mesh's game material are baked into the model's
+    own textures (the ones named after the model, never shared CmnTex_* ones; a game material changed in place,
+    i.e. with nodes the import doesn't make, counts as a custom one):
       1. Which faces look different: they are baked with their material and with the game material,
          side by side in a scratch layout (diffuse colour and normals). Faces that differ, and `grow`
          rings of faces around them, are moved. (A merge rule moves all faces of its extra materials.)
@@ -605,9 +607,19 @@ def match_channel_layout(src, out):
             o[:, c] = s[0, c]
 
 
+def image_stems(img):
+    """The texture names an image may be named after: its name or its file's, without ".png" or ".001"."""
+    for n in (img.name, plain_name(img.name)):
+        yield n
+        yield os.path.splitext(n)[0]
+    if img.filepath:
+        yield os.path.splitext(os.path.basename(bpy.path.abspath(img.filepath)))[0]
+
+
 class Textures:
-    """The model's own textures (named after the model or the material: shared CmnTex_* and detail textures
-    are never changed). Each starts from the game's PNG, or from the scene's image if it was painted on."""
+    """The model's textures. Bakes go into its own ones only (named after the model or the material: shared
+    CmnTex_* and detail textures are never baked into); a painted texture is used whichever it is. Each starts
+    from the game's PNG, or from the scene's image if it was painted on."""
 
     def __init__(self, cfg, model, rep):
         self.src = cfg["source_textures"]
@@ -616,6 +628,8 @@ class Textures:
         self.materials = {m["name"]: m for m in model["materials"]}
         self.rep = rep
         self.painted = {}
+        # image name -> textures it stands for: unchanged or used as painted (see image_key)
+        self.stands_for = {}
 
     def owned(self, material):
         m = self.materials.get(material)
@@ -625,6 +639,28 @@ class Textures:
 
     def all_owned(self):
         return sorted({t for name in self.materials for t in self.owned(name)})
+
+    def all_used(self):
+        return sorted({t for m in self.materials.values() for t in m["textures"]})
+
+    def node_texture(self, node, material):
+        """The texture an image node of a game material stands for (make_scene.py labels each one
+        "<sampler>: <texture>"), or None."""
+        game = self.materials.get(plain_name(material.name))
+        if game is None or node.type != 'TEX_IMAGE':
+            return None
+        t = node.label.rsplit(": ", 1)[-1]
+        return t if t in game["textures"] else None
+
+    def image_key(self, node, material):
+        """The name a game material's image node counts under in its fingerprint (edited_nodes): an image that
+        stands for the node's texture (named after it, the same as the game's, or used as its painted version)
+        counts as the texture's own image, so painting or swapping in a new picture isn't a change of the material
+        (find_painted takes care of it)."""
+        t = self.node_texture(node, material)
+        if t is not None and (t in set(image_stems(node.image)) or t in self.stands_for.get(node.image.name, ())):
+            return t + ".png"
+        return node.image.name
 
     @staticmethod
     def colorspace(name, roles=None):
@@ -643,23 +679,34 @@ class Textures:
         return load_image(self.path(name), self.colorspace(name, roles))
 
     def find_painted(self):
-        """Scene images of the model's textures that differ from the game's are used for the mod."""
-        def stems(img):
-            yield plain_name(img.name)
-            yield os.path.splitext(img.name)[0]
-            if img.filepath:
-                yield os.path.splitext(os.path.basename(bpy.path.abspath(img.filepath)))[0]
-
-        images = [i for i in bpy.data.images if i.source in ('FILE', 'GENERATED') and not i.name.startswith("PREP_")]
-        for name in self.all_owned():
+        """Scene images that differ from the game's texture they stand for are used for the mod: the image in the
+        texture's node of a game material, whatever it's called, and any image named after the texture (its name
+        or its file's). Every texture the model uses counts, also one other models may use too (a warning says so:
+        the mod's texture replaces the game's for all of them)."""
+        images = {i.name: i for i in bpy.data.images
+                  if i.source in ('FILE', 'GENERATED') and not i.name.startswith("PREP_")}
+        in_nodes = {}
+        for mat in bpy.data.materials:
+            if not mat.use_nodes or mat.node_tree is None:
+                continue
+            for n in mat.node_tree.nodes:
+                t = self.node_texture(n, mat)
+                if t is not None and n.image is not None and n.image.name in images:
+                    in_nodes.setdefault(t, []).append(n.image.name)
+        owned = set(self.all_owned())
+        for name in self.all_used():
             orig_path = self.original(name)
-            candidates = [i for i in images if name in set(stems(i))]
+            # what the materials show first
+            candidates = list(dict.fromkeys(in_nodes.get(name, []) +
+                                            [k for k, i in images.items() if name in set(image_stems(i))]))
             if not candidates or not os.path.exists(orig_path):
                 continue
             ref_img = load_image(orig_path, self.colorspace(name))
             ref = image_pixels(ref_img)
             bpy.data.images.remove(ref_img)
-            for img in candidates:
+            changed_ones = []
+            for k in candidates:
+                img = images[k]
                 if img.size[0] == 0:
                     continue  #Its file is missing
                 px = image_pixels(img)
@@ -667,18 +714,30 @@ class Textures:
                     changed = float((np.abs(px - ref).max(-1) > 0.5 / 255).mean())
                     # Under 0.01% is two decoders disagreeing on a block or two, not painting.
                     if changed < 1e-4:
+                        self.stands_for.setdefault(k, set()).add(name)
                         continue
                     note = f"{changed * 100:.2f}% of pixels"
                 else:
                     note = f"resized {ref.shape[1]}x{ref.shape[0]} -> {px.shape[1]}x{px.shape[0]}"
-                    self.rep.warn(f"texture {name} was resized in the scene ({note})")
-                path = os.path.join(self.out, name + ".png")
-                save_png(px, path, self.colorspace(name))
-                self.painted[name] = path
-                self.rep.painted.append({"name": name, "image": img.name, "change": note})
-                self.rep.textures.append({"name": name, "role": "painted", "path": path})
-                log(f"Texture {name} was painted on in the scene (image {img.name}, {note}): using it")
-                break
+                changed_ones.append((img, px, note))
+            if not changed_ones:
+                continue
+            img, px, note = changed_ones[0]
+            if note.startswith("resized"):
+                self.rep.warn(f"texture {name} was resized in the scene ({note})")
+            if len(changed_ones) > 1:
+                self.rep.warn(f"texture {name}: several scene images of it were changed "
+                              f"({', '.join(c[0].name for c in changed_ones)}); using {img.name}")
+            if name not in owned:
+                self.rep.warn(f"texture {name} was painted; it isn't named after this model, so other models may "
+                              f"use it too: they get the painted version as well")
+            path = os.path.join(self.out, name + ".png")
+            save_png(px, path, self.colorspace(name))
+            self.painted[name] = path
+            self.stands_for.setdefault(img.name, set()).add(name)
+            self.rep.painted.append({"name": name, "image": img.name, "change": note})
+            self.rep.textures.append({"name": name, "role": "painted", "path": path})
+            log(f"Texture {name} was painted on in the scene (image {img.name}, {note}): using it")
 
 
 def texture_groups(textures):
@@ -1497,13 +1556,14 @@ def use_game_material(o, game_material):
 EDITED_SUFFIX = "_scene_edit"
 
 
-def edited_nodes(m):
+def edited_nodes(m, textures):
     """How a game material was changed in the scene, as a list of what (empty: not changed): against the
-    fingerprint make_scene.py stamped it with (any value, link, image or node), else (scenes made before the
-    stamp) nodes the import doesn't make (node groups other than the RG normal group count)."""
+    fingerprint make_scene.py stamped it with (any value, link, image or node; a painted or swapped-in picture of
+    a node's own texture isn't a change: Textures.image_key), else (scenes made before the stamp) nodes the
+    import doesn't make (node groups other than the RG normal group count)."""
     stamp = m.get(FINGERPRINT)
     if stamp:
-        if material_fingerprint(m) == stamp:
+        if material_fingerprint(m, image_key=lambda n: textures.image_key(n, m)) == stamp:
             return []
         added = [n.name for n in m.node_tree.nodes if n.type not in IMPORT_NODES or (
             n.type == 'GROUP' and (n.node_tree is None or plain_name(n.node_tree.name) != RG_GROUP))]
@@ -1529,7 +1589,7 @@ def edit_game_materials(objects, vanilla_meshes, textures, rep):
             if not m or m.name in seen or not m.use_nodes or plain_name(m.name) not in game:
                 continue
             seen.add(m.name)
-            nodes = edited_nodes(m)
+            nodes = edited_nodes(m, textures)
             if not nodes:
                 continue
             base = plain_name(m.name)

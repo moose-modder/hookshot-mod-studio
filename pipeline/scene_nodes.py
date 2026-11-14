@@ -28,7 +28,7 @@ def _value(v):
         return str(v)
 
 
-def _tree(tree, seen):
+def _tree(tree, seen, image_key):
     nodes = []
     for n in sorted(tree.nodes, key=lambda n: n.name):
         if n.type in ('FRAME', 'REROUTE'):
@@ -38,25 +38,26 @@ def _tree(tree, seen):
                  "inputs": {s.identifier: _value(s.default_value) for s in n.inputs
                             if not s.is_linked and hasattr(s, "default_value")}}
         if n.type == 'TEX_IMAGE':
-            entry["image"] = n.image.name if n.image else None
+            entry["image"] = image_key(n) if n.image else None
         if n.type == 'GROUP' and n.node_tree is not None:
             entry["group"] = n.node_tree.name
             if n.node_tree.name not in seen:
                 seen[n.node_tree.name] = None
-                seen[n.node_tree.name] = _tree(n.node_tree, seen)
+                seen[n.node_tree.name] = _tree(n.node_tree, seen, image_key)
         nodes.append(entry)
     links = sorted((l.from_node.name, l.from_socket.identifier, l.to_node.name, l.to_socket.identifier)
                    for l in tree.links if l.is_valid and not l.is_muted)
     return {"nodes": nodes, "links": links}
 
 
-def material_fingerprint(mat):
+def material_fingerprint(mat, image_key=None):
     """A hash of what a material's nodes do: node types, settings, unlinked input values, images, links and the
-    node groups they use. Moving nodes around doesn't change it; changing a value, a link or an image does."""
+    node groups they use. Moving nodes around doesn't change it; changing a value, a link or an image does.
+    image_key(node): the name an image node's image counts under (default: the image's name)."""
     if not mat.use_nodes or mat.node_tree is None:
         return None
     groups = {}
-    data = {"tree": _tree(mat.node_tree, groups), "groups": groups}
+    data = {"tree": _tree(mat.node_tree, groups, image_key or (lambda n: n.image.name)), "groups": groups}
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode("utf-8")).hexdigest()[:24]
 
 
