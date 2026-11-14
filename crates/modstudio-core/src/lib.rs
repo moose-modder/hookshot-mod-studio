@@ -13,14 +13,16 @@
 //! - [`project::create`]: a project for a model (export, Blender scene, `project.json`)
 //! - [`build::build`]: the mod built from the edited scene, checked, and installed
 //! - [`cloth`]: the game's cloth simulated against a test motion, for a preview in Blender
-//! - [`cloth_links`]: which cloth files the game's actors give each model
+//! - [`anim`]: a model's animations, listed and sampled for playing
+//! - [`actor_links`]: which cloth and animation files the game's actors give each model
 //! - [`mods`]: Hookshot's mods folder: mods on and off, one resource size table for all of them
 
+pub mod actor_links;
+pub mod anim;
 pub mod build;
 pub mod catalog;
 pub mod cloth;
 pub mod cloth_edit;
-pub mod cloth_links;
 pub mod eyes;
 mod fsutil;
 pub mod gltf;

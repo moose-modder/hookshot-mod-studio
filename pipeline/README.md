@@ -93,7 +93,7 @@ Logs of every step are in `build` (`2_blender.log`, `5_check_scene.log`, ...), w
 Hair, hoods, belts and capes are simulated in the game (Havok Cloth), and the simulation moves the `Ph_` bones
 their meshes are skinned to. The app simulates the model's cloth file itself (`modstudio-core`'s `cloth`), after
 letting the cloth settle at rest. The model's cloth file is the one the game's actors give it (read from their packs
-once and kept in `.modstudio\cloth_links.json` in the projects folder), which isn't always named after the model:
+once and kept in `.modstudio\actor_links.json` in the projects folder), which isn't always named after the model:
 the Great Fairy's is `Npc_U_GreantFairy`, and Dark Link wears adult Link's.
 
 - **In the app**: *Cloth physics* in the 3D view runs it live: drag the model to turn it, drag it up and let go to

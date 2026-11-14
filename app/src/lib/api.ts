@@ -184,6 +184,54 @@ export interface ClothSource {
   overlay?: string;
 }
 
+/** One of a model's animations (anim_list). */
+export interface AnimEntry {
+  file: string;
+  /** `actor`: an actor using the model plays it; `own`: the model's own file; `cutscene`: one of its cutscenes. */
+  kind: "actor" | "own" | "cutscene";
+  name: string;
+  /** Its length in frames, at the clip's fps. */
+  frames: number;
+  looping: boolean;
+}
+
+/** Where a track's samples are in a clip's data: an offset (in floats) and a count of values (0: the bone's rest,
+ * 1: held, else one per frame). */
+export type Span = [number, number];
+
+/** An animation opened with the model's skeleton (anim_open), sampled at every frame. */
+export interface Clip {
+  id: number;
+  file: string;
+  name: string;
+  fps: number;
+  frame_count: number;
+  looping: boolean;
+  samples: number;
+  /** Bones it moves that the model doesn't have. */
+  unmatched: string[];
+  /** The bone carrying the whole model (a run), and how far it goes over the clip (x and z, the model's space). */
+  motion: { bone: string; travel: [number, number, number] } | null;
+  /** Per bone: translation (3 floats a value), rotation (a quaternion, 4) and scale (3). */
+  tracks: { bone: string; t: Span; r: Span; s: Span }[];
+  data: Float32Array;
+}
+
+/** The clip anim_open sends: a u32 header length, the header (JSON), zeros to 4 bytes, then the floats. */
+function readClip(buffer: ArrayBuffer): Clip {
+  const length = new DataView(buffer).getUint32(0, true);
+  const header = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 4, length)));
+  const at = Math.ceil((4 + length) / 4) * 4;
+  return { ...header, data: new Float32Array(buffer.slice(at)) };
+}
+
+/** What a cloth step follows: a clip and its frame at each step; `settle` when the clip starts there. */
+export interface ClothAnim {
+  clip: number;
+  frames: number[];
+  settle?: boolean;
+}
+
 export interface InstalledMod {
   name: string;
   folder: string;
@@ -216,9 +264,15 @@ export const api = {
   hasCloth: (s: ClothSource) => invoke<boolean>("has_cloth", { path: s.path, overlay: s.overlay ?? null }),
   clothOpen: (s: ClothSource) =>
     invoke<ClothSession | null>("cloth_open", { path: s.path, overlay: s.overlay ?? null }),
-  /** One step for each place of the model; the bones' places after them (16 floats each). */
-  clothStep: (id: number, models: number[][]) => invoke<ArrayBuffer>("cloth_step", { id, models }),
+  /** One step for each place of the model (posed by `anim` where given); the bones' places after them (16 floats
+   * each). */
+  clothStep: (id: number, models: number[][], anim?: ClothAnim) =>
+    invoke<ArrayBuffer>("cloth_step", { id, models, anim: anim ?? null }),
   clothClose: (id: number) => invoke<void>("cloth_close", { id }),
+  animList: (s: ClothSource) => invoke<AnimEntry[]>("anim_list", { path: s.path, overlay: s.overlay ?? null }),
+  animOpen: async (s: ClothSource, file: string, name: string) =>
+    readClip(await invoke<ArrayBuffer>("anim_open", { path: s.path, overlay: s.overlay ?? null, file, name })),
+  animClose: (id: number) => invoke<void>("anim_close", { id }),
   showInFolder: (path: string) => invoke<void>("show_in_folder", { path }),
   readImage: (path: string) => invoke<ArrayBuffer>("read_image", { path }),
   listMods: () => invoke<ModsView>("list_mods"),

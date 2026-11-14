@@ -28,7 +28,7 @@ use crate::math::{self, Mat4};
 use crate::progress::Progress;
 use crate::project::Project;
 use crate::settings::Settings;
-use crate::{Context, Error, Result, args, catalog, cloth_links, tools};
+use crate::{Context, Error, Result, actor_links, args, catalog, tools};
 
 /// Frames a second, of the simulation and of the action made from it.
 pub const FPS: u32 = 30;
@@ -78,10 +78,10 @@ pub struct PreviewBone {
 }
 
 /// A model's cloth files, as romfs paths, the one to edit first (`model`: `Model/<group>.<model>.bfres.zs`): the ones
-/// the game's actors give it ([`cloth_links`]: read from the packs of `game_romfs`, kept in `cache_dir`), else a file
+/// the game's actors give it ([`actor_links`]: read from the packs of `game_romfs`, kept in `cache_dir`), else a file
 /// named after the model where the game has one (for a game whose packs don't read). Empty: the model has no cloth.
 pub fn cloth_sources(game_romfs: &Path, cache_dir: Option<&Path>, model: &str) -> Vec<String> {
-    if let Ok(links) = cloth_links::links(game_romfs, cache_dir) {
+    if let Ok(links) = actor_links::links(game_romfs, cache_dir) {
         let linked = links.cloth_of(model);
         if !linked.is_empty() {
             return linked.into_iter().map(str::to_owned).collect();
@@ -129,7 +129,7 @@ pub fn cloth_notes(
     model: &str,
     source: &str,
 ) -> Vec<String> {
-    let Ok(links) = cloth_links::links(game_romfs, cache_dir) else {
+    let Ok(links) = actor_links::links(game_romfs, cache_dir) else {
         return Vec::new();
     };
     let model = model.replace('\\', "/");
@@ -149,12 +149,7 @@ pub fn cloth_notes(
     }
     for other in links.cloth_of(&model) {
         if other != source {
-            let actors = links
-                .models
-                .get(&model)
-                .and_then(|l| l.iter().find(|l| l.cloth == other))
-                .map(|l| l.actors.join(", "))
-                .unwrap_or_default();
+            let actors = links.cloth_actors(&model, other).join(", ");
             notes.push(format!(
                 "{other}: the model's cloth for {actors} as well; this one is left as the game has it"
             ));
@@ -295,6 +290,8 @@ struct Part {
     instance: ClothInstance<Arc<cloth::Cloth>>,
     /// Each transform set at rest, the model at the origin.
     rest: Vec<Vec<ClothMat4>>,
+    /// Each transform set's skeleton (its bones' names, parents and rest places relative to their parents).
+    skeletons: Vec<animation::Skeleton>,
     /// The bones it sets: (transform set, bone, index in [`LiveCloth::bones`]).
     driven: Vec<(usize, usize, usize)>,
 }
@@ -401,10 +398,12 @@ impl LiveCloth {
                 driven.push((set, bone, index));
             }
             live.parts.push(data.name.clone());
+            let skeletons = sets.iter().map(|s| (*s).clone()).collect();
             live.simulated.push(Part {
                 name: data.name.clone(),
                 instance,
                 rest,
+                skeletons,
                 driven,
             });
         }
@@ -419,6 +418,54 @@ impl LiveCloth {
             for (target, rest) in part.instance.transform_sets.iter_mut().zip(&part.rest) {
                 *target = rest.iter().map(|r| at.mul(r)).collect();
             }
+        }
+        self.run(dt)
+    }
+
+    /// One step, `dt` seconds long, with the model at `model` and posed: `posed(name)` is where a bone is in the
+    /// model (an animation's pose); a bone it doesn't know is at rest relative to its parent.
+    pub fn step_posed(
+        &mut self,
+        model: &Mat4,
+        posed: &dyn Fn(&str) -> Option<Mat4>,
+        dt: f32,
+    ) -> Result<()> {
+        let at = ClothMat4::from_columns(*model);
+        for part in &mut self.simulated {
+            for (target, skeleton) in part.instance.transform_sets.iter_mut().zip(&part.skeletons) {
+                let mut world: Vec<ClothMat4> = Vec::with_capacity(skeleton.bones.len());
+                for (i, bone) in skeleton.bones.iter().enumerate() {
+                    let w = match posed(&bone.name) {
+                        Some(m) => ClothMat4::from_columns(m),
+                        None => {
+                            let q = &skeleton.reference_pose[i];
+                            let local = ClothMat4::from_columns(math::from_trs(
+                                [q.translation[0], q.translation[1], q.translation[2]],
+                                q.rotation,
+                                [q.scale[0], q.scale[1], q.scale[2]],
+                            ));
+                            match skeleton
+                                .parents
+                                .get(i)
+                                .and_then(|&p| usize::try_from(p).ok())
+                                .and_then(|p| world.get(p))
+                            {
+                                Some(parent) => parent.mul(&local),
+                                None => local,
+                            }
+                        }
+                    };
+                    world.push(w);
+                }
+                *target = world.iter().map(|w| at.mul(w)).collect();
+            }
+        }
+        self.run(dt)
+    }
+
+    /// Steps every part with the transform sets as they've been set.
+    fn run(&mut self, dt: f32) -> Result<()> {
+        for part in &mut self.simulated {
             part.instance
                 .step(dt, &mut [])
                 .map_err(|e| Error(format!("{}: simulating {}: {e}", self.source, part.name)))?;

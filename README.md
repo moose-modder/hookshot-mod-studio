@@ -40,6 +40,9 @@ projects, and Blender. Then:
   the game does it. Drag the model to turn it or lift it and drop it, and the cloth swings; *Test cloth animation*
   moves it through a set turn, run and jump. On a project's *Your mod* tab it runs the built mod: your meshes, and
   the mod's own cloth file where it has one.
+- **Animations** (in the 3D view): the model's animations from the game (the ones its actors play, the player's
+  bundles among them, and its cutscenes), searched by name and played in a loop, a run shown in place. With cloth
+  physics on, the cloth follows the animation. Editing them in Blender comes next.
 - **Installed mods**: Hookshot's mods folder, mods on and off, the shared size table. Hookshot reads its mods
   when it starts.
 

@@ -78,13 +78,13 @@ impl ExternalStrings {
 
 /// The fields of the file header this reader uses.
 #[derive(Debug, Clone, Copy)]
-struct Header {
-    version: [u8; 4],
-    external_flags: u8,
+pub(crate) struct Header {
+    pub(crate) version: [u8; 4],
+    pub(crate) external_flags: u8,
 }
 
 impl Header {
-    fn parse(data: &[u8]) -> Result<Self> {
+    pub(crate) fn parse(data: &[u8]) -> Result<Self> {
         check_magic(data, 0, "FRES")?;
         if data.u16_at(0x0C)? != 0xFEFF {
             return Err(unsupported("big-endian BFRES"));
@@ -105,15 +105,15 @@ impl Header {
 }
 
 /// Reads strings and dictionaries, resolving external string IDs.
-struct Reader<'a, 'e> {
-    data: &'a [u8],
-    external: Option<&'e ExternalStrings>,
-    uses_external: bool,
+pub(crate) struct Reader<'a, 'e> {
+    pub(crate) data: &'a [u8],
+    pub(crate) external: Option<&'e ExternalStrings>,
+    pub(crate) uses_external: bool,
 }
 
 impl Reader<'_, '_> {
     /// The string a 64-bit field at `field` points to (empty for a null field).
-    fn string(&self, field: usize) -> Result<String> {
+    pub(crate) fn string(&self, field: usize) -> Result<String> {
         let value = self.data.u64_at(field)?;
         if value == 0 {
             return Ok(String::new());
@@ -133,7 +133,7 @@ impl Reader<'_, '_> {
     }
 
     /// The keys of the dictionary a 64-bit field at `field` points to, in entry order.
-    fn dict_keys(&self, field: usize) -> Result<Vec<String>> {
+    pub(crate) fn dict_keys(&self, field: usize) -> Result<Vec<String>> {
         let at = self.data.offset_at(field)?;
         if at == 0 {
             return Ok(Vec::new());

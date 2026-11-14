@@ -275,7 +275,7 @@ damping is 0.001 a second). Not simulated: `hclVolumeConstraint` (12 files: adul
 ...), `hclBonePlanesConstraintSet` (3 horse files), aerodynamics (wind).
 
 **Cloth preview (2026-11-14, same branch):** `modstudio-core::cloth` runs a model's cloth file
-(the one its actors give it: `cloth_links`, below; at first the file named after the model's archive), read through
+(the one its actors give it: `actor_links`, below; at first the file named after the model's archive), read through
 the romfs with a mod's overlay (a mod's own cloth file is the one simulated), against a test motion of the whole model
 (no animation is read yet): it stands, turns 60 degrees each way, runs 1.5 m and stops, jumps 35 cm and stands again
 (6.5 s for a model of child Link's size, 1.18 m; larger models move further and slower, in proportion and by the square
@@ -368,13 +368,13 @@ The actor pack's `ClothParam` lists the colliders too (the same names as the par
 change it, and the game didn't need it to.
 
 **Done (2026-11-14): every model's cloth file, from the actor packs.** Matching names found the wrong file or none
-for 17 models. `modstudio-core::cloth_links` reads each actor pack (`Pack/Actor/<actor>.pack.zs`, 8,373; BYML read
+for 17 models. `modstudio-core::actor_links` (first named `cloth_links`) reads each actor pack (`Pack/Actor/<actor>.pack.zs`, 8,373; BYML read
 by `modstudio-formats::byml`): the actor's `ActorParam` names its model info (`ModelProjectName`.`FmdbName`, the
 model) and its physics, whose controller set's `ClothList` names the cloth files; each file takes what it leaves out
-from its `$parent`, in the same pack. The links are kept in `<workspace>/.modstudio/cloth_links.json` and read
+from its `$parent`, in the same pack. The links are kept in `<workspace>/.modstudio/actor_links.json` and read
 again when the packs change (reading them takes 0.5 s here). Every lookup (the app's *Cloth physics*, a project's
 cloth scene, the Blender preview, the build) uses them, and falls back to a file named after the model only when
-the packs give it none. From the game (`examples/cloth_links.rs`): 176 models get cloth from 170 files
+the packs give it none. From the game (`examples/actor_links.rs`): 176 models get cloth from 170 files
 (`Horse_Link_Body` has no actor and no model). Against the old guess: 163 agree; 9 are new, among them the Great
 Fairy (`Npc_U_GreantFairy`), Jabu-Jabu, Gibdo (ReDead's file) and Dark Link (adult Link's); 4 had the group's file
 where their own exists (Kotake, the Gerudo leader, a Goron, Nabooru's Iron Knuckle in cutscenes); 4 sub-models
@@ -408,6 +408,37 @@ constraints and skinning; Havok's own tools make those). It comes with new bones
   edited idle.
 - The largest of the three. Other tools already write animations (the Malon mod's 190), so the format is known
   to be writable.
+
+**Done (2026-11-14): animations read and played in the app.** `modstudio-formats::bfres_anim` reads the skeletal
+animations (FSKA, ported from LegacySwitchLibraries): all 1,427 files, 22,875 animations, 3.1 million bone tracks
+(`examples/anim_survey.rs`). What the game's files hold:
+- Every bind index is unset (0xFFFF): animations bind to bones **by name** when played. New bones (step 3) only
+  need a name an animation moves, or none.
+- Every curve is "value-keyed" Hermite (flag 0x4000): frames as u8 or 10.5 fixed point (some scaled), values
+  quantised to 8 or 16 bits, unsigned, times the curve's scale plus its minimum, each with a slope.
+- Rotations are Euler angles XYZ, one curve per angle, except on bones whose flags have bit 20 (0x100000; 12,661
+  tracks, the library doesn't know it): their base rotation is a quaternion, and one curve on the X target with flag
+  0x80 holds a whole quaternion (four f32) per key, blended without slopes. The animation's rotation mode (0x1000,
+  or 0x2000 where such bones occur) says no more than that.
+- Checked: at frame 0 bones sit at their rest places; the clavicles of an idle, quaternion bones, read as Euler
+  had tipped the whole body over; read as quaternions every bone but the fingers and arms of the idle stays within
+  20 degrees of rest. Rigid bones keep their length between keys (`examples/anim_check.rs`).
+
+`modstudio-core::actor_links` (the actor packs, as for cloth) now also reads each actor's `AnimationParam`: 580
+models get 445 animation files from their actors (the player's six bundles). `anim::anim_files` adds the model's own
+file and its cutscenes (`Dm_<scene>_<model>`): child Link has 78 files, 2,262 animations, listed in 0.4 s.
+`anim::Clip` reads one with the model's skeleton, sampled at every frame (30 a second; a 2,320-frame cutscene is
+4 MB for the app). In the app's 3D view, *Animations* lists them by name (the actors', its own, cutscenes) and
+plays one in a loop with a frame slider. A clip that carries the model (a run: the root bone's travel over the
+ground) is shown in place.
+
+The cloth follows: `LiveCloth::step_posed` takes the animation's pose (bone places in the model, by name; the cloth
+file's skeleton fills in bones the model lacks); the cloth settles on a clip's first frame for a second before it
+plays, and a run's travel goes on in the simulation's world, loop after loop, so the cap trails behind. Child Link:
+the cloth file's skeleton and the model's agree at rest to 0.00 mm; through a run and an idle the 21 chains' first
+bones stay within 6.5 cm of the animation (`examples/cloth_anim.rs`).
+
+**Next:** an animation into the Blender scene as an action, and back: written as the game's curves.
 
 ### 3. New bones (custom skeletons)
 

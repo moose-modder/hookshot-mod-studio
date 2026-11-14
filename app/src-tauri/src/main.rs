@@ -15,7 +15,7 @@ use modstudio_core::model::{self, Loaded};
 use modstudio_core::progress::{Event, Progress};
 use modstudio_core::project::{self, Project, ProjectFile};
 use modstudio_core::settings::{Settings, Status};
-use modstudio_core::{cloth, mods, preview, tools};
+use modstudio_core::{anim, cloth, mods, preview, tools};
 use modstudio_formats::romfs::Romfs;
 use serde::Serialize;
 use tauri::ipc::Response;
@@ -39,6 +39,9 @@ struct App {
     /// The 3D view's running cloth simulations, by id.
     cloths: Mutex<HashMap<u64, cloth::LiveCloth>>,
     next_cloth: AtomicU64,
+    /// The 3D view's open animations, by id (the cloth follows one).
+    clips: Mutex<HashMap<u64, Arc<anim::Clip>>>,
+    next_clip: AtomicU64,
 }
 
 impl App {
@@ -301,16 +304,69 @@ async fn cloth_open(
     Ok(Some(session))
 }
 
-/// Steps a cloth simulation once for each place of the model in `models` (column-major 4x4s, at most 8), and returns
-/// where its bones are then: 16 little-endian floats each, in the order `cloth_open` listed them.
+/// An animation the cloth follows in a step: the clip (`anim_open`) and its frame at each step.
+#[derive(serde::Deserialize)]
+struct ClothAnim {
+    clip: u64,
+    frames: Vec<f32>,
+    /// The clip starts here (a new one, or one started again): the cloth settles on its first frame's pose for a
+    /// second first, rather than whipping after the jump.
+    #[serde(default)]
+    settle: bool,
+}
+
+/// How long the cloth settles on a clip's first pose ([`ClothAnim::settle`]), in steps.
+const CLOTH_SETTLE_STEPS: usize = 60;
+
+/// Steps a cloth simulation once for each place of the model in `models` (column-major 4x4s, at most 8), posed by
+/// `anim` where given (the clip's frame for each step), and returns where its bones are then: 16 little-endian floats
+/// each, in the order `cloth_open` listed them.
 #[tauri::command]
-async fn cloth_step(state: State<'_, App>, id: u64, models: Vec<[f32; 16]>) -> Result<Response> {
+async fn cloth_step(
+    state: State<'_, App>,
+    id: u64,
+    models: Vec<[f32; 16]>,
+    anim: Option<ClothAnim>,
+) -> Result<Response> {
+    let clip = match &anim {
+        Some(a) => Some(
+            state
+                .clips
+                .lock()
+                .expect("clips lock")
+                .get(&a.clip)
+                .cloned()
+                .ok_or_else(|| "this animation was closed".to_owned())?,
+        ),
+        None => None,
+    };
     let mut cloths = state.cloths.lock().expect("cloths lock");
     let live = cloths
         .get_mut(&id)
         .ok_or_else(|| "this cloth simulation was closed".to_owned())?;
-    for model in models.iter().take(8) {
-        live.step(model, CLOTH_STEP).map_err(err)?;
+    match (&anim, &clip) {
+        (Some(a), Some(clip)) => {
+            if a.settle
+                && let (Some(model), Some(&frame)) = (models.first(), a.frames.first())
+            {
+                let posed = clip.pose_by_name(frame);
+                for _ in 0..CLOTH_SETTLE_STEPS {
+                    live.step_posed(model, &|n| posed.get(n).copied(), CLOTH_STEP)
+                        .map_err(err)?;
+                }
+            }
+            for (i, model) in models.iter().take(8).enumerate() {
+                let frame = a.frames.get(i).or(a.frames.last()).copied().unwrap_or(0.0);
+                let posed = clip.pose_by_name(frame);
+                live.step_posed(model, &|n| posed.get(n).copied(), CLOTH_STEP)
+                    .map_err(err)?;
+            }
+        }
+        _ => {
+            for model in models.iter().take(8) {
+                live.step(model, CLOTH_STEP).map_err(err)?;
+            }
+        }
     }
     let bytes: Vec<u8> = live
         .places()
@@ -325,6 +381,60 @@ async fn cloth_step(state: State<'_, App>, id: u64, models: Vec<[f32; 16]>) -> R
 #[tauri::command]
 fn cloth_close(state: State<'_, App>, id: u64) {
     state.cloths.lock().expect("cloths lock").remove(&id);
+}
+
+/// At most this many animations are kept open (the oldest goes).
+const CLIPS: usize = 4;
+
+/// A model's animations (as the romfs, with the overlay, has its files): the ones its actors give it, its own, its
+/// cutscenes.
+#[tauri::command]
+async fn anim_list(
+    state: State<'_, App>,
+    path: String,
+    overlay: Option<PathBuf>,
+) -> Result<Vec<anim::AnimEntry>> {
+    let romfs = romfs_with(&state, overlay.as_deref())?;
+    let cache = state.settings().cache_dir();
+    tauri::async_runtime::spawn_blocking(move || anim::list(&romfs, Some(&cache), &path))
+        .await
+        .map_err(err)?
+        .map_err(err)
+}
+
+/// Opens animation `name` of `file` with the skeleton of the model `path`, sampled at every frame: the clip as
+/// `anim::Clip::to_bytes` lays it out (its id in the header, for `cloth_step` and `anim_close`).
+#[tauri::command]
+async fn anim_open(
+    state: State<'_, App>,
+    path: String,
+    overlay: Option<PathBuf>,
+    file: String,
+    name: String,
+) -> Result<Response> {
+    let romfs = romfs_with(&state, overlay.as_deref())?;
+    let clip =
+        tauri::async_runtime::spawn_blocking(move || anim::Clip::open(&romfs, &path, &file, &name))
+            .await
+            .map_err(err)?
+            .map_err(err)?;
+    let id = state.next_clip.fetch_add(1, Ordering::Relaxed);
+    let bytes = clip.to_bytes(id);
+    let mut clips = state.clips.lock().expect("clips lock");
+    while clips.len() >= CLIPS {
+        let Some(&oldest) = clips.keys().min() else {
+            break;
+        };
+        clips.remove(&oldest);
+    }
+    clips.insert(id, Arc::new(clip));
+    Ok(Response::new(bytes))
+}
+
+/// Closes an animation.
+#[tauri::command]
+fn anim_close(state: State<'_, App>, id: u64) {
+    state.clips.lock().expect("clips lock").remove(&id);
 }
 
 // ---------------------------------------------------------------- projects
@@ -567,6 +677,8 @@ fn main() {
             next_task: AtomicU64::new(1),
             cloths: Mutex::new(HashMap::new()),
             next_cloth: AtomicU64::new(1),
+            clips: Mutex::new(HashMap::new()),
+            next_clip: AtomicU64::new(1),
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -587,6 +699,9 @@ fn main() {
             cloth_open,
             cloth_step,
             cloth_close,
+            anim_list,
+            anim_open,
+            anim_close,
             show_in_folder,
             read_image,
             list_mods,
