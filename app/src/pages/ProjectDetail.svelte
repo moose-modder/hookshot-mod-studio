@@ -107,6 +107,22 @@
     }
   }
 
+  let confirmCloth = $state(false);
+
+  async function addCloth() {
+    confirmCloth = false;
+    showLog = true;
+    notice = null;
+    const colliders = await task.run<number>("Add cloth to the scene", "add_cloth_to_scene", { file });
+    if (colliders !== null) {
+      notice =
+        `The scene has the model's cloth now (${colliders} colliders), in the collection "Cloth": open it in Blender ` +
+        `and move or resize the colliders, or change a part's settings (its custom properties). The build writes them ` +
+        `into the cloth file; "Cloth physics" on "Your mod" shows the result.`;
+    }
+    await load();
+  }
+
   function setTab(t: "mod" | "game") {
     if (tab === t) return;
     tab = t;
@@ -144,6 +160,14 @@
       <div class="actions">
         <button class="ghost" onclick={() => api.showInFolder(view!.summary.dir)}>Show folder</button>
         <button onclick={openBlender} disabled={!settings.status.blender}>Open in Blender</button>
+        {#if view.has_cloth && !view.data.cloth_scene}
+          <button
+            onclick={() => (confirmCloth = true)}
+            disabled={task.running || !settings.status.blender}
+            title="Adds the model's colliders and cloth settings to the Blender scene, to edit there"
+            >Add cloth to the scene</button
+          >
+        {/if}
         <button onclick={() => build(false)} disabled={task.running || !canBuild}>Build</button>
         <button class="primary" onclick={() => build(true)} disabled={task.running || !canBuild}>Build and install</button>
       </div>
@@ -154,6 +178,16 @@
       {#if stale}<span class="pill warn">The scene changed since the last build</span>{/if}
       {#if !canBuild}<span class="pill warn">Finish the setup in Settings to build</span>{/if}
     </div>
+    {#if confirmCloth}
+      <div class="notice">
+        This changes {view.summary.blend} (Blender keeps the scene as it was as a .blend1 file beside it). If the scene is
+        open in Blender, save and close it there first: saving it there afterwards would drop the cloth again.
+        <div class="confirm">
+          <button class="primary small" onclick={addCloth}>Add the cloth</button>
+          <button class="ghost small" onclick={() => (confirmCloth = false)}>Cancel</button>
+        </div>
+      </div>
+    {/if}
     {#if notice}<div class="notice">{notice}</div>{/if}
 
     {#if showLog && (task.running || task.events.length || task.error)}
@@ -265,6 +299,15 @@
             </div>
           {/if}
 
+          {#if report.cloth?.length}
+            <div class="card pad">
+              <h3>Cloth changed</h3>
+              <ul class="warnings">
+                {#each report.cloth as c, i (i)}<li>{c}</li>{/each}
+              </ul>
+            </div>
+          {/if}
+
           {#if report.textures.length}
             <div class="card pad">
               <h3>Textures changed</h3>
@@ -290,6 +333,11 @@
 {/if}
 
 <style>
+  .confirm {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+  }
   .page {
     height: 100%;
     overflow: auto;

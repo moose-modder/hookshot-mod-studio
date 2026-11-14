@@ -48,6 +48,9 @@ Making mods (what the app does, with the same settings):
       into Hookshot's mods folder and makes one resource size table for all mods
   modstudio mods [on <folder> | off <folder> | table]
       the mods in Hookshot's mods folder; turn one on or off; make the size table for all mods again
+  modstudio cloth <project> --add-to-scene
+      adds the model's cloth to the project's scene to edit (its colliders and simulated parts, the collection
+      Cloth; pipeline/README.md): the build writes the cloth file from it. Close the scene in Blender first.
   modstudio cloth <project> [--open]
       the game's cloth for the project's model (hair, hoods, capes) simulated against a test motion, written
       to build/cloth_preview.json; --open opens the scene in Blender with it as the armature's action
@@ -74,7 +77,14 @@ impl<E: std::fmt::Display> From<E> for Failure {
 }
 
 /// Options that take no value.
-const FLAGS: [&str; 5] = ["install", "no-check", "skip-blender", "all", "open"];
+const FLAGS: [&str; 6] = [
+    "install",
+    "no-check",
+    "skip-blender",
+    "all",
+    "open",
+    "add-to-scene",
+];
 
 /// Positional arguments, `--name value` options and `--flag`s.
 struct Args {
@@ -448,7 +458,23 @@ fn cloth_command(args: &Args) -> Result<(), Failure> {
         unreachable!()
     };
     let s = load_settings(args)?;
-    let p = Project::load(Path::new(path))?;
+    let mut p = Project::load(Path::new(path))?;
+    if args.flag("add-to-scene") {
+        if p.data.cloth_scene {
+            return Err(Failure::Failed(format!(
+                "{} already has the cloth in its scene",
+                p.blend().display()
+            )));
+        }
+        let scene = modstudio_core::cloth_edit::add_to_scene(&s, &mut p, &mut Progress::stdout())?;
+        println!(
+            "Added {} collider(s) and {} part(s) to {}",
+            scene.colliders.len(),
+            scene.parts.len(),
+            p.blend().display()
+        );
+        return Ok(());
+    }
     let preview = if args.flag("open") {
         cloth::open_preview(&s, &p, &mut Progress::stdout())?
     } else {

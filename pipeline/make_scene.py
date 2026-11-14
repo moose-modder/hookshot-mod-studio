@@ -2,6 +2,7 @@
 Run for a new project (the app, or `modstudio new`).
 
     blender --background --factory-startup --python make_scene.py -- --glb <model.glb> --blend <out.blend>
+        [--cloth <cloth_scene.json>]
     blender --background --factory-startup --python make_scene.py -- --fbx <model.fbx> --blend <out.blend>
 
 From `modstudio export` (--glb; model.json and the textures beside it):
@@ -270,6 +271,8 @@ def main():
     src.add_argument("--glb", help="from modstudio export (model.json and the textures beside it)")
     src.add_argument("--fbx", help="from Switch Toolbox's export-model")
     ap.add_argument("--blend", required=True)
+    ap.add_argument("--cloth", help="the model's cloth (cloth_scene.json, from modstudio): added as the collection "
+                                    "Cloth (cloth_scene.py)")
     a = ap.parse_args(argv)
     if os.path.exists(a.blend):
         raise RuntimeError(f"{a.blend} exists: not overwritten")
@@ -286,6 +289,10 @@ def main():
         log(f"imported {len(meshes)} meshes, armature {arm.name} ({len(arm.data.bones)} bones)"
             + (f", removed {shapes} bone display shape(s)" if shapes else ""))
         log(f"made {count} materials" + (f"; textures not found: {missing}" if missing else ""))
+        if a.cloth:
+            import cloth_scene
+            with open(a.cloth, encoding="utf-8") as f:
+                cloth_scene.add_cloth(json.load(f), arm)
     else:
         bpy.ops.import_scene.fbx(filepath=a.fbx)
         meshes = sorted(o.name for o in bpy.context.scene.objects if o.type == "MESH")

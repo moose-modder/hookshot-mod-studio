@@ -130,6 +130,8 @@ export interface BuildReport {
   meshes: MeshRow[];
   textures: TextureRow[];
   warnings: string[];
+  /** What changed in the model's cloth, a line each (absent: the game's cloth). */
+  cloth?: string[];
   check?: CheckSummary | null;
   files: string[];
   installed?: string | null;
@@ -142,6 +144,8 @@ export interface ProjectFile {
   blend: string;
   prep: Record<string, unknown>;
   check?: Record<string, unknown>;
+  /** Whether the scene has the model's cloth to edit. */
+  cloth_scene?: boolean;
 }
 
 export interface ProjectView {
@@ -150,6 +154,8 @@ export interface ProjectView {
   last_build: BuildReport | null;
   mod_romfs: string;
   work_dir: string;
+  /** Whether the game has cloth for the model. */
+  has_cloth: boolean;
 }
 
 /** A column-major 4x4 matrix, in the game's space (y up, metres; glTF's and three.js's too). */

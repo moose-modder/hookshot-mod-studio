@@ -60,6 +60,45 @@ impl<'a> Phive<'a> {
     }
 }
 
+/// The Phive file `original` with its tagfile replaced by `tagfile` (a whole `TAG0` section): the header's first 12
+/// bytes and its last 16 kept, the tagfile where it was, its size given as `original` gives it (exactly, or rounded
+/// up to 16), the parameter archive unchanged after it on the next multiple of 16, zeros between. The game's 171
+/// cloth files come back byte for byte from their own parts.
+pub fn with_tagfile(original: &[u8], tagfile: &[u8]) -> Result<Vec<u8>> {
+    let parts = Phive::parse(original)?;
+    let tag_offset = original.u32_at(0x0C)? as usize;
+    let rounded = original.u32_at(0x18)? as usize != parts.tagfile.len();
+    let tag_size = if rounded {
+        tagfile.len().div_ceil(16) * 16
+    } else {
+        tagfile.len()
+    };
+    let params_offset = (tag_offset + tagfile.len()).div_ceil(16) * 16;
+    let size = params_offset + parts.params.len();
+    let word = |n: usize| {
+        u32::try_from(n)
+            .map(u32::to_le_bytes)
+            .map_err(|_| invalid(format!("Phive file of {n} bytes")))
+    };
+    let mut out = Vec::with_capacity(size);
+    out.extend_from_slice(original.slice_at(0, 0x0C)?);
+    for n in [
+        tag_offset,
+        params_offset,
+        size,
+        tag_size,
+        parts.params.len(),
+    ] {
+        out.extend_from_slice(&word(n)?);
+    }
+    out.extend_from_slice(original.slice_at(0x20, HEADER_SIZE - 0x20)?);
+    out.resize(tag_offset, 0);
+    out.extend_from_slice(tagfile);
+    out.resize(params_offset, 0);
+    out.extend_from_slice(parts.params);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,6 +129,26 @@ mod tests {
             assert_eq!(p.tagfile.len(), 52);
             assert_eq!(&p.tagfile[4..8], b"TAG0");
             assert_eq!(p.params, b"AAMP....");
+        }
+    }
+
+    #[test]
+    fn a_new_tagfile_moves_the_parameters_and_keeps_the_size_convention() {
+        for rounded in [false, true] {
+            let data = file(52, b"AAMP....", rounded);
+            // the same tagfile: the same file
+            let p = Phive::parse(&data).unwrap();
+            assert_eq!(with_tagfile(&data, p.tagfile).unwrap(), data);
+            // a longer one: the archive moves to the next multiple of 16, the sizes follow
+            let mut longer = p.tagfile.to_vec();
+            longer.extend([7u8; 30]);
+            longer[..4].copy_from_slice(&((82u32) | 0x4000_0000).to_be_bytes());
+            let out = with_tagfile(&data, &longer).unwrap();
+            let q = Phive::parse(&out).unwrap();
+            assert_eq!(q.tagfile, &longer[..]);
+            assert_eq!(q.params, b"AAMP....");
+            assert_eq!(out.u32_at(0x10).unwrap(), 144);
+            assert_eq!(out.u32_at(0x18).unwrap(), if rounded { 96 } else { 82 });
         }
     }
 

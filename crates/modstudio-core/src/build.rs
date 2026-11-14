@@ -4,7 +4,8 @@
 //!    clothes textures, `<name>.1` ...) as PNG.
 //! 2. Blender, in the background (the `.blend` is not changed): `prep_for_game.py` bakes changed looks into the
 //!    game's textures and exports the scene as `build/model.glb`.
-//! 3. The mod's model and changed textures, written under `mod/romfs`.
+//! 3. The mod's model and changed textures, written under `mod/romfs`; and the model's cloth file where the scene's
+//!    cloth differs from the game's ([`cloth_edit`]).
 //! 4. The result read back: every game mesh must keep its material, skin count and LOD count.
 //! 5. The build check (`check_result.py`): the result rendered as the scene is, and compared with it.
 //! 6. The mod's own resource size table (for using the mod on its own; [`sizetable`]).
@@ -26,7 +27,9 @@ use crate::model::{self, Loaded, TEXTURE_DIR};
 use crate::progress::Progress;
 use crate::project::Project;
 use crate::settings::Settings;
-use crate::{Context, Error, Result, args, mods, replace, sizetable, texture, tools};
+use crate::{
+    Context, Error, Result, args, cloth, cloth_edit, mods, replace, sizetable, texture, tools,
+};
 
 /// The last build's report, in the work folder.
 pub const REPORT_FILE: &str = "build_report.json";
@@ -64,6 +67,9 @@ pub struct BuildReport {
     pub meshes: Vec<MeshRow>,
     /// Textures written (changed in the scene).
     pub textures: Vec<TextureRow>,
+    /// What changed in the model's cloth (the scene's collection "Cloth"), a line each; empty: the game's cloth.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cloth: Vec<String>,
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check: Option<CheckSummary>,
@@ -294,6 +300,50 @@ fn run(
         }
     }
     progress.check()?;
+
+    // 3b. The cloth: the scene's, written into the game's cloth file where it differs (an earlier build's file goes
+    // first)
+    for rel in cloth::cloth_paths(&project.data.model) {
+        fsutil::remove_file(&mod_romfs.join(rel))?;
+    }
+    let cloth_edits = work.join(cloth_edit::EDITS_FILE);
+    if cloth_edits.is_file() {
+        progress.step("Cloth");
+        let text = std::fs::read_to_string(&cloth_edits).context(cloth_edits.display())?;
+        let edited: cloth_edit::ClothScene =
+            serde_json::from_str(&text).context(cloth_edits.display())?;
+        let game_file = romfs.root().join(&edited.source);
+        let bytes = std::fs::read(&game_file).context(game_file.display())?;
+        let applied = cloth_edit::apply(&bytes, &edited)?;
+        for w in &applied.warnings {
+            progress.warn(w.clone());
+            report.warnings.push(w.clone());
+        }
+        match applied.bytes {
+            Some(written) => {
+                // it has to simulate before it goes into the mod
+                let mut live = cloth::LiveCloth::new(&written, &edited.source)?;
+                for _ in 0..60 {
+                    live.step(&crate::math::IDENTITY, 1.0 / cloth::FPS as f32)?;
+                }
+                let out = mod_romfs.join(&edited.source);
+                if let Some(dir) = out.parent() {
+                    std::fs::create_dir_all(dir).context(dir.display())?;
+                }
+                std::fs::write(&out, &written).context(out.display())?;
+                for c in &applied.changes {
+                    progress.line(c.clone());
+                }
+                progress.line(format!(
+                    "{} written (it reads back and simulates)",
+                    edited.source
+                ));
+                report.cloth = applied.changes;
+            }
+            None => progress.line("as the game has it: the game's cloth file is used"),
+        }
+        progress.check()?;
+    }
 
     // 4. The result, read back (with the mod's textures)
     progress.step("Reading the result");

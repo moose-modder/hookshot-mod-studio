@@ -11,6 +11,7 @@ rebuilding, set `MODSTUDIO_PIPELINE` to this folder.
 | `check_result.py` | the build check: renders the scene and the built model the same way and compares them |
 | `scene_nodes.py` | shared by the others: the RG normal node group, material fingerprints |
 | `cloth_preview.py` | the cloth preview: the game's cloth, simulated, as an action on the scene's armature |
+| `cloth_scene.py` | the model's cloth in the scene to edit (colliders, parts' settings), and read back for the build |
 
 **Save the .blend in Blender before building.** The build reads the file from disk and never changes it.
 
@@ -115,6 +116,36 @@ Either way:
   colliders the cloth starts deep inside at rest (they fit the model's animated poses, which aren't read yet).
 - Meshes swing with the bones they're weighted to: reshaped hair swings in the preview, as in game, as long as it
   keeps its weights on the `Ph_` bones.
+
+## Editing the cloth
+
+A model with cloth gets it in its scene, as the collection **Cloth** (`cloth_scene.py`; a new project gets it
+when it's made; an older one with the project's **Add cloth to the scene**, or `modstudio cloth <project>
+--add-to-scene`, with the scene closed in Blender):
+
+- **Cloth colliders**: a wireframe capsule, sphere or plane per collider, named after it and following its bone
+  (the shapes the cloth collides with: the head, the limbs, the gear on the back). Move and turn the object to move
+  the collider; scale it to resize it (a capsule: along its length to lengthen it, across to widen it; a sphere:
+  its radius; a plane: turned and moved only); parent it to another bone (Object > Parent > Bone) to have it follow
+  that one, which every part using the collider has to have in its skeleton. Only the object counts: changes to
+  its mesh in edit mode aren't read.
+- **Cloth parts**: an empty per simulated part (hair, hood, skirt, ...), at the middle of the bones it moves, with
+  its settings as custom properties (Object properties > Custom Properties):
+  - `gravity` (in Blender's axes, down is -Z), `damping` (the share of speed lost each second), `substeps`,
+    `iterations`;
+  - scales of the game's values, 1 keeping them: `particle_radius` (how far the cloth keeps from colliders),
+    `friction`, `stretch_stiffness`, `bend_stiffness` (stiffness stays at most 1), `swing_range` (how far the
+    cloth may swing from the skinned mesh);
+  - `meets <collider>`: whether the part's cloth collides with each of its colliders.
+
+The build reads it back at rest (`prep_for_game.py`: `build\cloth_edits.json`), and writes the game's cloth file
+with the differences into the mod (`modstudio-core`'s `cloth_edit`): only what changed is written, the rest of the
+file stays byte for byte as the game has it, and a scene left as it was gives no cloth file at all (the game's is
+used). What it wrote is read back and simulated before it goes into the mod; the build report lists each change
+("Cloth changed"), and *Cloth physics* on *Your mod* runs the written file.
+
+Not yet: new colliders, and a collider for a part that doesn't have it (the file needs new objects for those);
+deleting a collider object keeps the game's collider.
 
 ## Materials and textures
 

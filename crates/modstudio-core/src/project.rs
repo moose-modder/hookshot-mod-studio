@@ -43,6 +43,9 @@ pub struct ProjectFile {
     /// Settings for the build check (check_result.py).
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub check: Map<String, Value>,
+    /// Whether the scene has the model's cloth to edit (the collection "Cloth": `cloth_scene.py`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cloth_scene: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -256,27 +259,48 @@ pub fn create(
     progress.check()?;
 
     let blend = dir.join(format!("{folder}.blend"));
+    let mut cloth_in_scene = false;
     if blend.exists() {
         progress.step("Blender scene");
         progress.line(format!("{} exists, kept", blend.display()));
     } else {
         progress.step("Making the Blender scene");
         let scripts = tools::scripts_dir(&settings.cache_dir())?;
+        // the model's cloth, to edit in the scene
+        let cloth_json = dir.join(crate::cloth_edit::SCENE_FILE);
+        let cloth = crate::cloth_edit::write_scene(romfs.root(), &model_path, &cloth_json)?;
+        if let Some(c) = &cloth {
+            progress.line(format!(
+                "cloth: {} collider(s), {} part(s)",
+                c.colliders.len(),
+                c.parts.len()
+            ));
+        }
+        let mut cloth_args = Vec::new();
+        if cloth.is_some() {
+            cloth_args.push(std::ffi::OsString::from("--cloth"));
+            cloth_args.push(cloth_json.clone().into_os_string());
+        }
+        cloth_in_scene = cloth.is_some();
         tools::run(
             blender,
-            &args![
-                "--background",
-                "--factory-startup",
-                "--python-exit-code",
-                "1",
-                "--python",
-                scripts.join("make_scene.py"),
-                "--",
-                "--glb",
-                &export.glb,
-                "--blend",
-                &blend,
-            ],
+            &[
+                &args![
+                    "--background",
+                    "--factory-startup",
+                    "--python-exit-code",
+                    "1",
+                    "--python",
+                    scripts.join("make_scene.py"),
+                    "--",
+                    "--glb",
+                    &export.glb,
+                    "--blend",
+                    &blend,
+                ][..],
+                &cloth_args,
+            ]
+            .concat(),
             &dir.join("logs").join("new_scene.log"),
             &|l| l.starts_with("[scene]") || l.contains("Error"),
             progress,
@@ -298,6 +322,7 @@ pub fn create(
             install_dir: None,
             prep,
             check: Map::new(),
+            cloth_scene: cloth_in_scene,
         },
     };
     project.save()?;

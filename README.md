@@ -13,7 +13,9 @@ Blender scene, edit it, and turn the scene into a mod that Hookshot loads.
    and look at it in 3D.
 2. **Make a project**: the model exported, a Blender scene made from it (the model, its textures, materials set up
    for editing).
-3. **Edit** in your own Blender: shape, new meshes and materials, painted textures.
+3. **Edit** in your own Blender: shape, new meshes and materials, painted textures, and the cloth: its colliders
+   (moved, resized, put on other bones) and each simulated part's settings (gravity, damping, stiffness, swing
+   range, which colliders it meets).
 4. **Build and install**: changed looks are baked into the game's textures, the model is rebuilt with the
    game's formats (unedited meshes kept exactly as the game has them), the result is compared with your scene,
    and the mod goes into Hookshot's `mods` folder with one resource size table for all mods.
@@ -31,8 +33,9 @@ projects, and Blender. Then:
   Blender.
 - **Projects**: each project's scene and mod. *Build* / *Build and install* show the build's steps as they run
   and its report afterwards: which meshes were kept or replaced, textures changed, warnings, and whether the
-  result looks like your scene (with pictures where it doesn't). The 3D view switches between your mod and the
-  game's model.
+  result looks like your scene (with pictures where it doesn't), and what changed in the cloth. The 3D view switches
+  between your mod and the game's model. *Add cloth to the scene* puts the model's cloth into a scene made before
+  scenes came with it.
 - **Cloth physics** (in the 3D view, for models with hair, hoods or capes): the model's cloth simulated live, as
   the game does it. Drag the model to turn it or lift it and drop it, and the cloth swings; *Test cloth animation*
   moves it through a set turn, run and jump. On a project's *Your mod* tab it runs the built mod: your meshes, and
@@ -51,6 +54,7 @@ modstudio new Npc_Hylia_MN_001 --name townsman
 modstudio build <workspace>\townsman --install
 modstudio mods off TownsmanMod
 modstudio cloth <workspace>\townsman --open
+modstudio cloth <workspace>\townsman --add-to-scene
 ```
 
 And the format tools: `inspect`, `export` (`.glb` + PNG + `model.json`), `replace`, `texture`, `decompress`

@@ -58,6 +58,7 @@ from mathutils import Matrix
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scene_nodes import FINGERPRINT, RG_GROUP, material_fingerprint, rg_normal_group  # noqa: E402
+import cloth_scene  # noqa: E402
 
 LAYOUT = "PREP_layout"
 PROBE = "PREP_probe"
@@ -216,8 +217,13 @@ def collect_objects(cfg, rep):
 
     suffix = cfg.get("work_suffix", "_WORK")
     exclude = cfg.get("exclude", [])
+    # the cloth's colliders and parts (cloth_scene.py) aren't the model's; they never render
+    for o in bpy.data.objects:
+        if cloth_scene.is_cloth_object(o):
+            o.hide_render = True
     meshes = [o for o in bpy.data.objects
-              if o.type == 'MESH' and o.parent == arm and not any(fnmatch.fnmatch(o.name, p) for p in exclude)]
+              if o.type == 'MESH' and o.parent == arm and not cloth_scene.is_cloth_object(o)
+              and not any(fnmatch.fnmatch(o.name, p) for p in exclude)]
     names = {o.name for o in meshes}
 
     #A "<name>_WORK" object replaces "<name>"
@@ -1640,6 +1646,18 @@ def main():
         bpy.ops.object.mode_set(mode='OBJECT')
     arm, objects = collect_objects(cfg, rep)
     log(f"Meshes: {sorted(o.name for o in objects)}")
+    # The cloth, as the scene has it (read at rest, before anything else moves): the build writes it into the game's
+    # cloth file (cloth_edit::apply)
+    cloth, cloth_warnings = cloth_scene.read_cloth(arm)
+    cloth_path = os.path.join(cfg["output"], "cloth_edits.json")
+    if os.path.exists(cloth_path):
+        os.remove(cloth_path)
+    if cloth is not None:
+        with open(cloth_path, "w", encoding="utf-8") as f:
+            json.dump(cloth, f, indent=1)
+        log(f"Cloth: {len(cloth['colliders'])} collider(s), {len(cloth['parts'])} part(s) read from the scene")
+    for w in cloth_warnings:
+        rep.warn(w)
     textures = Textures(cfg, model, rep)
     objects, first_joined = join_new_meshes(objects, vanilla_meshes, textures, arm, cfg, rep)
 

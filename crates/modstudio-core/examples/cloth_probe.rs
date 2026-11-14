@@ -4,10 +4,14 @@
 //! each group in full.
 //!
 //!     cargo run --release -p modstudio-core --example cloth_probe -- <romfs> [<part of a name>] [--steps N] [--preview]
+//!         [--roundtrip]
 //!
 //! `--preview`: each file through `modstudio_core::cloth::simulate` instead (the test motion), with how far its
 //! bones get from their rest place in the moving model (a simulation that runs off shows as metres), and the
-//! warnings, grouped.
+//! warnings, grouped. `--roundtrip`: whether each file's tagfile comes back byte for byte when havok-formats reads it
+//! and writes it again. `--edit`: `modstudio_core::cloth_edit` on each file: its scene unchanged writes nothing; with
+//! every collider moved and resized and every part's settings changed it writes a file that reads back so (the
+//! scales checked on the particles and constraints) and still simulates.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -30,6 +34,8 @@ fn main() {
         .unwrap_or(90);
     let filter = args.get(1).filter(|a| !a.starts_with("--")).cloned();
     let preview = args.iter().any(|a| a == "--preview");
+    let roundtrip = args.iter().any(|a| a == "--roundtrip");
+    let edit = args.iter().any(|a| a == "--edit");
     let mut warnings: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let dir = Path::new(romfs).join("Phive").join("Cloth");
     let mut files: Vec<_> = std::fs::read_dir(&dir)
@@ -49,7 +55,11 @@ fn main() {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         let name = name.trim_end_matches(".Nin_Ounce_NVN2.bphcl").to_owned();
         let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        let outcome = if preview {
+        let outcome = if edit {
+            probe_edit(&bytes, &name)
+        } else if roundtrip {
+            probe_roundtrip(&bytes)
+        } else if preview {
             let (outcome, notes) = probe_preview(&bytes, &name);
             for n in notes {
                 warnings.entry(n).or_default().push(name.clone());
@@ -204,6 +214,161 @@ fn probe_preview(bytes: &[u8], name: &str) -> (String, Vec<String>) {
             p.bones.len()
         ),
         notes,
+    )
+}
+
+/// The cloth editor on one file (see `--edit`).
+fn probe_edit(bytes: &[u8], name: &str) -> String {
+    use modstudio_core::cloth_edit::{self, SceneShape};
+    let scene = match cloth_edit::scene_of(bytes, name) {
+        Ok(s) => s,
+        Err(e) => return format!("scene: {e}"),
+    };
+    match cloth_edit::apply(bytes, &scene) {
+        Ok(a) if a.bytes.is_none() && a.changes.is_empty() => {}
+        Ok(a) => return format!("an unchanged scene wrote a file: {:?}", a.changes),
+        Err(e) => return format!("unchanged scene: {e}"),
+    }
+    let mut edited = scene.clone();
+    for c in &mut edited.colliders {
+        c.place[12] += 0.01;
+        c.place[13] -= 0.02;
+        match &mut c.shape {
+            SceneShape::Capsule { radius, end, .. } => {
+                *radius *= 1.1;
+                end[0] += 0.005;
+            }
+            SceneShape::Sphere { radius, .. } => *radius *= 1.1,
+            SceneShape::Plane { distance, .. } => *distance += 0.01,
+            SceneShape::Other { .. } => {}
+        }
+    }
+    for p in &mut edited.parts {
+        p.gravity[1] -= 1.0;
+        p.damping += 0.01;
+        p.substeps += 1;
+        p.iterations += 1;
+        p.particle_radius = 1.2;
+        p.friction = 0.8;
+        p.stretch_stiffness = 0.9;
+        p.bend_stiffness = 0.8;
+        p.swing_range = 1.3;
+        if let Some(c) = p.colliders.first_mut() {
+            c.meets = !c.meets;
+        }
+    }
+    let applied = match cloth_edit::apply(bytes, &edited) {
+        Ok(a) => a,
+        Err(e) => return format!("edited scene: {e}"),
+    };
+    let Some(written) = applied.bytes else {
+        return "an edited scene wrote nothing".to_owned();
+    };
+    // the scales, on the values
+    let read = |b: &[u8]| -> Option<havok_formats::cloth::Physics> {
+        let p = Phive::parse(b).ok()?;
+        havok_formats::cloth::read(&Tagfile::read(p.tagfile, None).ok()?).ok()
+    };
+    let (Some(before), Some(after)) = (read(bytes), read(&written)) else {
+        return "the written file doesn't read".to_owned();
+    };
+    for (d0, d1) in before.cloths.iter().zip(&after.cloths) {
+        for (s0, s1) in d0.sim_cloths.iter().zip(&d1.sim_cloths) {
+            for (p0, p1) in s0.particles.iter().zip(&s1.particles) {
+                if !cloth_edit::same(p1.radius, p0.radius * 1.2)
+                    || !cloth_edit::same(p1.friction, (p0.friction * 0.8).clamp(0.0, 1.0))
+                {
+                    return format!("{}: particles not scaled", d0.name);
+                }
+            }
+            for (c0, c1) in s0.constraint_sets.iter().zip(&s1.constraint_sets) {
+                use havok_formats::cloth::ConstraintKind as K;
+                let ok = match (&c0.kind, &c1.kind) {
+                    (K::StandardLink(a), K::StandardLink(b))
+                    | (K::StretchLink(a), K::StretchLink(b)) => a.iter().zip(b).all(|(x, y)| {
+                        cloth_edit::same(y.stiffness, (x.stiffness * 0.9).clamp(0.0, 1.0))
+                    }),
+                    (K::BendStiffness { links: a, .. }, K::BendStiffness { links: b, .. }) => a
+                        .iter()
+                        .zip(b)
+                        .all(|(x, y)| cloth_edit::same(y.bend_stiffness, x.bend_stiffness * 0.8)),
+                    (
+                        K::LocalRange { constraints: a, .. },
+                        K::LocalRange { constraints: b, .. },
+                    ) => {
+                        // scaled, but a limit of the largest float (none) kept as it is
+                        let scaled = |x: f32, y: f32| {
+                            if x.abs() < cloth_edit::UNLIMITED {
+                                cloth_edit::same(y, x * 1.3)
+                            } else {
+                                y == x
+                            }
+                        };
+                        a.iter().zip(b).all(|(x, y)| {
+                            scaled(x.maximum_distance, y.maximum_distance)
+                                && scaled(x.max_normal_distance, y.max_normal_distance)
+                                && scaled(x.min_normal_distance, y.min_normal_distance)
+                        })
+                    }
+                    _ => true,
+                };
+                if !ok {
+                    return format!("{}: {} not scaled", d0.name, c0.name);
+                }
+            }
+        }
+    }
+    let mut live = match modstudio_core::cloth::LiveCloth::new(&written, name) {
+        Ok(l) => l,
+        Err(e) => return format!("the written file doesn't simulate: {e}"),
+    };
+    for _ in 0..60 {
+        if let Err(e) = live.step(&modstudio_core::math::IDENTITY, 1.0 / 30.0) {
+            return format!("the written file doesn't simulate: {e}");
+        }
+    }
+    format!(
+        "unchanged: nothing written; edited: {} change line(s), read back and simulated{}",
+        applied.changes.len(),
+        if applied.warnings.is_empty() {
+            String::new()
+        } else {
+            format!(" (notes: {})", applied.warnings.join("; "))
+        }
+    )
+}
+
+/// Whether the tagfile comes back byte for byte when havok-formats reads it and writes it again (where it first
+/// differs if not).
+fn probe_roundtrip(bytes: &[u8]) -> String {
+    let phive = match Phive::parse(bytes) {
+        Ok(p) => p,
+        Err(e) => return format!("phive: {e}"),
+    };
+    let tag = match Tagfile::read(phive.tagfile, None) {
+        Ok(t) => t,
+        Err(e) => return format!("tagfile: {e}"),
+    };
+    let written = match tag.image().and_then(|i| i.write()) {
+        Ok(w) => w,
+        Err(e) => return format!("write: {e}"),
+    };
+    if written == phive.tagfile {
+        return match modstudio_formats::phive::with_tagfile(bytes, &written) {
+            Ok(file) if file == bytes => "written back byte for byte (the whole file)".to_owned(),
+            Ok(_) => "tagfile written back byte for byte, the file around it not".to_owned(),
+            Err(e) => format!("phive: {e}"),
+        };
+    }
+    let first = written
+        .iter()
+        .zip(phive.tagfile)
+        .position(|(a, b)| a != b)
+        .unwrap_or(written.len().min(phive.tagfile.len()));
+    format!(
+        "written back differently: {} bytes for {}, first difference at {first:#x}",
+        written.len(),
+        phive.tagfile.len()
     )
 }
 

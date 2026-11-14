@@ -18,6 +18,7 @@
 pub mod build;
 pub mod catalog;
 pub mod cloth;
+pub mod cloth_edit;
 pub mod eyes;
 mod fsutil;
 pub mod gltf;

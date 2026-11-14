@@ -333,6 +333,8 @@ struct ProjectView {
     last_build: Option<BuildReport>,
     mod_romfs: PathBuf,
     work_dir: PathBuf,
+    /// Whether the game has cloth for the model (it can be added to the scene to edit).
+    has_cloth: bool,
 }
 
 #[tauri::command]
@@ -344,6 +346,7 @@ async fn get_project(state: State<'_, App>, file: PathBuf) -> Result<ProjectView
         last_build: p.last_build(),
         mod_romfs: p.mod_romfs(),
         work_dir: p.work_dir(),
+        has_cloth: cloth::cloth_file(&settings.game_romfs, &p.data.model).is_some(),
         data: p.data,
     })
 }
@@ -382,6 +385,24 @@ async fn build_project(
     };
     run_task(app, &state, task, move |progress| {
         Ok(build::build(&settings, &p, options, progress))
+    })
+    .await
+}
+
+/// Adds the model's cloth to the project's scene, to edit there (`cloth_edit::add_to_scene`).
+#[tauri::command]
+async fn add_cloth_to_scene(
+    app: AppHandle,
+    state: State<'_, App>,
+    task: u64,
+    file: PathBuf,
+) -> Result<usize> {
+    let settings = state.settings();
+    let mut p = Project::load(&file).map_err(err)?;
+    run_task(app, &state, task, move |progress| {
+        modstudio_core::cloth_edit::add_to_scene(&settings, &mut p, progress)
+            .map(|scene| scene.colliders.len())
+            .map_err(err)
     })
     .await
 }
@@ -545,6 +566,7 @@ fn main() {
             get_project,
             create_project,
             build_project,
+            add_cloth_to_scene,
             new_task_id,
             cancel_task,
             open_in_blender,

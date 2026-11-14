@@ -318,8 +318,35 @@ In Blender: the scene gets the model's cloth (`make_scene.py`, from the cloth fi
   collidable and its shape.
 - **Simulation settings** of each part (gravity, damping, constraint stiffness) as custom properties on the same
   empty. Which ones the files use and what they do is to be found out file by file.
-- How a change swings: *Play cloth* on the project's *Your mod* tab runs the cloth file the build wrote (above); the
-  game has the last word. The build report lists what changed in each part.
+- How a change swings: *Cloth physics* on the project's *Your mod* tab runs the cloth file the build wrote (above);
+  the game has the last word. The build report lists what changed in each part.
+
+**Done (2026-11-14, branch `feat/cloth-preview`): edits in place.** `modstudio-core::cloth_edit`: `scene_of` reads a
+cloth file as the scene shows it (each collider: its item, bone, place at rest and shape; each part, a sim cloth:
+gravity, damping, substeps, solve iterations, scales of particle radius, friction, stretch and bend stiffness and
+local range distances, and whether its particles meet each of its colliders); `apply` writes a scene's differences
+into the file through havok-formats' `TagfileImage` (values patched where they are: the collidable's
+`hkPreciseTransform`, each part's `collidableTransformMap` bone index and offset, the shape's fields with a capsule's
+`dir` and `capLenSqrdInv` worked out, `simulationInfo`, `particleDatas`, `maxParticleRadius`, the constraint sets'
+link stiffnesses and local range distances, `staticCollisionMasks`, `simulateOpConfigs`) and
+`modstudio-formats::phive::with_tagfile`. Facts it rests on: havok-formats' writer gives all 171 tagfiles back byte
+for byte and `with_tagfile` the whole files; colliders are shared between a model's parts (134 files), so a
+collider is one object and every part using it is written; the files' shapes are capsules (1,884), spheres (211)
+and planes (46); local range limits of the largest float mean none and aren't scaled. `cloth_probe --edit`: on
+all 171 files an unchanged scene writes nothing, and a scene with every collider moved and resized and every
+part's settings changed writes a file that reads back so (the scales checked value by value) and simulates.
+Blender: `pipeline/cloth_scene.py` (the collection "Cloth": colliders as wireframe meshes on their bones, parts as
+empties with custom properties; read back at rest with the scene's size taken out, an object's scale turned into
+the shape's), new projects get it from `make_scene.py`, older ones with *Add cloth to the scene*
+(`cloth_edit::add_to_scene`). The build writes the file only when something changed, after reading it back and
+simulating it. Checked on child Link: the colliders sit on his body in the scene (renders), an unchanged scene
+builds with no cloth file, and a scene with a collider moved, two resized, one moved to another bone and two parts'
+settings changed builds a file with exactly those changes, which *Cloth physics* on *Your mod* runs. Not yet
+checked in game.
+
+**Next:** new objects in the file: a collider added to a part that doesn't have it (its `perInstanceCollidables`,
+`collidableTransformMap` and the masks grown; the config's `instanceCollidablesUsed`), new colliders (a collidable
+and its shape, and the parameter archive's and the pack's `CollidableList`), with the writer's `push_item`.
 
 Work: the reader and editor ported to Rust (`modstudio-formats`: tagfile, AAMP, BYML writing, SARC writing), with
 the round trips above as dump tests; new objects in a tagfile (items, patches, and the type table when a type isn't
