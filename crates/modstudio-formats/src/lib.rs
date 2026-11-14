@@ -7,11 +7,13 @@
 //! - [`bntx_write`]: a texture written back with a new image, encoded by [`bc_encode`]
 //! - [`bfres`]: models: skeleton, shapes with their LOD meshes, vertex and index buffers, materials
 //! - [`bfres_write`]: a model written back with new geometry for some shapes
+//! - [`aamp`]: parameter archives (the cloth files' lists of meshes and colliders), read and written
 //! - [`phive`]: the cloth files' wrapper around a Havok tagfile (read with the vendored `havok-formats`)
 //!
 //! The byte-level layouts are ported from Syroot's NintenTools libraries (MIT) as maintained in
 //! KillzXGaming/LegacySwitchLibraries; see `THIRD_PARTY.md`.
 
+pub mod aamp;
 pub mod bc_encode;
 mod bcn;
 pub mod bfres;

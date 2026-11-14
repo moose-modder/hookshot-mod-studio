@@ -344,9 +344,28 @@ builds with no cloth file, and a scene with a collider moved, two resized, one m
 settings changed builds a file with exactly those changes, which *Cloth physics* on *Your mod* runs. Not yet
 checked in game.
 
-**Next:** new objects in the file: a collider added to a part that doesn't have it (its `perInstanceCollidables`,
-`collidableTransformMap` and the masks grown; the config's `instanceCollidablesUsed`), new colliders (a collidable
-and its shape, and the parameter archive's and the pack's `CollidableList`), with the writer's `push_item`.
+**Done (2026-11-14): new and deleted colliders.** Facts from the 171 files: each of the 1,134 sim cloths keeps four
+per-collider arrays as long as its collider list (`perInstanceCollidables`, the map's `transformIndices` and
+`offsets`, `setupCollidableSidedness`, `collidablePinchingDatas`); every simulate configuration uses all colliders
+(`useAllInstanceCollidables`, no `instanceCollidablesUsed`); at most 22 colliders a part (the masks hold 30 and the
+landscape's bit 31); the container lists every collider the parts use, and 11 that none uses; the parameter
+archive's list of colliders keys each entry `crc32("collidable_<n>")` with a `Name` and `ForReplace` off (2,130 of
+2,130). So a **deleted** collider is switched off in every part (its mask bits cleared; the object stays, unused);
+a collider **added to a part** gets a new run for each of the part's per-collider arrays with one more element, and
+its bit on the part's free particles; a **new** collider is a copy of one of the file's collidables and of a shape of
+its class (a sphere as a capsule with no length where the file has no sphere), named, placed, sized, added to the
+container and to the parameter archive (`modstudio-formats::aamp`, read and written byte for byte for all 171;
+`phive::with_parts` pads it to 16 as every file has it). In the scene: `cloth_parts` on each collider (which parts
+have it), a copy of a collider (Shift+D) or a mesh in the colliders' collection (its shape from its size) is new,
+a deleted object a deleted collider. `cloth_probe --structure`: on 163 files two new colliders, one collider added
+to a part, one deleted and one taken from a part are written, read back, listed in the archive and simulated (7
+files have no collider on a bone to copy, 1 nothing to copy a sphere from: said so). On child Link, through Blender
+and a build: a copied head collider, a new sphere on the back for the hood, the sword collider deleted and the neck
+collider given to the hood, all in the written file. Not yet checked in game.
+
+**Next:** in game, each kind of edit on one character. The actor pack's `ClothParam` lists the colliders too (the
+same names as the parameter archive); the build doesn't change it: if the game wants new colliders there, that's a
+BYML and SARC write into the actor's pack (the prototype's writers, and the size table's entries for files in packs).
 
 Work: the reader and editor ported to Rust (`modstudio-formats`: tagfile, AAMP, BYML writing, SARC writing), with
 the round trips above as dump tests; new objects in a tagfile (items, patches, and the type table when a type isn't

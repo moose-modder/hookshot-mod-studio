@@ -36,6 +36,7 @@ fn main() {
     let preview = args.iter().any(|a| a == "--preview");
     let roundtrip = args.iter().any(|a| a == "--roundtrip");
     let edit = args.iter().any(|a| a == "--edit");
+    let structure = args.iter().any(|a| a == "--structure");
     let mut warnings: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let dir = Path::new(romfs).join("Phive").join("Cloth");
     let mut files: Vec<_> = std::fs::read_dir(&dir)
@@ -55,7 +56,9 @@ fn main() {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         let name = name.trim_end_matches(".Nin_Ounce_NVN2.bphcl").to_owned();
         let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        let outcome = if edit {
+        let outcome = if structure {
+            probe_structure(&bytes, &name)
+        } else if edit {
             probe_edit(&bytes, &name)
         } else if roundtrip {
             probe_roundtrip(&bytes)
@@ -217,6 +220,187 @@ fn probe_preview(bytes: &[u8], name: &str) -> (String, Vec<String>) {
     )
 }
 
+/// New and deleted colliders on one file (see `--structure`).
+fn probe_structure(bytes: &[u8], name: &str) -> String {
+    use modstudio_core::cloth_edit::{self, SceneShape};
+    let scene = match cloth_edit::scene_of(bytes, name) {
+        Ok(s) => s,
+        Err(e) => return format!("scene: {e}"),
+    };
+    let Some(first) = scene
+        .colliders
+        .iter()
+        .find(|c| c.bone.is_some() && c.parts.as_ref().is_some_and(|p| !p.is_empty()))
+        .cloned()
+    else {
+        return "no collider on a bone in a part".to_owned();
+    };
+    let mut edited = scene.clone();
+    let mut expect: Vec<String> = Vec::new();
+    // a copy of the first collider, 2 cm higher, in its first part (and one more part if the file has another one whose
+    // skeleton has its bone: tried below by the editor itself)
+    let mut copy = first.clone();
+    copy.id = 0;
+    copy.copy_of = Some(first.id);
+    copy.name = "Collidable_Probe_Copy".to_owned();
+    copy.place[13] += 0.02;
+    copy.parts = Some(vec![first.parts.as_ref().unwrap()[0].clone()]);
+    edited.colliders.push(copy.clone());
+    expect.push(copy.name.clone());
+    // a new sphere on the same bone, in the same part
+    let mut sphere = first.clone();
+    sphere.id = 0;
+    sphere.copy_of = None;
+    sphere.name = "Collidable_Probe_Sphere".to_owned();
+    sphere.shape = SceneShape::Sphere {
+        centre: [0.0, 0.01, 0.0],
+        radius: 0.05,
+    };
+    sphere.parts = copy.parts.clone();
+    edited.colliders.push(sphere);
+    expect.push("Collidable_Probe_Sphere".to_owned());
+    // an existing collider for a part that doesn't have it (one whose skeleton has its bone: the first that works)
+    let mut gained = None;
+    'outer: for c in &scene.colliders {
+        let Some(had) = &c.parts else { continue };
+        if c.bone.is_none() || c.id == first.id {
+            continue;
+        }
+        for part in &scene.parts {
+            if had.contains(&part.name) {
+                continue;
+            }
+            let mut trial = edited.clone();
+            let t = trial.colliders.iter_mut().find(|x| x.id == c.id).unwrap();
+            t.parts.as_mut().unwrap().push(part.name.clone());
+            if cloth_edit::apply(bytes, &trial).is_ok() {
+                gained = Some((c.name.clone(), part.name.clone()));
+                edited = trial;
+                break 'outer;
+            }
+        }
+    }
+    // the last collider of the file deleted, and one of a collider's parts taken away (where one has two)
+    let deleted = scene
+        .colliders
+        .iter()
+        .rev()
+        .find(|c| c.id != first.id && gained.as_ref().is_none_or(|(g, _)| g != &c.name))
+        .map(|c| c.id);
+    if let Some(id) = deleted {
+        edited.deleted.push(id);
+        edited.colliders.retain(|c| c.id != id);
+    }
+    let mut lost = None;
+    if let Some(c) = edited
+        .colliders
+        .iter_mut()
+        .find(|c| c.id != 0 && c.parts.as_ref().is_some_and(|p| p.len() > 1))
+    {
+        let parts = c.parts.as_mut().unwrap();
+        lost = Some((c.name.clone(), parts.remove(0)));
+    }
+    let applied = match cloth_edit::apply(bytes, &edited) {
+        Ok(a) => a,
+        // (a file with nothing to copy a sphere from: said so)
+        Err(e) if e.0.contains("has no sphere or capsule to copy") => {
+            return "refused: no sphere or capsule to copy a new sphere from".to_owned();
+        }
+        Err(e) => return format!("edited: {e}"),
+    };
+    let Some(written) = applied.bytes else {
+        return "nothing written".to_owned();
+    };
+    let back = match cloth_edit::scene_of(&written, name) {
+        Ok(s) => s,
+        Err(e) => return format!("the written file doesn't read: {e}"),
+    };
+    for n in &expect {
+        if !back.colliders.iter().any(|c| &c.name == n) {
+            return format!("{n} isn't in the written file");
+        }
+    }
+    let meets = |s: &cloth_edit::ClothScene, collider: &str, part: &str| -> Option<bool> {
+        let c = s.colliders.iter().find(|c| c.name == collider)?;
+        let p = s.parts.iter().find(|p| p.name == part)?;
+        p.colliders
+            .iter()
+            .find(|pc| pc.id == c.id)
+            .map(|pc| pc.meets)
+    };
+    if let Some((c, p)) = &gained
+        && meets(&back, c, p) != Some(true)
+    {
+        return format!("{c} wasn't added to {p}");
+    }
+    if let Some((c, p)) = &lost
+        && meets(&back, c, p) != Some(false)
+    {
+        return format!("{c} wasn't taken from {p}");
+    }
+    if let Some(id) = deleted {
+        let dname = &scene.colliders.iter().find(|c| c.id == id).unwrap().name;
+        if back.parts.iter().any(|p| {
+            p.colliders.iter().any(|pc| {
+                pc.meets
+                    && back
+                        .colliders
+                        .iter()
+                        .find(|c| c.id == pc.id)
+                        .is_some_and(|c| &c.name == dname)
+            })
+        }) {
+            return format!("{dname} was deleted but a part still meets it");
+        }
+    }
+    // the parameter archive lists the new colliders
+    let params =
+        match Phive::parse(&written).and_then(|p| modstudio_formats::aamp::Aamp::read(p.params)) {
+            Ok(a) => a,
+            Err(e) => return format!("parameters: {e}"),
+        };
+    let names: Vec<String> = params
+        .root
+        .lists
+        .iter()
+        .flat_map(|l| l.objects.iter())
+        .flat_map(|o| o.params.iter())
+        .filter_map(|p| p.text().map(str::to_owned))
+        .collect();
+    for n in &expect {
+        if !names.contains(n) {
+            return format!("{n} isn't in the parameter archive");
+        }
+    }
+    let mut live = match modstudio_core::cloth::LiveCloth::new(&written, name) {
+        Ok(l) => l,
+        Err(e) => return format!("the written file doesn't simulate: {e}"),
+    };
+    for _ in 0..60 {
+        if let Err(e) = live.step(&modstudio_core::math::IDENTITY, 1.0 / 30.0) {
+            return format!("the written file doesn't simulate: {e}");
+        }
+    }
+    format!(
+        "two new colliders{}{}{}: written, read back, listed and simulated",
+        if gained.is_some() {
+            ", one added to a part"
+        } else {
+            ""
+        },
+        if deleted.is_some() {
+            ", one deleted"
+        } else {
+            ""
+        },
+        if lost.is_some() {
+            ", one taken from a part"
+        } else {
+            ""
+        }
+    )
+}
+
 /// The cloth editor on one file (see `--edit`).
 fn probe_edit(bytes: &[u8], name: &str) -> String {
     use modstudio_core::cloth_edit::{self, SceneShape};
@@ -353,9 +537,28 @@ fn probe_roundtrip(bytes: &[u8]) -> String {
         Ok(w) => w,
         Err(e) => return format!("write: {e}"),
     };
+    // the parameter archive: read and written again, the same bytes (and only zeros after it, if anything)
+    let params = match modstudio_formats::aamp::Aamp::read(phive.params) {
+        Ok(a) => a.write(),
+        Err(e) => return format!("parameter archive: {e}"),
+    };
+    if !phive.params.starts_with(&params) || phive.params[params.len()..].iter().any(|&b| b != 0) {
+        return format!(
+            "parameter archive written back differently: {} bytes for {}",
+            params.len(),
+            phive.params.len()
+        );
+    }
     if written == phive.tagfile {
         return match modstudio_formats::phive::with_tagfile(bytes, &written) {
-            Ok(file) if file == bytes => "written back byte for byte (the whole file)".to_owned(),
+            Ok(file) if file == bytes => format!(
+                "written back byte for byte (the whole file; the parameter archive too{})",
+                if params.len() == phive.params.len() {
+                    ""
+                } else {
+                    ", zeros after it in the file"
+                }
+            ),
             Ok(_) => "tagfile written back byte for byte, the file around it not".to_owned(),
             Err(e) => format!("phive: {e}"),
         };

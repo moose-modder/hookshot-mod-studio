@@ -19,6 +19,7 @@ JSON `cloth_edit::apply` takes. The armature has to be at rest (the build puts i
 import argparse
 import json
 import math
+import re
 import sys
 
 import bmesh
@@ -33,6 +34,8 @@ ID = "cloth_collider_id"  # a collider object: its item in the game's file
 SHAPE = "cloth_shape"  # its shape as made (JSON: game units, the collider's own frame)
 PART = "cloth_part"  # a part's empty: the part's name
 PART_COLLIDERS = "cloth_colliders"  # its colliders, in its order (JSON: [[id, name], ...])
+ORIGINAL = "cloth_collider_name"  # a collider object: the collider's name in the file (a copy has another object name)
+PARTS_PROP = "cloth_parts"  # a collider object: the parts that have it, by name (comma-separated; "all")
 SOURCE = "cloth_source"  # the collection: the cloth file
 SIZE = "cloth_scene_size"  # the collection: the scene's size, times the game's
 # the game's (glTF's) axes to Blender's, as the glTF importer turns them
@@ -157,7 +160,11 @@ def add_cloth(scene, arm):
         colliders.objects.link(obj)
         names[c["id"]] = obj.name
         obj[ID] = c["id"]
+        obj[ORIGINAL] = c["name"]
         obj[SHAPE] = json.dumps(c["shape"])
+        obj[PARTS_PROP] = ", ".join(c.get("parts") or [])
+        obj.id_properties_ui(PARTS_PROP).update(
+            description="The simulated parts that collide with this collider, by name (comma-separated, or all)")
         obj.display_type = 'WIRE'
         obj.show_in_front = True
         obj.hide_render = True
@@ -205,8 +212,55 @@ def add_cloth(scene, arm):
 
 
 def is_cloth_object(obj):
-    """A collider or a part's empty (not part of the model)."""
-    return ID in obj or PART in obj
+    """A collider, a part's empty, or anything put in the colliders' collection (not part of the model)."""
+    return ID in obj or PART in obj or any(c.name == COLLIDERS for c in obj.users_collection)
+
+
+def _parts_of(obj, all_parts):
+    """The parts an object's `cloth_parts` lists ("all": every part); None when it has no such property."""
+    if PARTS_PROP not in obj:
+        return None
+    names = [n.strip() for n in re.split(r"[,;]", str(obj[PARTS_PROP])) if n.strip()]
+    if any(n.lower() == "all" for n in names):
+        return list(all_parts)
+    return names
+
+
+def _new_name(name):
+    """A new collider's name in the file: the object's, Blender's ".001" and other signs as underscores."""
+    return re.sub(r"[^A-Za-z0-9_]", "_", name)
+
+
+def _fitted(obj, scale, size):
+    """The shape of a mesh the scene adds to the colliders, from its bounding box in its own frame (times its scale),
+    in the game's units and axes: flat, a plane (its normal along the flat side, +); about as wide as long, a sphere;
+    else a capsule along its longest side."""
+    to_game3 = TO_BLENDER.to_3x3().inverted()
+    points = [Vector([v.co[k] * scale[k] for k in range(3)]) for v in obj.data.vertices]
+    if not points:
+        return None
+    lo = Vector([min(p[k] for p in points) for k in range(3)])
+    hi = Vector([max(p[k] for p in points) for k in range(3)])
+    dims = hi - lo
+    centre = (lo + hi) / 2
+    order = sorted(range(3), key=lambda k: dims[k])
+
+    def unit(k):
+        return Vector([1.0 if i == k else 0.0 for i in range(3)])
+
+    def game(v):
+        return to_game3 @ (v / size)
+
+    if dims[order[0]] < 1e-3 * max(dims[order[2]], 1e-9):
+        n = (to_game3 @ unit(order[0])).normalized()
+        return {"kind": "plane", "normal": list(n), "distance": -n.dot(game(centre))}
+    if dims[order[2]] <= 1.25 * dims[order[0]]:
+        return {"kind": "sphere", "centre": list(game(centre)), "radius": sum(dims) / 6 / size}
+    k = order[2]
+    radius = (dims[order[0]] + dims[order[1]]) / 4
+    half = max(dims[k] / 2 - radius, 0.0)
+    return {"kind": "capsule", "start": list(game(centre - unit(k) * half)),
+            "end": list(game(centre + unit(k) * half)), "radius": radius / size}
 
 
 def _scaled(shape, s_game):
@@ -250,25 +304,49 @@ def read_cloth(arm):
     warnings = []
     bpy.context.view_layer.update()
     arm_inverse = arm.matrix_world.inverted()
+    all_parts = [emp[PART] for emp in bpy.data.objects if PART in emp]
+    # the file's colliders: an object each; a second object of one (a copy, Shift+D) is a new collider copied from it
+    by_id = {}
+    for obj in bpy.data.objects:
+        if ID in obj:
+            by_id.setdefault(int(obj[ID]), []).append(obj)
+    originals = {}
+    for cid, objs in by_id.items():
+        named = [o for o in objs if o.name == o.get(ORIGINAL)]
+        originals[cid] = objs[0] if len(objs) == 1 else (named or sorted(objs, key=lambda o: o.name))[0]
     colliders = []
     for obj in bpy.data.objects:
-        if ID not in obj:
+        added = ID not in obj
+        if added and not (obj.type == 'MESH' and any(c.name == COLLIDERS for c in obj.users_collection)):
             continue
-        shape = json.loads(obj[SHAPE])
         loc, rot, scale = (arm_inverse @ obj.matrix_world).decompose()
         rigid = Matrix.Translation(loc) @ rot.to_matrix().to_4x4()
         place = from_arm @ rigid @ to_arm
-        s_game = to_game3 @ Matrix.Diagonal(scale) @ TO_BLENDER.to_3x3()
         bone = obj.parent_bone if obj.parent == arm and obj.parent_type == 'BONE' and obj.parent_bone else None
         if obj.parent not in (arm, None):
             warnings.append(f"{obj.name}: its parent isn't the armature; it's read where it is, on no bone")
-        colliders.append({
-            "id": int(obj[ID]),
-            "name": obj.name,
-            "bone": bone,
-            "place": columns(place),
-            "shape": _scaled(shape, s_game) if shape["kind"] != "other" else shape,
-        })
+        parts = _parts_of(obj, all_parts)
+        if added:
+            # a mesh put in the colliders' collection: its shape from its size
+            shape = _fitted(obj, scale, size)
+            if shape is None:
+                warnings.append(f"{obj.name}: an empty mesh in {COLLIDERS}, left out")
+                continue
+            colliders.append({"id": 0, "name": _new_name(obj.name), "bone": bone, "place": columns(place),
+                              "shape": shape, "parts": parts or []})
+            continue
+        shape = json.loads(obj[SHAPE])
+        s_game = to_game3 @ Matrix.Diagonal(scale) @ TO_BLENDER.to_3x3()
+        shape = _scaled(shape, s_game) if shape["kind"] != "other" else shape
+        cid = int(obj[ID])
+        if originals[cid] is obj:
+            entry = {"id": cid, "name": obj.name, "bone": bone, "place": columns(place), "shape": shape}
+            if parts is not None:
+                entry["parts"] = parts
+        else:
+            entry = {"id": 0, "copy_of": cid, "name": _new_name(obj.name), "bone": bone, "place": columns(place),
+                     "shape": shape, "parts": parts or []}
+        colliders.append(entry)
     parts = []
     for emp in bpy.data.objects:
         if PART not in emp:
@@ -294,14 +372,14 @@ def read_cloth(arm):
         for prop, _, _, _ in SCALES:
             part[prop] = float(emp[prop])
         parts.append(part)
-    found = {c["id"] for c in colliders}
+    # the file's colliders whose objects are gone: deleted (no part collides with them any more)
+    deleted = []
     for emp in bpy.data.objects:
         if PART in emp:
             for cid, name in json.loads(emp[PART_COLLIDERS]):
-                if int(cid) not in found:
-                    warnings.append(f"collider {name} isn't in the scene any more: the game's is kept")
-                    found.add(int(cid))
-    return {"source": root[SOURCE], "colliders": colliders, "parts": parts}, warnings
+                if int(cid) not in by_id and int(cid) not in deleted:
+                    deleted.append(int(cid))
+    return {"source": root[SOURCE], "colliders": colliders, "parts": parts, "deleted": deleted}, warnings
 
 
 def main():

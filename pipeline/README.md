@@ -129,6 +129,17 @@ when it's made; an older one with the project's **Add cloth to the scene**, or `
   its radius; a plane: turned and moved only); parent it to another bone (Object > Parent > Bone) to have it follow
   that one, which every part using the collider has to have in its skeleton. Only the object counts: changes to
   its mesh in edit mode aren't read.
+  - **Which parts have it**: its custom property `cloth_parts`, the parts' names separated by commas (or `all`).
+    Add a part's name to give the collider to that part (the part's skeleton has to have the collider's bone);
+    take one away and that part no longer collides with it.
+  - **A new collider**: copy one (Shift+D) and move or scale the copy: it's a new collider of the same kind, for the
+    parts its `cloth_parts` lists (the original's, unless changed), named after the object. Or add a mesh (a UV
+    sphere, a cylinder, a plane) to the collection *Cloth colliders*, parent it to a bone (Object > Parent > Bone)
+    and give it a `cloth_parts` property (Object properties > Custom Properties > New, type Text): its size makes
+    the shape (about as wide as long: a sphere; longer: a capsule along its longest side; flat: a plane, the cloth
+    kept on the side its +Z points to). A part has at most 30 colliders.
+  - **Deleting a collider**: delete its object. No part collides with it any more (the file keeps it, unused, as
+    it keeps some of its own).
 - **Cloth parts**: an empty per simulated part (hair, hood, skirt, ...), at the middle of the bones it moves, with
   its settings as custom properties (Object properties > Custom Properties):
   - `gravity` (in Blender's axes, down is -Z), `damping` (the share of speed lost each second), `substeps`,
@@ -144,8 +155,8 @@ file stays byte for byte as the game has it, and a scene left as it was gives no
 used). What it wrote is read back and simulated before it goes into the mod; the build report lists each change
 ("Cloth changed"), and *Cloth physics* on *Your mod* runs the written file.
 
-Not yet: new colliders, and a collider for a part that doesn't have it (the file needs new objects for those);
-deleting a collider object keeps the game's collider.
+New colliders are named in the cloth file's own list of colliders (its parameter archive); the actor's pack has a
+list of them too (`Phive/ClothParam/<model>.phive__ClothParam.bgyml`), which the build doesn't change yet.
 
 ## Materials and textures
 
