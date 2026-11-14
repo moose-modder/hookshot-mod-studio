@@ -55,6 +55,12 @@ Making mods (what the app does, with the same settings):
       the game's cloth for the project's model (hair, hoods, capes) simulated against a test motion, written
       to build/cloth_preview.json; --open opens the scene in Blender with it as the armature's action
       \"Cloth preview\" (play it to see the meshes swing)
+  modstudio anim <project> --list [--search <words>]
+      the game's animations of the project's model: the ones its actors play, its own, its cutscenes
+  modstudio anim <project> --add <name> [--add <name> ...]
+      adds those animations to the project's scene as actions to edit (<name>: an animation's name, or
+      <file>:<name> where two files have one of that name); the build writes the bones they change into the
+      game's animation files. Close the scene in Blender first.
 
 These take --settings <file> (default: settings.json beside modstudio, which is the app's when the two sit in
 one folder).
@@ -77,13 +83,14 @@ impl<E: std::fmt::Display> From<E> for Failure {
 }
 
 /// Options that take no value.
-const FLAGS: [&str; 6] = [
+const FLAGS: [&str; 7] = [
     "install",
     "no-check",
     "skip-blender",
     "all",
     "open",
     "add-to-scene",
+    "list",
 ];
 
 /// Positional arguments, `--name value` options and `--flag`s.
@@ -453,6 +460,95 @@ fn build_project(args: &Args) -> Result<(), Failure> {
     }
 }
 
+fn anim_command(args: &Args) -> Result<(), Failure> {
+    let [path] = args.positional(1)? else {
+        unreachable!()
+    };
+    let s = load_settings(args)?;
+    let mut p = Project::load(Path::new(path))?;
+    let romfs = s.romfs()?;
+    let list = modstudio_core::anim::list(&romfs, Some(&s.cache_dir()), &p.data.model)?;
+    let short = |file: &str| {
+        file.trim_start_matches("Model/")
+            .trim_end_matches(".anim.bfres.zs")
+            .to_owned()
+    };
+    if args.flag("list") {
+        let words: Vec<String> = args
+            .option("search")
+            .unwrap_or("")
+            .to_lowercase()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        let mut shown = 0;
+        for a in &list {
+            let hay = format!("{} {}", a.name, a.file).to_lowercase();
+            if words.iter().all(|w| hay.contains(w)) {
+                println!(
+                    "{:9} {}:{}  ({} frames{})",
+                    a.kind,
+                    short(&a.file),
+                    a.name,
+                    a.frames + 1,
+                    if a.looping { ", looping" } else { "" }
+                );
+                shown += 1;
+            }
+        }
+        println!("{shown} of {} animation(s)", list.len());
+        return Ok(());
+    }
+    let wanted: Vec<&str> = args.all("add").collect();
+    if wanted.is_empty() {
+        return Err(Failure::Usage(
+            "anim needs --list or --add <name>".to_owned(),
+        ));
+    }
+    let mut picks = Vec::new();
+    for w in wanted {
+        let (file, name) = match w.split_once(':') {
+            Some((f, n)) => (Some(f), n),
+            None => (None, w),
+        };
+        let found: Vec<_> = list
+            .iter()
+            .filter(|a| a.name == name && file.is_none_or(|f| short(&a.file) == f))
+            .collect();
+        match found.as_slice() {
+            [one] => picks.push((one.file.clone(), one.name.clone())),
+            [] => {
+                return Err(Failure::Failed(format!(
+                    "{w}: the model has no animation of that name (anim {path} --list --search ...)"
+                )));
+            }
+            many => {
+                return Err(Failure::Failed(format!(
+                    "{w}: {} files have an animation of that name; say which: {}",
+                    many.len(),
+                    many.iter()
+                        .map(|a| format!("{}:{}", short(&a.file), a.name))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+        }
+    }
+    let added =
+        modstudio_core::anim_edit::add_to_scene(&s, &mut p, &picks, &mut Progress::stdout())?;
+    println!(
+        "Added {} animation(s) to {} as actions: {}",
+        added.len(),
+        p.blend().display(),
+        added
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    Ok(())
+}
+
 fn cloth_command(args: &Args) -> Result<(), Failure> {
     let [path] = args.positional(1)? else {
         unreachable!()
@@ -569,6 +665,7 @@ fn main() -> ExitCode {
         "build" => Args::parse(&raw[1..]).and_then(|a| build_project(&a)),
         "mods" => Args::parse(&raw[1..]).and_then(|a| mods_command(&a)),
         "cloth" => Args::parse(&raw[1..]).and_then(|a| cloth_command(&a)),
+        "anim" => Args::parse(&raw[1..]).and_then(|a| anim_command(&a)),
         other => Err(Failure::Usage(format!("unknown command {other:?}"))),
     };
     match result {

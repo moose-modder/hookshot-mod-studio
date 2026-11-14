@@ -25,13 +25,21 @@
     error = null,
     empty = "Pick a model to see it here",
     cloth = null,
+    addAnim = null,
+    sceneAnims = [],
   }: {
     glb: ArrayBuffer | null;
     loading?: boolean;
     error?: string | null;
     empty?: string;
     cloth?: ClothSource | null;
+    /** On a project's page: adds the animation playing to the project's Blender scene. */
+    addAnim?: ((a: { file: string; name: string }) => void) | null;
+    /** The animations in the project's scene, each `<file>:<name>`. */
+    sceneAnims?: string[];
   } = $props();
+
+  const inScene = (file: string, name: string) => sceneAnims.includes(`${file}:${name}`);
 
   let host: HTMLDivElement;
   let renderer: THREE.WebGLRenderer | null = null;
@@ -879,7 +887,10 @@
                 title={`${a.file}: ${a.frames} frames${a.looping ? ", looping" : ""}`}
               >
                 <span class="name">{clipBusy === a.name ? "Opening…" : a.name}</span>
-                <span class="muted small-text">{fileName(a.file)} · {(a.frames / 30).toFixed(1)} s</span>
+                <span class="muted small-text"
+                  >{fileName(a.file)} · {(a.frames / 30).toFixed(1)} s{#if inScene(a.file, a.name)}&nbsp;· in the
+                    scene{/if}</span
+                >
               </button>
             {/each}
           {/each}
@@ -916,6 +927,15 @@
         />
         <span class="frame">{Math.floor(clipFrame)} / {clip.frame_count}</span>
         <span class="clip-name">{clip.name}{#if clipNotes.length}&nbsp;· {clipNotes.length} note{/if}</span>
+        {#if addAnim}
+          {@const c = clip}
+          <button
+            class="ghost small"
+            onclick={() => addAnim?.({ file: c.file, name: c.name })}
+            title="Adds the game's animation to the project's Blender scene as an action, to edit there: the build writes what you change into the game's animation file"
+            >{inScene(c.file, c.name) ? "In the scene: add again" : "Add to the scene"}</button
+          >
+        {/if}
         <button class="ghost small" onclick={closeClip} title="Stop the animation: the model goes back to rest"
           >Close</button
         >

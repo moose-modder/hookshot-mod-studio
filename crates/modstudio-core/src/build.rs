@@ -28,7 +28,8 @@ use crate::progress::Progress;
 use crate::project::Project;
 use crate::settings::Settings;
 use crate::{
-    Context, Error, Result, args, cloth, cloth_edit, mods, replace, sizetable, texture, tools,
+    Context, Error, Result, anim_edit, args, cloth, cloth_edit, mods, replace, sizetable, texture,
+    tools,
 };
 
 /// The last build's report, in the work folder.
@@ -70,6 +71,9 @@ pub struct BuildReport {
     /// What changed in the model's cloth (the scene's collection "Cloth"), a line each; empty: the game's cloth.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cloth: Vec<String>,
+    /// What changed in the game's animations (the scene's game animation actions), a line each; empty: none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub animations: Vec<String>,
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check: Option<CheckSummary>,
@@ -355,6 +359,40 @@ fn run(
             }
             None => progress.line("as the game has it: the game's cloth file is used"),
         }
+        progress.check()?;
+    }
+
+    // 3c. The animations: the scene's game animation actions, written into the game's files where they differ
+    // (an earlier build's animation files go first)
+    let model_dir = mod_romfs.join("Model");
+    for rel in fsutil::files_under(&model_dir) {
+        if rel.to_string_lossy().ends_with(".anim.bfres.zs") {
+            fsutil::remove_file(&model_dir.join(rel))?;
+        }
+    }
+    let anim_edits = work.join(anim_edit::EDITS_FILE);
+    if anim_edits.is_file() {
+        progress.step("Animations");
+        let applied = anim_edit::apply(&romfs, &project.data.model, &anim_edits)?;
+        for w in &applied.warnings {
+            progress.warn(w.clone());
+            report.warnings.push(w.clone());
+        }
+        for c in &applied.changes {
+            progress.line(c.clone());
+        }
+        for (file, bytes) in &applied.files {
+            let out = mod_romfs.join(file);
+            if let Some(dir) = out.parent() {
+                std::fs::create_dir_all(dir).context(dir.display())?;
+            }
+            std::fs::write(&out, bytes).context(out.display())?;
+            progress.line(format!("{file} written (it reads back)"));
+        }
+        if applied.files.is_empty() {
+            progress.line("as the game has them: no animation changed");
+        }
+        report.animations = applied.changes;
         progress.check()?;
     }
 

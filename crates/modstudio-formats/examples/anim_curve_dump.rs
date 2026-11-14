@@ -23,7 +23,54 @@ fn main() {
     .unwrap();
     let data = romfs.read(&mut d, file).unwrap();
     let anim = bfres_anim::find(&data, Some(&strings), name).unwrap();
-    let b = anim.bones.iter().find(|b| &b.name == bone).expect("bone");
+    println!(
+        "{name}: flags 0x{:x}, frames {}, curve count {}, baked size {}, {} bones",
+        anim.flags,
+        anim.frame_count,
+        anim.curve_count,
+        anim.baked_size,
+        anim.bones.len()
+    );
+    let mut total = 0;
+    for (i, b) in anim.bones.iter().enumerate() {
+        let kinds = b
+            .curves
+            .iter()
+            .map(|c| c.target & 0x30)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        if i < 3 || b.name == *bone || (kinds >= 2 && i < 200) {
+            println!(
+                "    #{i} {:20} flags 0x{:08x} begin rotate {} translate {} base translate {} curve {} | curves {:?} (sum before: {total}) at 0x{:x}",
+                b.name,
+                b.flags,
+                b.begin_rotate,
+                b.begin_translate,
+                b.begin_base_translate,
+                b.begin_curve,
+                b.curves
+                    .iter()
+                    .map(|c| format!("{:x}@{:x}", c.target, c.at))
+                    .collect::<Vec<_>>(),
+                b.at
+            );
+        }
+        total += b.curves.len();
+    }
+    println!("    curves in all: {total}");
+    // `*f32`: the first bone with a scalar curve stored as f32
+    let b = if bone == "*f32" {
+        anim.bones
+            .iter()
+            .find(|b| {
+                b.curves
+                    .iter()
+                    .any(|c| (c.flags >> 2) & 3 == 0 && c.flags & 0x80 == 0)
+            })
+            .expect("a bone with an f32 scalar curve")
+    } else {
+        anim.bones.iter().find(|b| &b.name == bone).expect("bone")
+    };
     println!(
         "{bone}: flags 0x{:x}, base rotation {:?}, base translation {:?}",
         b.flags, b.base_rotation, b.base_translation

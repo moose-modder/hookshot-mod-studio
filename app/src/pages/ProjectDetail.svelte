@@ -123,6 +123,31 @@
     await load();
   }
 
+  /** An animation the 3D view asked to add to the scene, waiting for the go-ahead. */
+  let pendingAnim = $state<{ file: string; name: string } | null>(null);
+  const pendingInScene = $derived(
+    pendingAnim !== null && (view?.data.scene_anims ?? []).includes(`${pendingAnim.file}:${pendingAnim.name}`),
+  );
+
+  async function addAnim() {
+    const a = pendingAnim;
+    pendingAnim = null;
+    if (!a) return;
+    showLog = true;
+    notice = null;
+    const added = await task.run<number>("Add an animation to the scene", "add_anims_to_scene", {
+      file,
+      picks: [[a.file, a.name]],
+    });
+    if (added !== null) {
+      notice =
+        `The scene has "${a.name}" now, as an action of that name on the armature (frame 1 is the game's frame 0): ` +
+        `open the scene in Blender and change its keys. The build writes the bones you change into the game's ` +
+        `animation file; "Animations" on "Your mod" plays the result.`;
+    }
+    await load();
+  }
+
   function setTab(t: "mod" | "game") {
     if (tab === t) return;
     tab = t;
@@ -188,6 +213,22 @@
         </div>
       </div>
     {/if}
+    {#if pendingAnim}
+      <div class="notice">
+        Adds the game's animation "{pendingAnim.name}" to {view.summary.blend} as an action (Blender keeps the scene as it
+        was as a .blend1 file beside it). If the scene is open in Blender, save and close it there first: saving it there
+        afterwards would drop the action again.
+        {#if pendingInScene}
+          The scene has it already: adding it again replaces that action, and the changes made to it.
+        {/if}
+        <div class="confirm">
+          <button class="primary small" onclick={addAnim} disabled={task.running || !settings.status.blender}
+            >{pendingInScene ? "Replace it" : "Add it"}</button
+          >
+          <button class="ghost small" onclick={() => (pendingAnim = null)}>Cancel</button>
+        </div>
+      </div>
+    {/if}
     {#if notice}<div class="notice">{notice}</div>{/if}
 
     {#if showLog && (task.running || task.events.length || task.error)}
@@ -207,6 +248,8 @@
             error={previewError}
             empty="Build the mod to see it here"
             cloth={{ path: view.data.model, overlay: tab === "mod" ? view.mod_romfs : undefined }}
+            addAnim={(a) => (pendingAnim = a)}
+            sceneAnims={view.data.scene_anims ?? []}
           />
         </div>
       </section>
@@ -304,6 +347,15 @@
               <h3>Cloth changed</h3>
               <ul class="warnings">
                 {#each report.cloth as c, i (i)}<li>{c}</li>{/each}
+              </ul>
+            </div>
+          {/if}
+
+          {#if report.animations?.length}
+            <div class="card pad">
+              <h3>Animations changed</h3>
+              <ul class="warnings">
+                {#each report.animations as c, i (i)}<li>{c}</li>{/each}
               </ul>
             </div>
           {/if}

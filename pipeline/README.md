@@ -161,6 +161,33 @@ Link and Dark Link, ReDead and Gibdo, ...): the change then shows on the other m
 New colliders are named in the cloth file's own list of colliders (its parameter archive); the actor's pack has a
 list of them too (`Phive/ClothParam/<model>.phive__ClothParam.bgyml`), which the build doesn't change yet.
 
+## Editing animations
+
+The game's animations of the model can be edited in the scene. In the app, play one with *Animations* in a project's
+3D view and press *Add to the scene* (or `modstudio anim <project> --add <name>`; `--list --search <words>` lists
+them): it becomes an action of that name on the armature, with a key on every frame on each bone the animation moves
+(frame 1 is the game's frame 0; the scene is set to 30 frames a second). The action keeps the game's file and
+animation as custom properties and has a fake user, so several stay in the scene; pick one in the Action editor to
+edit it. Adding the same animation again replaces its action (and the changes made to it). Close the scene in Blender
+before adding: saving it there afterwards would drop the new action.
+
+Edit the action with Blender's tools: move keys, add and delete them, use constraints or drivers (the pose they give is
+what counts). The build plays every such action (`anim_scene.py`, from `prep_for_game.py`: `build\anim_edits.json`),
+reads each bone's place at every frame of the game's animation, and compares each bone's own translation, rotation
+and scale with the game's (`modstudio-core`'s `anim_edit`). A bone whose translation, rotation or scale changed gets
+new curves for that, with a key at every frame; the rest of the animation file stays as the game has it. The build
+report lists each animation changed ("Animations changed"), and *Animations* on *Your mod* plays the result (with the
+cloth following, with *Cloth physics* on).
+
+What isn't written (the build says so where it applies):
+- Bones the game's animation doesn't move: an animation only moves the bones it has curves or values for, and a
+  bone isn't added to it.
+- A different length: the game's animation keeps its frame count. Frames past it are left out; a shorter action holds
+  its last frame.
+- Motion between whole frames: keys are read at every frame. A few of the game's curves (some bosses') have keys
+  between frames; a bone changed in those loses that detail.
+- NLA strips: only the action itself is played.
+
 ## Materials and textures
 
 The game draws each mesh with its own material and that material's textures; Blender materials don't come

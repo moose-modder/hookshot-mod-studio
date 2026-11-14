@@ -59,6 +59,7 @@ from mathutils import Matrix
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scene_nodes import FINGERPRINT, RG_GROUP, material_fingerprint, rg_normal_group  # noqa: E402
 import cloth_scene  # noqa: E402
+import anim_scene  # noqa: E402
 
 LAYOUT = "PREP_layout"
 PROBE = "PREP_probe"
@@ -207,7 +208,13 @@ def collect_objects(cfg, rep):
     arm = bpy.data.objects.get(cfg["armature"])
     if arm is None or arm.type != 'ARMATURE':
         raise RuntimeError(f"Armature {cfg['armature']!r} not found")
-    # The build reads the rest pose: an action (the cloth preview's, cloth_preview.py) or a pose left in the scene
+    # The game animations' actions (anim_scene.py) are played and read first: the build writes the bones they
+    # change into the game's animation files (anim_edit::apply)
+    # (the build's own step only: the checks after it share this setup)
+    anims = anim_scene.read_anims(arm, cfg["output"]) if "output" in cfg else None
+    if anims:
+        log(f"Animations: {len(anims)} read from the scene: {sorted(a['name'] for a in anims)}")
+    # The build reads the rest pose: an action (an animation, the cloth preview's) or a pose left in the scene
     # would move the meshes the textures are baked from and the check renders. The .blend isn't saved.
     if arm.animation_data is not None:
         arm.animation_data_clear()

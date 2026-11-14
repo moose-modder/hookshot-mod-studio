@@ -7,6 +7,7 @@
 //! - [`bntx_write`]: a texture written back with a new image, encoded by [`bc_encode`]
 //! - [`bfres`]: models: skeleton, shapes with their LOD meshes, vertex and index buffers, materials
 //! - [`bfres_anim`]: skeletal animations (`*.anim.bfres`), read
+//! - [`bfres_anim_write`]: an animation file with some bones' curves replaced
 //! - [`bfres_write`]: a model written back with new geometry for some shapes
 //! - [`byml`]: parameter files (`*.bgyml`: an actor pack's model info and physics controllers), read
 //! - [`aamp`]: parameter archives (the cloth files' lists of meshes and colliders), read and written
@@ -20,6 +21,7 @@ pub mod bc_encode;
 mod bcn;
 pub mod bfres;
 pub mod bfres_anim;
+pub mod bfres_anim_write;
 pub mod bfres_write;
 pub mod bntx;
 pub mod bntx_write;

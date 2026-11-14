@@ -132,6 +132,8 @@ export interface BuildReport {
   warnings: string[];
   /** What changed in the model's cloth, a line each (absent: the game's cloth). */
   cloth?: string[];
+  /** What changed in the game's animations, a line each (absent: none). */
+  animations?: string[];
   check?: CheckSummary | null;
   files: string[];
   installed?: string | null;
@@ -146,6 +148,8 @@ export interface ProjectFile {
   check?: Record<string, unknown>;
   /** Whether the scene has the model's cloth to edit. */
   cloth_scene?: boolean;
+  /** The game animations added to the scene as actions, each `<file>:<name>`. */
+  scene_anims?: string[];
 }
 
 export interface ProjectView {

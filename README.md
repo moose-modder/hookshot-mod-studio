@@ -42,7 +42,9 @@ projects, and Blender. Then:
   the mod's own cloth file where it has one.
 - **Animations** (in the 3D view): the model's animations from the game (the ones its actors play, the player's
   bundles among them, and its cutscenes), searched by name and played in a loop, a run shown in place. With cloth
-  physics on, the cloth follows the animation. Editing them in Blender comes next.
+  physics on, the cloth follows the animation. On a project's page, *Add to the scene* puts the one playing into the
+  Blender scene as an action to edit; the build writes the bones you change into the game's animation file
+  ([pipeline/README.md](pipeline/README.md), *Editing animations*).
 - **Installed mods**: Hookshot's mods folder, mods on and off, the shared size table. Hookshot reads its mods
   when it starts.
 

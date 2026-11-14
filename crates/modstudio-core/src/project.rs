@@ -46,6 +46,9 @@ pub struct ProjectFile {
     /// Whether the scene has the model's cloth to edit (the collection "Cloth": `cloth_scene.py`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cloth_scene: bool,
+    /// The game animations added to the scene as actions (`anim_scene.py`), each `<file>:<name>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scene_anims: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -328,6 +331,7 @@ pub fn create(
             prep,
             check: Map::new(),
             cloth_scene: cloth_in_scene,
+            scene_anims: Vec::new(),
         },
     };
     project.save()?;

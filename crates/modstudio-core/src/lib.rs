@@ -14,11 +14,13 @@
 //! - [`build::build`]: the mod built from the edited scene, checked, and installed
 //! - [`cloth`]: the game's cloth simulated against a test motion, for a preview in Blender
 //! - [`anim`]: a model's animations, listed and sampled for playing
+//! - [`anim_edit`]: animations into a Blender scene, and the scene's written back into the game's files
 //! - [`actor_links`]: which cloth and animation files the game's actors give each model
 //! - [`mods`]: Hookshot's mods folder: mods on and off, one resource size table for all of them
 
 pub mod actor_links;
 pub mod anim;
+pub mod anim_edit;
 pub mod build;
 pub mod catalog;
 pub mod cloth;

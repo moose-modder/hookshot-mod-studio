@@ -438,7 +438,34 @@ plays, and a run's travel goes on in the simulation's world, loop after loop, so
 the cloth file's skeleton and the model's agree at rest to 0.00 mm; through a run and an idle the 21 chains' first
 bones stay within 6.5 cm of the animation (`examples/cloth_anim.rs`).
 
-**Next:** an animation into the Blender scene as an action, and back: written as the game's curves.
+**Done (2026-11-14): animations edited in Blender and written back.**
+- `modstudio-formats::bfres_anim_write`: an animation file with some bones' curves replaced. The file stays as it is
+  up to the end of its first relocation section (patched in place); new curves (value-keyed Hermite, a key at every
+  frame, 16-bit values and slopes; quaternion bones' as four f32 a key), curve arrays and base values go after it,
+  and the relocation table (`_RLT`: sections, then entries of pointers per structure) is written again with entries
+  for the new pointers. Counted again: each bone's first curve, the animation's curves and its baked size, which in
+  all 22,875 of the game's animations is curves x (4 x frames + 32) rounded up to 8 (`examples/anim_baked.rs`).
+  Checked on all 1,427 files (`examples/anim_rewrite.rs`): every bone of every animation written again, every other
+  curve new: each file reads back, every pointer the table lists stays inside the file (34 million), the counts are
+  right, scalar curves match at every frame to 0.0015% of their range. One boss's quaternion curves have keys between
+  frames (four a frame); written a key a frame, they differ between frames by up to 5 degrees.
+- `modstudio-core::anim_edit`: an animation written for the scene (its animated bones' places in the model at every
+  frame) and, from the scene's export, each bone's own translation, rotation and scale compared with the game's
+  (rotations by the length of the quaternions' difference: an angle from the cosine of their dot product reads 0.04
+  degrees for equal rotations in f32). Changed parts get new curves (Euler angles kept near the frame before's), the
+  rest are kept. `examples/anim_roundtrip.rs` (no Blender): unchanged, nothing written; child Link's head turned 30
+  degrees about its own x axis with its 112 descendants carried along: only the head changes, and the written file has
+  it turned by 30 degrees to 0.08 degrees over all 601 frames of *Wait*.
+- `pipeline/anim_scene.py`: the action made (the cloth preview's conversion), and read back in the build
+  (`prep_for_game.py`, before the armature goes to rest; the meshes' armature modifiers muted while it plays). Through
+  Blender on a new child Link project: *Wait* added and built unchanged gives no change; the head turned in Blender
+  (every key) gives "Wait: 1 bone(s) changed: Head", and *Animations* on *Your mod* shows the head turned; a second
+  animation added from the app (*Add to the scene* in the player bar) builds unchanged beside it.
+- `modstudio anim <project> --list | --add`; the app's 3D view has *Add to the scene* on a project's page; the project
+  keeps which animations it added (`scene_anims`); the build report lists "Animations changed".
+
+**Next:** in game, an edited idle. Then: bones the game's animation doesn't move (a new bone animation in the file:
+the name in the string table, the bone array grown); fewer keys than one a frame; animations of another length.
 
 ### 3. New bones (custom skeletons)
 

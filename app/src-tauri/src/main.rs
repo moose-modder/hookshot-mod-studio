@@ -530,6 +530,25 @@ async fn add_cloth_to_scene(
     .await
 }
 
+/// Adds game animations (`picks`: a file and an animation name each) to the project's scene as actions: how many.
+#[tauri::command]
+async fn add_anims_to_scene(
+    app: AppHandle,
+    state: State<'_, App>,
+    task: u64,
+    file: PathBuf,
+    picks: Vec<(String, String)>,
+) -> Result<usize> {
+    let settings = state.settings();
+    let mut p = Project::load(&file).map_err(err)?;
+    run_task(app, &state, task, move |progress| {
+        modstudio_core::anim_edit::add_to_scene(&settings, &mut p, &picks, progress)
+            .map(|added| added.len())
+            .map_err(err)
+    })
+    .await
+}
+
 #[tauri::command]
 fn new_task_id(state: State<'_, App>) -> u64 {
     state.next_task.fetch_add(1, Ordering::Relaxed)
@@ -692,6 +711,7 @@ fn main() {
             create_project,
             build_project,
             add_cloth_to_scene,
+            add_anims_to_scene,
             new_task_id,
             cancel_task,
             open_in_blender,

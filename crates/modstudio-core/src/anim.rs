@@ -156,14 +156,74 @@ pub fn list(romfs: &Romfs, cache_dir: Option<&Path>, model: &str) -> Result<Vec<
 
 /// A bone of the model's skeleton, at rest relative to its parent.
 #[derive(Debug, Clone)]
-struct SkelBone {
-    name: String,
-    parent: Option<usize>,
-    translation: [f32; 3],
-    rotation: Quat,
+pub(crate) struct SkelBone {
+    pub(crate) name: String,
+    pub(crate) parent: Option<usize>,
+    pub(crate) translation: [f32; 3],
+    pub(crate) rotation: Quat,
     /// The rotation as Euler angles (XYZ), where the skeleton keeps them so.
-    euler: [f32; 3],
-    scale: [f32; 3],
+    pub(crate) euler: [f32; 3],
+    pub(crate) scale: [f32; 3],
+}
+
+/// The skeleton of the model file `model` (its first model's).
+pub(crate) fn load_skeleton(
+    romfs: &Romfs,
+    decoder: &mut modstudio_formats::zs::Decoder,
+    strings: &modstudio_formats::bfres::ExternalStrings,
+    model: &str,
+) -> Result<Vec<SkelBone>> {
+    let model_data = romfs.read(decoder, model).context(model)?;
+    let bfres = Bfres::parse(&model_data, Some(strings)).context(model)?;
+    let skel = &bfres
+        .models
+        .first()
+        .ok_or_else(|| Error(format!("{model}: no model in the file")))?
+        .skeleton;
+    let euler = skel.euler_rotations();
+    Ok(skel
+        .bones
+        .iter()
+        .map(|b| SkelBone {
+            name: b.name.clone(),
+            parent: b.parent,
+            translation: b.translation,
+            rotation: if euler {
+                math::quat_from_euler_xyz([b.rotation[0], b.rotation[1], b.rotation[2]])
+            } else {
+                b.rotation
+            },
+            euler: if euler {
+                [b.rotation[0], b.rotation[1], b.rotation[2]]
+            } else {
+                [0.0; 3]
+            },
+            scale: b.scale,
+        })
+        .collect())
+}
+
+/// Each bone's place in the model at rest (`skeleton`'s order).
+pub(crate) fn rest_world(skeleton: &[SkelBone]) -> Vec<Mat4> {
+    let mut world: Vec<Option<Mat4>> = vec![None; skeleton.len()];
+    fn place(skeleton: &[SkelBone], i: usize, world: &mut Vec<Option<Mat4>>, depth: usize) -> Mat4 {
+        if let Some(m) = world[i] {
+            return m;
+        }
+        let b = &skeleton[i];
+        let local = math::from_trs(b.translation, b.rotation, b.scale);
+        let m = match b.parent {
+            Some(p) if p != i && depth < 512 => {
+                math::mul(&place(skeleton, p, world, depth + 1), &local)
+            }
+            _ => local,
+        };
+        world[i] = Some(m);
+        m
+    }
+    (0..skeleton.len())
+        .map(|i| place(skeleton, i, &mut world, 0))
+        .collect()
 }
 
 /// What an animation does to one bone, sampled at every frame: each component is empty (the bone's rest value),
@@ -191,9 +251,9 @@ pub struct Clip {
     pub unmatched: Vec<String>,
     /// Where the animation carries the whole model (a run moving forward), if it does.
     pub motion: Option<Motion>,
-    skeleton: Vec<SkelBone>,
+    pub(crate) skeleton: Vec<SkelBone>,
     /// Per bone of the skeleton, its track.
-    track_of: Vec<Option<usize>>,
+    pub(crate) track_of: Vec<Option<usize>>,
 }
 
 /// How an animation carries the whole model: the bone that moves it (a root of the skeleton, or a root's child,
@@ -294,39 +354,13 @@ impl Clip {
     pub fn open(romfs: &Romfs, model: &str, file: &str, name: &str) -> Result<Clip> {
         let mut decoder = romfs.decoder()?;
         let strings = model::load_external_strings(romfs, &mut decoder)?;
-        let model_data = romfs.read(&mut decoder, model).context(model)?;
-        let bfres = Bfres::parse(&model_data, Some(&strings)).context(model)?;
-        let skel = &bfres
-            .models
-            .first()
-            .ok_or_else(|| Error(format!("{model}: no model in the file")))?
-            .skeleton;
-        let skeleton: Vec<SkelBone> = skel
-            .bones
-            .iter()
-            .map(|b| SkelBone {
-                name: b.name.clone(),
-                parent: b.parent,
-                translation: b.translation,
-                rotation: if skel.euler_rotations() {
-                    math::quat_from_euler_xyz([b.rotation[0], b.rotation[1], b.rotation[2]])
-                } else {
-                    b.rotation
-                },
-                euler: if skel.euler_rotations() {
-                    [b.rotation[0], b.rotation[1], b.rotation[2]]
-                } else {
-                    [0.0; 3]
-                },
-                scale: b.scale,
-            })
-            .collect();
+        let skeleton = load_skeleton(romfs, &mut decoder, &strings, model)?;
         let anim_data = romfs.read(&mut decoder, file).context(file)?;
         let anim = bfres_anim::find(&anim_data, Some(&strings), name).context(file)?;
         Ok(Self::sample(file, &anim, skeleton))
     }
 
-    fn sample(file: &str, anim: &SkeletalAnim, skeleton: Vec<SkelBone>) -> Clip {
+    pub(crate) fn sample(file: &str, anim: &SkeletalAnim, skeleton: Vec<SkelBone>) -> Clip {
         let by_name: HashMap<&str, usize> = skeleton
             .iter()
             .enumerate()

@@ -151,6 +151,82 @@ pub fn normalize3(v: [f32; 3]) -> [f32; 3] {
     if len > 0. { v.map(|c| c / len) } else { v }
 }
 
+/// A rotation matrix (the upper 3x3 of a column-major 4x4, columns of unit length) as a quaternion (x, y, z, w).
+pub fn quat_from_rotation(m: &Mat4) -> Quat {
+    let (m00, m10, m20) = (m[0], m[1], m[2]);
+    let (m01, m11, m21) = (m[4], m[5], m[6]);
+    let (m02, m12, m22) = (m[8], m[9], m[10]);
+    let trace = m00 + m11 + m22;
+    let q = if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        [(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s]
+    } else if m00 > m11 && m00 > m22 {
+        let s = (1.0 + m00 - m11 - m22).sqrt() * 2.0;
+        [0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s]
+    } else if m11 > m22 {
+        let s = (1.0 + m11 - m00 - m22).sqrt() * 2.0;
+        [(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s]
+    } else {
+        let s = (1.0 + m22 - m00 - m11).sqrt() * 2.0;
+        [(m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s]
+    };
+    normalize_quat(q)
+}
+
+/// An affine matrix as translation, rotation (a quaternion) and scale (a mirrored matrix gets a negative x scale).
+pub fn decompose(m: &Mat4) -> ([f32; 3], Quat, [f32; 3]) {
+    let len = |c: usize| {
+        (m[c * 4] * m[c * 4] + m[c * 4 + 1] * m[c * 4 + 1] + m[c * 4 + 2] * m[c * 4 + 2]).sqrt()
+    };
+    let mut s = [len(0), len(1), len(2)];
+    let det = m[0] * (m[5] * m[10] - m[9] * m[6]) - m[4] * (m[1] * m[10] - m[9] * m[2])
+        + m[8] * (m[1] * m[6] - m[5] * m[2]);
+    if det < 0.0 {
+        s[0] = -s[0];
+    }
+    let mut r = IDENTITY;
+    for c in 0..3 {
+        let k = if s[c].abs() > 1e-12 { 1.0 / s[c] } else { 0.0 };
+        for row in 0..3 {
+            r[c * 4 + row] = m[c * 4 + row] * k;
+        }
+    }
+    ([m[12], m[13], m[14]], quat_from_rotation(&r), s)
+}
+
+/// A rotation as Euler angles XYZ (radians; the rotation is Z after Y after X, as [`quat_from_euler_xyz`] makes
+/// it): of the angle sets giving it, the one nearest `near` (each angle within half a turn of it), so a curve
+/// through them doesn't jump.
+pub fn euler_xyz_near(q: Quat, near: [f32; 3]) -> [f32; 3] {
+    let m = from_trs([0.0; 3], normalize_quat(q), [1.0; 3]);
+    let (m00, m10, m20, m21, m22, m01, m11) = (m[0], m[1], m[2], m[6], m[10], m[4], m[5]);
+    let b = (-m20).clamp(-1.0, 1.0).asin();
+    let (a, c) = if b.cos().abs() > 1e-5 {
+        (m21.atan2(m22), m10.atan2(m00))
+    } else {
+        // at a quarter turn about y only a + c (or a - c) counts: x keeps its near value
+        (
+            near[0],
+            (-m01).atan2(m11) + if m20 < 0.0 { near[0] } else { -near[0] },
+        )
+    };
+    let pi = std::f32::consts::PI;
+    let wrap = |v: f32, to: f32| v + ((to - v) / (2.0 * pi)).round() * 2.0 * pi;
+    let candidates = [[a, b, c], [a + pi, pi - b, c + pi]].map(|s| {
+        [
+            wrap(s[0], near[0]),
+            wrap(s[1], near[1]),
+            wrap(s[2], near[2]),
+        ]
+    });
+    let distance = |s: &[f32; 3]| (0..3).map(|i| (s[i] - near[i]).abs()).sum::<f32>();
+    if distance(&candidates[1]) < distance(&candidates[0]) {
+        candidates[1]
+    } else {
+        candidates[0]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,5 +271,43 @@ mod tests {
         // A surface tilted 45 degrees in XY, stretched along X, tilts towards Y.
         let n = transform_normal(&m, normalize3([1., 1., 0.]));
         assert!(close(&n, &normalize3([0.5, 1., 0.])));
+    }
+
+    #[test]
+    fn decomposing_undoes_from_trs() {
+        let q = normalize_quat([0.2, -0.4, 0.1, 0.9]);
+        let m = from_trs([1.0, 2.0, 3.0], q, [2.0, 0.5, 1.5]);
+        let (t, r, s) = decompose(&m);
+        assert_eq!(t, [1.0, 2.0, 3.0]);
+        assert!(close(&s, &[2.0, 0.5, 1.5]), "{s:?}");
+        let dot: f32 = (0..4).map(|i| r[i] * q[i]).sum();
+        assert!((dot.abs() - 1.0).abs() < 1e-5, "{r:?} {q:?}");
+    }
+
+    #[test]
+    fn euler_angles_back_from_a_quaternion_near_the_ones_given() {
+        let same = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-3);
+        for e in [
+            [0.3, -0.5, 1.2],
+            [-2.9, 1.0, 3.0],
+            [0.0, 0.0, 0.0],
+            [1.0, -1.4, -2.0],
+        ] {
+            let q = quat_from_euler_xyz(e);
+            assert!(
+                same(euler_xyz_near(q, e), e),
+                "{e:?} -> {:?}",
+                euler_xyz_near(q, e)
+            );
+        }
+        // the angles past half a turn, as the game's files have them (pi, pi, z)
+        let e = [std::f32::consts::PI, std::f32::consts::PI, -1.711];
+        assert!(same(euler_xyz_near(quat_from_euler_xyz(e), e), e));
+        // a whole turn more on x stays a whole turn more
+        let e = [0.3 + 2.0 * std::f32::consts::PI, 0.2, 0.1];
+        assert!(same(
+            euler_xyz_near(quat_from_euler_xyz([0.3, 0.2, 0.1]), e),
+            e
+        ));
     }
 }

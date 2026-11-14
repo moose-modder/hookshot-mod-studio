@@ -13,7 +13,7 @@ use crate::progress::{CANCELLED, Progress};
 use crate::{Context, Error, Result};
 
 /// The Blender scripts (`pipeline/`), built in: the app writes them out where Blender can run them.
-pub const SCRIPTS: [(&str, &str); 6] = [
+pub const SCRIPTS: [(&str, &str); 7] = [
     (
         "make_scene.py",
         include_str!("../../../pipeline/make_scene.py"),
@@ -37,6 +37,10 @@ pub const SCRIPTS: [(&str, &str); 6] = [
     (
         "cloth_scene.py",
         include_str!("../../../pipeline/cloth_scene.py"),
+    ),
+    (
+        "anim_scene.py",
+        include_str!("../../../pipeline/anim_scene.py"),
     ),
 ];
 
