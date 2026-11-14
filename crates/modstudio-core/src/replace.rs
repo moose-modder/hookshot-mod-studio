@@ -6,10 +6,13 @@
 //!   in model space for smooth skinning, in the bone's space for rigid (1 influence) and unskinned (0) shapes.
 //! - A scene whose skeleton is the game's at another size (a glTF import into a Blender scene with unit scale
 //!   0.01 makes it 100 times larger) is taken back to the game's size first, with a warning.
-//! - Influences are matched to the game's bones by name. Smooth shapes keep their skin count (the strongest
+//! - Influences are matched to the game's bones by name. A bone of the scene the game's skeleton doesn't have is
+//!   added to it ([`modstudio_formats::bfres_bones`]): its parent the nearest bone above it (the game's root for one
+//!   without), its place relative to it as the scene has it. Smooth shapes keep their skin count (the strongest
 //!   influences, weights in whole steps that add up exactly); a bone without a smooth matrix gives its weight to
 //!   its nearest ancestor that has one. Rigid shapes take each vertex's strongest bone (its nearest ancestor with
-//!   a rigid matrix); unskinned shapes follow their bone.
+//!   a rigid matrix: never a new bone); unskinned shapes follow their bone. A replaced skinned shape lists the bones
+//!   its vertices are weighted to, as every one of the game's does.
 //! - Every attribute the game's vertex buffer has is written: UVs from TEXCOORD_n, colours `_c<n>` from the
 //!   attribute `_C<n>` as they are (scenes made before it: COLOR_n, whose sRGB bytes are the game's; white
 //!   where the scene has none), tangents from TANGENT (computed from UV 0 if missing).
@@ -19,7 +22,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use modstudio_formats::bfres::{Bfres, Model, Shape};
+use modstudio_formats::bfres::{Bfres, Model, Shape, Skeleton};
+use modstudio_formats::bfres_bones::{self, NewBone};
 use modstudio_formats::bfres_write::{self, LodGeometry, ShapeGeometry};
 use modstudio_formats::romfs::{self, Romfs};
 use serde::Serialize;
@@ -47,6 +51,9 @@ pub struct GeometryReport {
     /// column-major).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scene_to_game: Option<Mat4>,
+    /// Bones added to the skeleton: "<name> on <parent>".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added_bones: Vec<String>,
 }
 
 impl GeometryReport {
@@ -103,8 +110,8 @@ fn read_mesh(
         ));
     }
     let skin = node.skin.map(|s| gltf.skin(s)).transpose()?;
-    // Each joint's game bone: its own, or for a bone the game's skeleton doesn't have, its nearest parent the
-    // game has. The game has no animation for a new bone, so it would follow that parent anyway.
+    // Each joint's bone: its own (the new bones are in `bones` too), or for a joint that is no bone, its nearest
+    // parent that is.
     let parents = gltf.parents();
     let joint_bones: Vec<Option<usize>> = skin
         .as_ref()
@@ -118,7 +125,7 @@ fn read_mesh(
                         if let Some(&b) = bones.get(gltf.node_name(k).as_str()) {
                             if k != j {
                                 report.warn(format!(
-                                    "{} isn't a bone of the game's skeleton: its weights went to {}, which it follows in game (the game has no animation for a new bone)",
+                                    "{} isn't a bone: its weights went to {}",
                                     gltf.node_name(j),
                                     gltf.node_name(k)
                                 ));
@@ -428,13 +435,13 @@ fn quantize_weights(weights: &[f32], max: u32) -> Vec<f32> {
 }
 
 /// The nearest bone up the hierarchy (itself first) that `has` accepts.
-fn nearest_with(model: &Model, bone: usize, has: impl Fn(usize) -> bool) -> Option<usize> {
+fn nearest_with(skeleton: &Skeleton, bone: usize, has: impl Fn(usize) -> bool) -> Option<usize> {
     let mut b = Some(bone);
     while let Some(i) = b {
         if has(i) {
             return Some(i);
         }
-        b = model.skeleton.bones[i].parent;
+        b = skeleton.bones[i].parent;
     }
     None
 }
@@ -442,13 +449,14 @@ fn nearest_with(model: &Model, bone: usize, has: impl Fn(usize) -> bool) -> Opti
 /// One scene mesh as the shape's vertex buffer stores it: one value per vertex for each attribute.
 fn mesh_attributes(
     model: &Model,
+    skeleton: &Skeleton,
     shape: &Shape,
     mesh: &SceneMesh,
     world: &[Mat4],
     report: &mut GeometryReport,
 ) -> Result<BTreeMap<String, Vec<[f32; 4]>>> {
     let vb = &model.vertex_buffers[shape.vertex_buffer];
-    let bones = &model.skeleton.bones;
+    let bones = &skeleton.bones;
     let n = mesh.positions.len();
     let skin = shape.skin_count as usize;
 
@@ -468,13 +476,13 @@ fn mesh_attributes(
         1 => {
             for v in 0..n {
                 let strongest = mesh.influences[v].first().map_or(shape.bone, |x| x.0);
-                let bone = nearest_with(model, strongest, |b| bones[b].rigid_matrix.is_some())
+                let bone = nearest_with(skeleton, strongest, |b| bones[b].rigid_matrix.is_some())
                     .ok_or_else(|| {
-                        Error(format!(
-                            "{}: bone {} has no rigid matrix, nor do its parents",
-                            shape.name, bones[strongest].name
-                        ))
-                    })?;
+                    Error(format!(
+                        "{}: bone {} has no rigid matrix, nor do its parents",
+                        shape.name, bones[strongest].name
+                    ))
+                })?;
                 if bone != strongest {
                     report.warn(format!(
                         "{}: {} can't hold a rigid mesh; its vertices follow {}",
@@ -489,7 +497,7 @@ fn mesh_attributes(
             for (v, slot) in slots.iter_mut().enumerate() {
                 let mut merged: Vec<(usize, f32)> = Vec::new();
                 for &(b, w) in &mesh.influences[v] {
-                    let to = nearest_with(model, b, |x| bones[x].smooth_matrix.is_some())
+                    let to = nearest_with(skeleton, b, |x| bones[x].smooth_matrix.is_some())
                         .ok_or_else(|| {
                             Error(format!(
                                 "{}: {} has no smooth matrix, nor do its parents",
@@ -516,8 +524,9 @@ fn mesh_attributes(
                         "{}: vertices without weights follow {}",
                         shape.name, bones[shape.bone].name
                     ));
-                    let b = nearest_with(model, shape.bone, |x| bones[x].smooth_matrix.is_some())
-                        .unwrap_or(0);
+                    let b =
+                        nearest_with(skeleton, shape.bone, |x| bones[x].smooth_matrix.is_some())
+                            .unwrap_or(0);
                     merged.push((b, 1.0));
                 }
                 let total: f32 = merged.iter().map(|x| x.1).sum();
@@ -696,6 +705,7 @@ fn mesh_attributes(
 /// order.
 fn shape_geometry(
     model: &Model,
+    skeleton: &Skeleton,
     shape: &Shape,
     lods: &[Option<&SceneMesh>],
     world: &[Mat4],
@@ -714,7 +724,7 @@ fn shape_geometry(
             _ => current.0,
         };
         if i == 0 || !std::ptr::eq(mesh, current.0) {
-            let values = mesh_attributes(model, shape, mesh, world, report)?;
+            let values = mesh_attributes(model, skeleton, shape, mesh, world, report)?;
             for (name, v) in values {
                 attributes.entry(name).or_default().extend(v);
             }
@@ -906,7 +916,17 @@ fn same_as_game(
     model: &Model,
     shape: &Shape,
     g: &ShapeGeometry,
+    added_bones: usize,
 ) -> Result<std::result::Result<(), String>> {
+    // with bones added, the game's matrix indices past its smooth ones are those plus the bones added
+    let smooth = model.skeleton.smooth_count as u32;
+    let moved = |i: u32| {
+        if i >= smooth {
+            i + added_bones as u32
+        } else {
+            i
+        }
+    };
     let vb = &model.vertex_buffers[shape.vertex_buffer];
     let original = ShapeGeometry::from_shape(model, shape)?;
     let (Some(lod_o), Some(lod_n)) = (original.lods.first(), g.lods.first()) else {
@@ -935,7 +955,7 @@ fn same_as_game(
         a.format.decode(&buf)
     };
     let skin_count = shape.skin_count as usize;
-    let skin = |geo: &ShapeGeometry, v: usize| -> Option<Vec<(u32, u32)>> {
+    let skin = |geo: &ShapeGeometry, v: usize, game: bool| -> Option<Vec<(u32, u32)>> {
         let mut pairs = Vec::new();
         for (set, (i, w)) in [("_i0", "_w0"), ("_i1", "_w1")].into_iter().enumerate() {
             let Some(idx) = geo.attributes.get(i) else {
@@ -952,7 +972,8 @@ fn same_as_game(
                     None => 0,
                 };
                 if weight > 0 {
-                    pairs.push((idx[c].round() as u32, weight));
+                    let index = idx[c].round() as u32;
+                    pairs.push((if game { moved(index) } else { index }, weight));
                 }
             }
         }
@@ -993,7 +1014,7 @@ fn same_as_game(
                 }
             }
         }
-        if skin(&original, vo)? != skin(g, vn)? {
+        if skin(&original, vo, true)? != skin(g, vn, false)? {
             return Some("skinning");
         }
         None
@@ -1060,20 +1081,172 @@ fn removed_shape(model: &Model, shape: &Shape) -> ShapeGeometry {
 
 /// The geometry of every shape of `model` from the scene: replaced where the scene has a mesh of its name,
 /// removed where it doesn't.
-pub fn geometry_from_gltf(
+/// What the scene makes of the model: each shape's new geometry (by index), the bones added to the skeleton, and the
+/// shapes whose list of skin bones changes ([`bfres_write::write_edited`] takes all three).
+#[derive(Debug, Default)]
+pub struct SceneGeometry {
+    pub shapes: BTreeMap<usize, ShapeGeometry>,
+    pub new_bones: Vec<NewBone>,
+    pub skin_bones: BTreeMap<usize, Vec<u16>>,
+    pub report: GeometryReport,
+}
+
+/// The scene's bones the game's skeleton doesn't have (the joints of its meshes' skins, and the joints above them
+/// up to a bone of the game's), each a new bone: its parent the nearest bone above it (the game's root for one
+/// with none), its place relative to that as the scene has it (`world`: the nodes' places, at the game's size).
+/// Parents come before their children.
+fn new_bones_of(
     model: &Model,
     gltf: &Gltf,
-) -> Result<(BTreeMap<usize, ShapeGeometry>, GeometryReport)> {
+    world: &[Mat4],
+    report: &mut GeometryReport,
+) -> Result<Vec<NewBone>> {
+    let game: BTreeMap<String, usize> = model
+        .skeleton
+        .bones
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.name.clone(), i))
+        .collect();
+    let parents = gltf.parents();
+    let mut joints = BTreeSet::new();
+    for node in gltf.mesh_nodes() {
+        if let Some(s) = node.skin {
+            joints.extend(gltf.skin(s)?.0);
+        }
+    }
+    // the joints that aren't game bones, each with its depth below the nearest joint that is (or the top)
+    let depth = |j: usize| {
+        let mut d = 0;
+        let mut n = parents.get(j).copied().flatten();
+        while let Some(k) = n {
+            if game.contains_key(&gltf.node_name(k)) || !joints.contains(&k) || d > parents.len() {
+                break;
+            }
+            d += 1;
+            n = parents.get(k).copied().flatten();
+        }
+        d
+    };
+    let mut new_nodes: Vec<usize> = joints
+        .iter()
+        .copied()
+        .filter(|&j| !game.contains_key(&gltf.node_name(j)))
+        .collect();
+    new_nodes.sort_by_key(|&j| (depth(j), j));
+    let euler = model.skeleton.euler_rotations();
+    let count = model.skeleton.bones.len();
+    let mut index_of_node: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut out: Vec<NewBone> = Vec::new();
+    for &j in &new_nodes {
+        let name = gltf.node_name(j);
+        if name.is_empty() || name.len() > 255 {
+            report.warn(format!(
+                "a joint named \"{name}\": not a name a bone can have; its weights went to the bone above it"
+            ));
+            continue;
+        }
+        // its parent: the nearest joint above it that is a bone (the game's, or a new one before it)
+        let mut parent: Option<(usize, usize)> = None;
+        let mut n = parents.get(j).copied().flatten();
+        while let Some(k) = n {
+            if let Some(&b) = game.get(&gltf.node_name(k)) {
+                parent = Some((b, k));
+                break;
+            }
+            if let Some(&b) = index_of_node.get(&k) {
+                parent = Some((b, k));
+                break;
+            }
+            n = parents.get(k).copied().flatten();
+        }
+        let (parent, parent_world) = match parent {
+            Some((b, k)) => (b, world[k]),
+            // a bone at the top of the armature: on the game's root, as the scene has the two
+            None => {
+                let root = game
+                    .iter()
+                    .find(|(n, _)| model.skeleton.bones[game[*n]].parent.is_none())
+                    .map(|(_, &b)| b)
+                    .unwrap_or(0);
+                let root_node = (0..world.len())
+                    .find(|&k| gltf.node_name(k) == model.skeleton.bones[root].name);
+                (root, root_node.map_or(math::IDENTITY, |k| world[k]))
+            }
+        };
+        let local = math::mul(
+            &math::inverse_affine(&parent_world)
+                .ok_or_else(|| Error(format!("{name}: its parent's place can't be undone")))?,
+            &world[j],
+        );
+        let (translation, q, scale) = math::decompose(&local);
+        let rotation = if euler {
+            let e = math::euler_xyz_near(q, [0.0; 3]);
+            [e[0], e[1], e[2], 1.0]
+        } else {
+            q
+        };
+        index_of_node.insert(j, count + out.len());
+        report.added_bones.push(format!(
+            "{name} on {}",
+            if parent < count {
+                model.skeleton.bones[parent].name.clone()
+            } else {
+                out[parent - count].name.clone()
+            }
+        ));
+        out.push(NewBone {
+            name,
+            parent,
+            scale,
+            rotation,
+            translation,
+        });
+    }
+    Ok(out)
+}
+
+/// The bones a shape's vertices are weighted to (ascending), through `skeleton`'s matrix list: what a shape's list
+/// of skin bones is in every one of the game's.
+fn weighted_bones(skeleton: &Skeleton, shape: &Shape, g: &ShapeGeometry) -> Vec<u16> {
+    let mut out = BTreeSet::new();
+    let skin = shape.skin_count as usize;
+    let sets = [
+        (g.attributes.get("_i0"), g.attributes.get("_w0")),
+        (g.attributes.get("_i1"), g.attributes.get("_w1")),
+    ];
+    for v in 0..g.vertex_count as usize {
+        for k in 0..skin {
+            let (Some(i), w) = sets[k / 4] else {
+                continue;
+            };
+            let weight = if skin == 1 {
+                1.0
+            } else {
+                w.map_or(0.0, |w| w[v][k % 4])
+            };
+            if weight > 0.0
+                && let Some(&b) = skeleton.matrix_to_bone.get(i[v][k % 4] as usize)
+            {
+                out.insert(b);
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+pub fn geometry_from_gltf(model: &Model, gltf: &Gltf) -> Result<SceneGeometry> {
     let mut report = GeometryReport::default();
     let (_, game_world) = bone_matrices(model)?;
     let mut scene_world = gltf.world_matrices()?;
-    let bones: BTreeMap<&str, usize> = model
+    let game_bones: BTreeMap<&str, usize> = model
         .skeleton
         .bones
         .iter()
         .enumerate()
         .map(|(i, b)| (b.name.as_str(), i))
         .collect();
+    let bones = &game_bones;
     // A scene at another size than the game's is taken to the game's size first.
     let pairs: Vec<BonePlaces> = scene_world
         .iter()
@@ -1097,7 +1270,20 @@ pub fn geometry_from_gltf(
         report.scene_to_game = Some(m);
     }
     // Per shape, the scene's mesh of each LOD (0: the mesh itself).
-    moved_bones(model, gltf, &game_world, &scene_world, &bones, &mut report);
+    moved_bones(model, gltf, &game_world, &scene_world, bones, &mut report);
+    // the scene's new bones, added to the skeleton: what the meshes' vertices refer to
+    let new_bones = new_bones_of(model, gltf, &scene_world, &mut report)?;
+    let skeleton = if new_bones.is_empty() {
+        model.skeleton.clone()
+    } else {
+        bfres_bones::with_bones(&model.skeleton, &new_bones).context("the scene's new bones")?
+    };
+    let bones: BTreeMap<&str, usize> = skeleton
+        .bones
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.name.as_str(), i))
+        .collect();
     let mut by_shape: BTreeMap<usize, Vec<Option<SceneMesh>>> = BTreeMap::new();
     for node in gltf.mesh_nodes() {
         let (base, lod) = lod_of(&node.name);
@@ -1160,8 +1346,8 @@ pub fn geometry_from_gltf(
             Some(_) => {
                 // (warnings about a mesh that turns out unchanged would only be noise)
                 let mut own = GeometryReport::default();
-                let g = shape_geometry(model, shape, &lods, &game_world, &mut own)?;
-                let same = same_as_game(model, shape, &g)?;
+                let g = shape_geometry(model, &skeleton, shape, &lods, &game_world, &mut own)?;
+                let same = same_as_game(model, shape, &g, new_bones.len())?;
                 if std::env::var_os("MODSTUDIO_DEBUG_KEEP").is_some() {
                     eprintln!("{}: {:?}", shape.name, same);
                 }
@@ -1198,7 +1384,24 @@ pub fn geometry_from_gltf(
             out.insert(si, stored);
         }
     }
-    Ok((out, report))
+    // a replaced skinned shape lists the bones its vertices are weighted to (only where that isn't the game's list)
+    let mut skin_bones = BTreeMap::new();
+    for (&si, g) in &out {
+        let shape = &model.shapes[si];
+        if shape.skin_count == 0 || g.vertex_count == 0 {
+            continue;
+        }
+        let list = weighted_bones(&skeleton, shape, g);
+        if !list.is_empty() && list != shape.skin_bone_indices {
+            skin_bones.insert(si, list);
+        }
+    }
+    Ok(SceneGeometry {
+        shapes: out,
+        new_bones,
+        skin_bones,
+        report,
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -1224,8 +1427,11 @@ pub fn replace_model(
         .first()
         .ok_or_else(|| Error("no model in the file".into()))?;
     let gltf = Gltf::parse(&romfs::read_file(glb)?).context(glb.display())?;
-    let (shapes, report) = geometry_from_gltf(model, &gltf)?;
-    let data = bfres_write::write(&bfres, &shapes).context("writing the model")?;
+    let scene = geometry_from_gltf(model, &gltf)?;
+    let data =
+        bfres_write::write_edited(&bfres, &scene.shapes, &scene.new_bones, &scene.skin_bones)
+            .context("writing the model")?;
+    let report = scene.report;
     // Read back what was written: it must parse.
     Bfres::parse(&data, Some(&loaded.strings)).context("reading the written model back")?;
     let out = out_romfs.join(model_path);

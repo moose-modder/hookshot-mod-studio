@@ -311,9 +311,13 @@ it; `modstudio settings --hookshot <Hookshot folder> --workspace <dir>` too.
   To choose yourself: `"prep": {"join": {"<new mesh>": "<game mesh>"}}` in the project file. The new mesh
   keeps its bone weights (up to the target's skin count), and is drawn with the target's material.
 - A mesh may use any number of materials: the game gets one, its own, with the others baked into its textures.
-- **Bones.** The game's skeleton is kept as it is:
-  - A **new bone** (e.g. for an antenna): the game has no animation for it, so in game it would only follow its
-    parent. Weights on it go to its nearest parent the game has, and the log says so; it looks the same.
+- **Bones.** The game's bones are kept as they are; new ones are added:
+  - A **new bone** (e.g. for an antenna; added in edit mode, parented, weighted): the build adds it to the
+    skeleton, on its parent (the nearest bone above it; the game's root for one without), at its place relative to
+    that parent as the scene has it, and the meshes keep their weights on it (the build lists the bones added).
+    No animation of the game's moves it, so in game it follows its parent (as the game's own bones do that its
+    animations don't know). Rigid meshes (one bone per vertex: eyes) can't go on a new bone; their weights go to the
+    nearest parent that can hold one.
   - A **moved bone** (in edit mode): the game's animations set each animated bone's own position (the
     townsman's animations hold the rest positions of most of his bones, `examples/anim_probe.rs`), so it would
     be put back. The mesh stays as modelled and bends around the bone's place in the game; the log lists moved

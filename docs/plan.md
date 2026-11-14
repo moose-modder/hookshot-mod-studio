@@ -482,10 +482,71 @@ the name in the string table, the bone array grown); fewer keys than one a frame
     part is the hardest piece (particle mesh, constraints, operators): most likely an existing part of the same
     kind (a hair strand) copied and fitted to the new bones, its particle mesh a mesh in the scene.
 - Moving existing bones would mean editing every animation that sets them: not planned (reshape the mesh instead).
-- Work: the skeleton written with added bones (bone list, smooth and rigid matrix lists, inverse matrices, the
-  meshes' skin indices). The writer edits the file's front part in place today; it would lay it out again. To find
-  out first: where bone names live and how a new name is added (names in 6,406 models are IDs into the shared
-  `ExternalBinaryString.bfres`, phase 1), and what the 55 `*_Animation.Skeleton.bfres` files are for.
+
+**Found (2026-11-14), `examples/skeleton_probe.rs`, `dict_check.rs`, `rigid_probe.rs`:**
+- **Bone names are strings in the file**, in all 6,464 models, the 6,406 that keep other names as IDs into the
+  shared `ExternalBinaryString.bfres` too. A new bone's name is a new string in the file, its pointer listed in the
+  relocation table as the others' are (the table lists null pointers too). Nothing shared changes.
+- **The skeleton** (`FSKL`): the bone array (0x58 a bone: name, user data pointers, index, parent, smooth and rigid
+  matrix indices, billboard index, flags, scale, rotation, translation), the matrix list (smooth matrices, then rigid
+  ones), the inverse bind matrices (one per smooth matrix, 3x4), and the name dictionary lie one after another,
+  before the string table; the GPU data follows on the next 4 KB. Added bones mean new arrays after the string table
+  (the GPU data moved down, as `bfres_write` already moves it), the skeleton's pointers and counts patched.
+- **The name dictionary** (a Patricia trie over the names' bits, counted from the end of a name) can be built:
+  `modstudio-formats::res_dict`, ported from LegacySwitchLibraries, builds all 7,748 of the game's (every model's bones,
+  every animation file's animations) exactly as the game has them, and looks up all 74,811 names through them.
+- **Vertices index the matrix list**, smooth matrices first. New bones' smooth matrices go after the game's smooth
+  ones, so the rigid ones move: in 446 models (characters' eyes; child Link's head band too) the rigidly skinned
+  shapes' vertex indices past the smooth part go up by the number of new bones, and so do the bones' rigid indices.
+- **Shapes list the bones they're skinned to** (with a bounding sphere each). A shape weighted to a new bone gets it
+  in its list. (The build today doesn't extend a replaced shape's list when its weights move to other game bones.)
+- **Limits:** the game's largest palette is Ganon's, 729 matrices (757 bones); adult Link has 281.
+- **`*_Animation.Skeleton` files** (55): models named `Skeleton` without meshes, beside an animation resource of the
+  same name. Most are copies of their model's skeleton, bone for bone (the player's two `_Demo` ones among them);
+  the others are a family's skeleton (`Npc_Hylia_MN`, `_WF`, Gorons) whose models have more bones besides (up to 78
+  more): models with bones their animations don't know are the game's own case.
+- **Animations bind by name** (step 2): a bone no animation moves stays at rest on its parent.
+
+**Plan:** (1) the model written with added bones (bone records, strings, matrix list, inverse bind matrices,
+dictionary, counts, rigid indices, shapes' lists; checked by reading back and on every model with bones added);
+(2) the build making a scene's new bones into bones instead of handing their weights to a parent; (3) in game, a mesh
+on a new bone; (4) animations moving new bones (bone animations added to animation files, the `_Demo` skeletons
+too); (5) cloth on new bones.
+
+**Done (2026-11-14): (1) and (2).**
+- `modstudio-formats::bfres_bones::with_bones`: the skeleton with bones after its own; each a smooth matrix after the
+  game's smooth ones (the rigid ones, and the bones' rigid indices, move up), an inverse bind matrix from its rest
+  place (the same computation reproduces all 37,781 of the game's smooth bones' to 1e-5, `examples/inverse_check.rs`),
+  flags: visible, the rotation mode and bit 23 from its parent, and bits 24 to 27 from its own transform (scale
+  uniform, scale volume one, no rotation, no translation: exactly so on all 51,936 game bones; bits 28 to 31 are 0
+  on them, `examples/bone_flags_check.rs`).
+- `bfres_write::write_edited`: with bones added, the names (strings: a u16 length, the bytes, a zero), the bone array
+  (the game's records as they are, then the new ones), the matrix list, the inverse bind matrices and the dictionary
+  go after the file's data (the first relocation section grows over them); the GPU data starts on the next 4 KiB
+  after (its start pointer, the only pointer into it, follows; the memory pool and the table after it move as
+  before); the rigidly skinned shapes' vertices get their matrix indices moved up; the relocation table is written
+  again with entries for every new pointer. Shapes given a new list of skin bones get it after the data too, with a
+  bounding sphere per bone. A skin index attribute that can't hold an index (a new bone's on adult Link is 279; 8-bit
+  formats hold 255) is widened to the 16-bit format the game's own models use past 255 (`16_UInt`, `16_16_UInt`,
+  `16_16_16_16_UInt`), its buffer packed again (each attribute on 4 bytes) and the stride patched. Checked on every
+  model the writer takes (5,627; skeleton-only and meshlet models it doesn't), two bones added to each
+  (`examples/bones_add.rs`): every pointer inside the file, read back with the bones, the dictionary the one `res_dict`
+  builds, every name found, rigid vertices on the same bones as before (446 models), every other buffer byte for byte
+  the game's, written again unchanged.
+- A shape's list of skin bones is exactly the bones its vertices are weighted to, ascending, in all 2,860 of the
+  game's skinned shapes (`examples/skin_list_check.rs`): a replaced skinned shape gets that list where it isn't the
+  game's (with new bones, or weights moved to other bones, which the build left unlisted before).
+- `replace`: the skins' joints the game's skeleton hasn't are added as bones (parent: the nearest bone above; place:
+  relative to it as the scene has it; Euler angles for the game's skeletons), their weights kept; the build lists
+  them ("Bones added"). Through Blender, adult Link's feather put on a new bone under `Ph_Feather_1`: the build's
+  check finds the result like the scene at rest and in the test pose. (First the 8-bit indices wrapped the new bone's
+  279 onto another bone; the check caught it.)
+
+**Done (2026-11-14): (3).** In game (Longshot): adult Link's feather moved into his right hand, four times larger,
+on a new bone under `Wrist_R` (its skin index 279, so the 16-bit format): it stays in his hand as he moves. The
+game takes a skeleton with bones after its own, their inverse bind matrices, and the widened skin indices.
+
+**Next:** (4) animations moving new bones.
 
 ## Risks and how they are contained
 

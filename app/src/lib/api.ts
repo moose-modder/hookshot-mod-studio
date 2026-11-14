@@ -134,6 +134,8 @@ export interface BuildReport {
   cloth?: string[];
   /** What changed in the game's animations, a line each (absent: none). */
   animations?: string[];
+  /** Bones added to the skeleton: "<name> on <parent>" (absent: none). */
+  added_bones?: string[];
   check?: CheckSummary | null;
   files: string[];
   installed?: string | null;

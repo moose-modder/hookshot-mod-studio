@@ -74,6 +74,9 @@ pub struct BuildReport {
     /// What changed in the game's animations (the scene's game animation actions), a line each; empty: none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub animations: Vec<String>,
+    /// Bones added to the skeleton (the scene's bones the game's hasn't): "<name> on <parent>".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added_bones: Vec<String>,
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check: Option<CheckSummary>,
@@ -270,6 +273,13 @@ fn run(
             s.name, s.status, s.vertices, s.triangles
         ));
     }
+    if !summary.geometry.added_bones.is_empty() {
+        progress.line(format!(
+            "bones added to the skeleton: {}",
+            summary.geometry.added_bones.join(", ")
+        ));
+    }
+    report.added_bones.clone_from(&summary.geometry.added_bones);
     report
         .warnings
         .extend(summary.geometry.warnings.iter().cloned());

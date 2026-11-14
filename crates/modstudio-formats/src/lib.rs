@@ -8,9 +8,11 @@
 //! - [`bfres`]: models: skeleton, shapes with their LOD meshes, vertex and index buffers, materials
 //! - [`bfres_anim`]: skeletal animations (`*.anim.bfres`), read
 //! - [`bfres_anim_write`]: an animation file with some bones' curves replaced
+//! - [`bfres_bones`]: bones added to a model's skeleton
 //! - [`bfres_write`]: a model written back with new geometry for some shapes
 //! - [`byml`]: parameter files (`*.bgyml`: an actor pack's model info and physics controllers), read
 //! - [`aamp`]: parameter archives (the cloth files' lists of meshes and colliders), read and written
+//! - [`res_dict`]: the files' name dictionaries, built for a list of names
 //! - [`phive`]: the cloth files' wrapper around a Havok tagfile (read with the vendored `havok-formats`)
 //!
 //! The byte-level layouts are ported from Syroot's NintenTools libraries (MIT) as maintained in
@@ -22,6 +24,7 @@ mod bcn;
 pub mod bfres;
 pub mod bfres_anim;
 pub mod bfres_anim_write;
+pub mod bfres_bones;
 pub mod bfres_write;
 pub mod bntx;
 pub mod bntx_write;
@@ -31,6 +34,7 @@ mod error;
 pub mod image;
 mod math_srgb;
 pub mod phive;
+pub mod res_dict;
 pub mod restbl;
 pub mod romfs;
 pub mod sarc;

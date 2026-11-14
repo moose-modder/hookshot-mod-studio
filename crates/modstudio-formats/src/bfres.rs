@@ -171,7 +171,7 @@ pub struct Model<'a> {
     pub materials: Vec<Material>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Skeleton {
     pub at: usize,
     pub flags: u32,

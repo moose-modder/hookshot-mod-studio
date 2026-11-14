@@ -114,7 +114,8 @@ fn an_unchanged_mesh_keeps_the_game_shape() {
     let model = &bfres.models[0];
     let (glb, _, _) = model_glb(model, &[]).unwrap();
     let gltf = gltf::Gltf::parse(&glb).unwrap();
-    let (shapes, report) = geometry_from_gltf(model, &gltf).unwrap();
+    let scene = geometry_from_gltf(model, &gltf).unwrap();
+    let (shapes, report) = (scene.shapes, scene.report);
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     assert_eq!(report.shapes[0].status, "kept");
     assert!(shapes.is_empty());
@@ -145,7 +146,8 @@ fn export_then_replace_gives_the_same_geometry() {
     bin[at..at + 4].copy_from_slice(&x.to_le_bytes());
     let moved = glb_with(&json, &bin);
     let gltf = gltf::Gltf::parse(&moved).unwrap();
-    let (shapes, report) = geometry_from_gltf(model, &gltf).unwrap();
+    let scene = geometry_from_gltf(model, &gltf).unwrap();
+    let (shapes, report) = (scene.shapes, scene.report);
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     assert_eq!(report.shapes[0].status, "replaced");
 
@@ -204,7 +206,8 @@ fn data_in_vertex_colours_survives() {
     );
 
     // As exported: the shape is the game's own.
-    let (shapes, report) = geometry_from_gltf(model, &gltf::Gltf::parse(&glb).unwrap()).unwrap();
+    let scene = geometry_from_gltf(model, &gltf::Gltf::parse(&glb).unwrap()).unwrap();
+    let (shapes, report) = (scene.shapes, scene.report);
     assert_eq!(report.shapes[0].status, "kept");
     assert!(shapes.is_empty());
 
@@ -218,7 +221,8 @@ fn data_in_vertex_colours_survives() {
     let x = f32::from_le_bytes(bin[at..at + 4].try_into().unwrap()) + 0.25;
     bin[at..at + 4].copy_from_slice(&x.to_le_bytes());
     let moved = glb_with(&json, &bin);
-    let (shapes, report) = geometry_from_gltf(model, &gltf::Gltf::parse(&moved).unwrap()).unwrap();
+    let scene = geometry_from_gltf(model, &gltf::Gltf::parse(&moved).unwrap()).unwrap();
+    let (shapes, report) = (scene.shapes, scene.report);
     assert_eq!(report.shapes[0].status, "replaced");
     let out = write(&bfres, &shapes).unwrap();
     let back = Bfres::parse(&out, None).unwrap();
@@ -233,7 +237,8 @@ fn data_in_vertex_colours_survives() {
         .remove("_C0");
     json["meshes"][0]["primitives"][0]["attributes"]["COLOR_0"] = c0;
     let old = glb_with(&json, &bin);
-    let (shapes, report) = geometry_from_gltf(model, &gltf::Gltf::parse(&old).unwrap()).unwrap();
+    let scene = geometry_from_gltf(model, &gltf::Gltf::parse(&old).unwrap()).unwrap();
+    let (shapes, report) = (scene.shapes, scene.report);
     assert_eq!(report.shapes[0].status, "replaced");
     assert!(shapes[&0].attributes.contains_key("_c0"));
 }
@@ -259,7 +264,8 @@ fn a_lod_the_shape_lacks_is_left_out() {
         .unwrap()
         .push(serde_json::json!(index));
     let gltf = gltf::Gltf::parse(&glb_with_json(&glb, &json)).unwrap();
-    let (_, report) = geometry_from_gltf(model, &gltf).unwrap();
+    let scene = geometry_from_gltf(model, &gltf).unwrap();
+    let (_, report) = (scene.shapes, scene.report);
     assert_eq!(report.shapes[0].status, "kept");
     assert!(
         report
@@ -290,7 +296,8 @@ fn a_moved_bone_is_reported() {
     let y = t[1].as_f64().unwrap_or(0.0) + 0.05;
     json["nodes"][arm]["translation"] = serde_json::json!([t[0], y, t[2]]);
     let gltf = gltf::Gltf::parse(&glb_with_json(&glb, &json)).unwrap();
-    let (_, report) = geometry_from_gltf(model, &gltf).unwrap();
+    let scene = geometry_from_gltf(model, &gltf).unwrap();
+    let (_, report) = (scene.shapes, scene.report);
     assert!(
         report
             .warnings
@@ -315,7 +322,8 @@ fn a_shape_missing_from_the_scene_is_removed() {
     let _ = bin;
     let renamed = glb_with_json(&glb, &json);
     let gltf = gltf::Gltf::parse(&renamed).unwrap();
-    let (shapes, report) = geometry_from_gltf(model, &gltf).unwrap();
+    let scene = geometry_from_gltf(model, &gltf).unwrap();
+    let (shapes, report) = (scene.shapes, scene.report);
     assert_eq!(report.shapes[0].status, "removed");
     assert_eq!(shapes[&0].vertex_count, 1);
     assert!(report.warnings.iter().any(|w| w.contains("Something_Else")));

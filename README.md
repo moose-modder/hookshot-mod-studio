@@ -45,6 +45,8 @@ projects, and Blender. Then:
   physics on, the cloth follows the animation. On a project's page, *Add to the scene* puts the one playing into the
   Blender scene as an action to edit; the build writes the bones you change into the game's animation file
   ([pipeline/README.md](pipeline/README.md), *Editing animations*).
+- **New bones**: bones added to the armature in Blender are added to the game's skeleton, with the meshes weighted
+  to them; they follow their parent in game.
 - **Installed mods**: Hookshot's mods folder, mods on and off, the shared size table. Hookshot reads its mods
   when it starts.
 

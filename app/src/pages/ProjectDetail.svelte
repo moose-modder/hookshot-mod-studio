@@ -351,6 +351,15 @@
             </div>
           {/if}
 
+          {#if report.added_bones?.length}
+            <div class="card pad">
+              <h3>Bones added</h3>
+              <ul class="warnings">
+                {#each report.added_bones as b, i (i)}<li>{b}</li>{/each}
+              </ul>
+            </div>
+          {/if}
+
           {#if report.animations?.length}
             <div class="card pad">
               <h3>Animations changed</h3>
