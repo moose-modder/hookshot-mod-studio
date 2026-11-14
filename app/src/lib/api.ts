@@ -159,6 +159,7 @@ export interface InstalledMod {
   files: number;
   models: string[];
   textures: number;
+  animations: number;
   own_size_table: boolean;
 }
 

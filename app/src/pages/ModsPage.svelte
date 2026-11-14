@@ -90,6 +90,7 @@
               {count(m.files, "file")}
               {#if m.models.length}· {m.models.map((p) => base(p).split(".")[1] ?? base(p)).join(", ")}{/if}
               {#if m.textures}· {count(m.textures, "texture")}{/if}
+              {#if m.animations}· {count(m.animations, "animation")}{/if}
             </div>
           </div>
           {#if m.own_size_table}

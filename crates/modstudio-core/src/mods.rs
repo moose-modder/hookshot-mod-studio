@@ -30,15 +30,38 @@ pub struct InstalledMod {
     pub folder: String,
     pub enabled: bool,
     pub files: usize,
-    /// Model files it replaces or adds (paths in the romfs).
+    /// Model files it replaces or adds (paths in the romfs); not animations or their skeletons.
     pub models: Vec<String>,
     pub textures: usize,
+    /// Animation files (`Model/*.anim.bfres`) it replaces or adds.
+    pub animations: usize,
     /// It has its own size table; the shared one replaces it in game and takes over its larger entries.
     pub own_size_table: bool,
 }
 
 fn is_off(folder: &str) -> bool {
     folder.starts_with(['-', '_'])
+}
+
+/// What a file in `Model/` is (`path` in the romfs, with '/'): an animation (`X.anim.bfres`), an animation's
+/// skeleton (`X_Animation.Skeleton.bfres`), a model, or none of them.
+#[derive(Debug, PartialEq, Eq)]
+enum ModelFile {
+    Model,
+    Animation,
+    Skeleton,
+}
+
+fn model_file(path: &str) -> Option<ModelFile> {
+    let path = path.to_ascii_lowercase();
+    let stem = path.strip_prefix("model/")?.strip_suffix(".bfres.zs")?;
+    Some(if stem.ends_with(".anim") {
+        ModelFile::Animation
+    } else if stem.ends_with(".skeleton") {
+        ModelFile::Skeleton
+    } else {
+        ModelFile::Model
+    })
 }
 
 /// Every mod in the mods folder (folders with a `romfs`), sorted as Hookshot sorts them; not the size table's.
@@ -61,12 +84,16 @@ pub fn list(mods_dir: &Path) -> Result<Vec<InstalledMod>> {
             models: files
                 .iter()
                 .map(slash)
-                .filter(|p| p.starts_with("Model/") && p.ends_with(".bfres.zs"))
+                .filter(|p| model_file(p) == Some(ModelFile::Model))
                 .collect(),
             textures: files
                 .iter()
                 .map(slash)
                 .filter(|p| p.starts_with("Tex/"))
+                .count(),
+            animations: files
+                .iter()
+                .filter(|p| model_file(&slash(p)) == Some(ModelFile::Animation))
                 .count(),
             own_size_table: files.iter().any(|p| is_size_table(p)),
             files: files.len(),
@@ -168,6 +195,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("modstudio-mods-{}", std::process::id()));
         for (folder, file) in [
             ("BMod", "Model/X.X.bfres.zs"),
+            ("BMod", "Model/Dm_Scene_Player_Adult.anim.bfres.zs"),
+            ("BMod", "Model/X__Adult_01_Animation.anim.bfres.zs"),
+            ("BMod", "Model/X__Adult_01_Animation.Skeleton.bfres.zs"),
             ("-AMod", "Tex/T.bntx.zs"),
             (TABLE_MOD, "System/Resource/R.rsizetable.zs"),
         ] {
@@ -180,7 +210,9 @@ mod tests {
         let folders: Vec<&str> = mods.iter().map(|m| m.folder.as_str()).collect();
         assert_eq!(folders, ["-AMod", "BMod"]);
         assert!(!mods[0].enabled && mods[0].name == "AMod" && mods[0].textures == 1);
+        // animations and their skeletons aren't models
         assert_eq!(mods[1].models, ["Model/X.X.bfres.zs"]);
+        assert_eq!((mods[1].animations, mods[1].files), (2, 4));
         assert!(size_table(&dir).is_some());
 
         assert_eq!(set_enabled(&dir, "-AMod", true).unwrap(), "AMod");

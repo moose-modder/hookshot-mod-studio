@@ -461,11 +461,14 @@ fn mods_command(args: &Args) -> Result<(), Failure> {
     }
     println!("\nMods in {}:", s.install_mods.display());
     for m in mods::list(&s.install_mods)? {
-        let models = if m.models.is_empty() {
+        let mut models = if m.models.is_empty() {
             String::new()
         } else {
             format!(", models {}", m.models.join(", "))
         };
+        if m.animations > 0 {
+            models.push_str(&format!(", {} animation(s)", m.animations));
+        }
         println!(
             "  [{}] {:30} {} file(s){models}",
             if m.enabled { "on " } else { "off" },
