@@ -245,6 +245,16 @@ fn model_survey() {
                     if all { "all" } else { "some" }
                 ));
             }
+            // Meshlet shapes: every LOD decodes (the reader checks each meshlet's bits and indices).
+            for sh in m.shapes.iter().filter(|sh| sh.is_meshlet()) {
+                let ms = modstudio_formats::meshlet::MeshletShape::read(sh)
+                    .map_err(|e| format!("{}: {e}", m.name))?;
+                for lod in 0..ms.lods.len() {
+                    ms.geometry(lod)
+                        .map_err(|e| format!("{} LOD {lod}: {e}", m.name))?;
+                }
+                s.push(format!("meshlet shape, buffer flags 0x{:x}", ms.flags));
+            }
             for sh in &m.shapes {
                 s.push(format!(
                     "shape flags 0x{:x} skin {} keys {}",

@@ -25,7 +25,7 @@ pub struct Preview {
     #[serde(skip)]
     pub glb: Vec<u8>,
     pub meshes: usize,
-    /// Shapes left out (meshlets), with the reason.
+    /// Shapes left out, with the reason.
     pub skipped: Vec<String>,
     pub missing_textures: Vec<String>,
 }

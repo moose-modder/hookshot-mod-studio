@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use modstudio_formats::bfres::{Bfres, ExternalStrings, Model, PRIMITIVE_TRIANGLES, Shape};
 use modstudio_formats::bntx::Bntx;
+use modstudio_formats::meshlet::{self, MeshletShape};
 use modstudio_formats::romfs::{self, Romfs};
 use modstudio_formats::zs::Decoder;
 use serde::Serialize;
@@ -61,7 +62,7 @@ pub struct MeshInfo {
     pub triangles: u32,
     /// Triangles of each LOD (the build makes lower LODs of an edited mesh in these proportions).
     pub lod_triangles: Vec<u32>,
-    /// Stored as meshlets, which can't be read or replaced yet.
+    /// Stored as meshlets: exported and previewed, not replaced yet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub meshlet: bool,
     pub attributes: Vec<AttributeInfo>,
@@ -186,6 +187,48 @@ pub fn inspect(romfs: &Romfs, decoder: &mut Decoder, bfres: &Bfres) -> Result<In
 
 fn mesh_info(model: &Model, shape: &Shape) -> MeshInfo {
     let vb = &model.vertex_buffers[shape.vertex_buffer];
+    if let Some(ms) = shape.meshlet.and_then(|_| MeshletShape::read(shape).ok()) {
+        let lod = |k: usize| &ms.meshlets[ms.lods[k].clone()];
+        let lod_triangles: Vec<u32> = (0..ms.lods.len())
+            .map(|k| lod(k).iter().map(|m| m.triangle_count as u32).sum())
+            .collect();
+        let first = ms.lods.first().and_then(|r| ms.meshlets.get(r.start));
+        let mut attributes = vec![("_p0", "meshlet position"), ("_n0", "meshlet normal")];
+        if ms.flags & meshlet::flags::TANGENTS != 0 {
+            attributes.push(("_t0", "meshlet tangent"));
+        }
+        let colours: Vec<String> = first.map_or(Vec::new(), |m| {
+            m.colour_sets
+                .iter()
+                .map(|c| format!("_c{}", c.set))
+                .collect()
+        });
+        let uvs: Vec<String> = (0..first.map_or(0, |m| m.uv_sets.len()))
+            .map(|k| format!("_u{k}"))
+            .collect();
+        return MeshInfo {
+            name: shape.name.clone(),
+            material: model.materials[shape.material].name.clone(),
+            vertices: (0..ms.lods.len())
+                .map(|k| lod(k).iter().map(|m| m.vertex_count as u32).sum::<u32>())
+                .sum(),
+            skin_count: shape.skin_count,
+            lods: ms.lods.len(),
+            triangles: lod_triangles.first().copied().unwrap_or(0),
+            lod_triangles,
+            meshlet: true,
+            attributes: attributes
+                .into_iter()
+                .map(|(n, f)| (n.to_owned(), f))
+                .chain(colours.into_iter().map(|n| (n, "meshlet colour")))
+                .chain(uvs.into_iter().map(|n| (n, "meshlet uv")))
+                .map(|(name, format)| AttributeInfo {
+                    name,
+                    format: format.to_owned(),
+                })
+                .collect(),
+        };
+    }
     MeshInfo {
         name: shape.name.clone(),
         material: model.materials[shape.material].name.clone(),
@@ -334,6 +377,56 @@ struct ShapeGeometry {
     weights: Vec<f32>,
     sets: usize,
     indices: Vec<u32>,
+}
+
+/// A meshlet shape's LOD `lod` as [`ShapeGeometry`]: the meshlets' vertices with the ones they share made one,
+/// following the shape's bone.
+fn meshlet_geometry(shape: &Shape, world: &[Mat4], lod: usize) -> Result<ShapeGeometry> {
+    if shape.skin_count != 0 {
+        return Err(Error(format!(
+            "meshlets with {} influences a vertex",
+            shape.skin_count
+        )));
+    }
+    let bone = shape.bone;
+    let m = world
+        .get(bone)
+        .ok_or_else(|| Error(format!("bone {bone} out of range")))?;
+    let g = MeshletShape::read(shape)?.geometry(lod)?.welded();
+    let n = g.positions.len();
+    let mut joints = vec![0u16; n * 4];
+    let mut weights = vec![0f32; n * 4];
+    for v in 0..n {
+        joints[v * 4] = bone as u16;
+        weights[v * 4] = 1.0;
+    }
+    Ok(ShapeGeometry {
+        positions: g
+            .positions
+            .iter()
+            .flat_map(|&p| math::transform_point(m, p))
+            .collect(),
+        normals: Some(
+            g.normals
+                .iter()
+                .flat_map(|&d| math::transform_normal(m, d))
+                .collect(),
+        ),
+        uvs: g
+            .uvs
+            .iter()
+            .map(|uv| uv.iter().flat_map(|x| *x).collect())
+            .collect(),
+        colors: g
+            .colours
+            .iter()
+            .map(|(set, c)| (*set, c.iter().flat_map(|x| *x).collect()))
+            .collect(),
+        joints,
+        weights,
+        sets: 1,
+        indices: g.indices,
+    })
 }
 
 fn shape_geometry(
@@ -651,11 +744,16 @@ pub fn model_glb_lod(
     let mut skipped = Vec::new();
     let mut scene_nodes = vec![armature];
     for shape in &model.shapes {
-        if shape.is_meshlet() || shape.meshes.is_empty() {
-            skipped.push(format!("{}: stored as meshlets", shape.name));
+        if !shape.is_meshlet() && shape.meshes.is_empty() {
+            skipped.push(format!("{}: no meshes", shape.name));
             continue;
         }
-        let g = match shape_geometry(model, shape, &world, lod) {
+        let geometry = if shape.is_meshlet() {
+            meshlet_geometry(shape, &world, lod)
+        } else {
+            shape_geometry(model, shape, &world, lod)
+        };
+        let g = match geometry {
             Ok(g) => g,
             Err(e) => {
                 skipped.push(format!("{}: {e}", shape.name));

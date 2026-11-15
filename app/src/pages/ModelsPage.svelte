@@ -238,7 +238,7 @@
                   <tbody>
                     {#each info.meshes as mesh (mesh.name)}
                       <tr>
-                        <td>{mesh.name}{#if mesh.meshlet} <span class="pill warn">meshlets</span>{/if}</td>
+                        <td>{mesh.name}{#if mesh.meshlet} <span class="pill" title="Stored as meshlets: shown and exported; a build can't replace it yet">meshlets</span>{/if}</td>
                         <td>{mesh.material}</td>
                         <td class="num">{mesh.vertices.toLocaleString()}</td>
                         <td class="num">{mesh.triangles.toLocaleString()}</td>

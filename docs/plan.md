@@ -45,8 +45,8 @@ editing and baking happen in the user's Blender.
   and it shows right in game.
 - **Models:** all 6,464 parse (version 10.4). 6,406 store names as IDs into `Shader/ExternalBinaryString.bfres`
   (454 strings, all resolve). Up to 10 LODs per mesh, up to 8 influences per vertex (`_i1`/`_w1` beyond 4; Toolbox's
-  export drops those). 896 shapes are stored as meshlets, which neither Syroot nor this reader reads: nearly all
-  in `Land_` (683 models) and `Obj_` (88), 1 NPC, 3 mask variants; they are left out of exports and listed.
+  export drops those). 896 shapes are stored as meshlets, which Syroot doesn't read: nearly all in `Land_`
+  (683 models) and `Obj_` (88), 4 cubemaps, 1 NPC equipment model, 3 mask variants. `meshlet.rs` reads them (see the meshlets section below).
 - **Format codes** for vertex attributes and textures are the graphics API's `channels << 8 | type`. Read that way,
   the "16_SNorm" bone indices Syroot names (0x030a) are plain 16-bit unsigned integers (`AttribFormat`).
 - **Export checked in Blender** against Toolbox's FBX, mesh by mesh (vertex and face counts, bounds, rest and
@@ -693,8 +693,30 @@ need new states there; instead an action replaces one of the game's animations, 
   rest read back. Checked in game (2026-11-14): standing still, adult Link plays the new idle (rest pose, the head
   turning), looping at its own length.
 
-**Next:** models with meshlet shapes (read first: export and preview); new animation names (the sequence files)
-later.
+**Done (2026-11-14): meshlet shapes read (export and preview).** 896 shapes in 779 model files (683 map pieces,
+88 objects, 4 cubemaps, three NPC mask variants, one NPC equipment model) keep their geometry as meshlets: no meshes, an empty
+vertex buffer, and one GPU buffer of clusters of up to 64 vertices and 124 triangles, each packed at the precision it
+needs. No outside description of the format is known; it was worked out from the files (`meshlet.rs` has the
+layout).
+- The buffer: a header (the shape's box minimum, a position step of 0.0005, flags for tangents, two colour sets and
+  two more UV sets, the meshlets per LOD), a record per meshlet (40 bytes, 8 more per extra UV or colour set), then
+  each meshlet's data: its vertices bit-packed (least significant bit first), then 3 indices a triangle, each just
+  wide enough for the vertex count.
+- A vertex: x, y, z offsets from the meshlet's base (on the step grid, widths in the record); the normal, octahedral,
+  6 to 12 bits a component; with tangents, the bitangent sign and the tangent (octahedral, 8+8); each colour set's
+  varying channels (8-bit, or f32 where values leave 0..1; constant channels are in the record); each UV set's
+  offsets from its base, in steps of 2^(e-16) (e from 4 to 7 per component, in the record).
+- What the record also holds and the reader doesn't need: twice the meshlet's extent per axis (for culling), a normal
+  cone (axis and cutoff; most meshlets have none), 2 when there are tangents.
+- Checked on all 896 shapes (`examples/meshlet_decode.rs`, 535,636 meshlets, every LOD): every vertex bit accounted
+  for, indices in range, each meshlet's data right after the last, offsets from 0 up to the extent the record gives,
+  normals with the faces (mean cosine 0.85), the tangent sign with the UVs (99.3%; the rest degenerate), vertices two
+  meshlets share with the same UVs whether or not their UV scales differ. Exported through the glTF writer (shared
+  vertices made one): the Keaton mask, Deku Tree cave rocks and a Gerudo Valley cliff rendered in Blender with their
+  textures where they belong.
+
+**Next:** writing meshlet shapes (a build that replaces a map piece or object); new animation names (the sequence
+files) later.
 
 ## Risks and how they are contained
 

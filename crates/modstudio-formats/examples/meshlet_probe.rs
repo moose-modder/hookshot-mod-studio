@@ -79,6 +79,7 @@ fn main() {
         })
         .collect();
     files.sort();
+    let table = args.iter().any(|a| a == "--table");
     let mut by_prefix: BTreeMap<String, usize> = BTreeMap::new();
     let mut others = Vec::new();
     let mut mixed = 0;
@@ -106,6 +107,53 @@ fn main() {
                 meshlets.len(),
                 m.shapes.len()
             ));
+        }
+        if table {
+            // per meshlet shape: the record behind +0x18 (its words), the two per-LOD arrays, the buffer infos and
+            // offsets, and each buffer's first words
+            for s in &meshlets {
+                let rec = u64_at(&data, s.at + 0x18) as usize;
+                let words: Vec<String> = (0..0x48 / 4)
+                    .map(|k| format!("{:x}", u32_at(&data, rec + k * 4)))
+                    .collect();
+                let count = data[rec + 0x44] as usize;
+                let lods = data[rec + 0x45] as usize;
+                let arr = |at: usize, n: usize| -> Vec<u32> {
+                    if at == 0 || at + n * 4 > data.len() {
+                        return Vec::new();
+                    }
+                    (0..n).map(|k| u32_at(&data, at + k * 4)).collect()
+                };
+                let a20 = arr(u64_at(&data, rec + 0x20) as usize, lods.max(1) * 2);
+                let a28 = arr(u64_at(&data, rec + 0x28) as usize, lods.max(1) * 2);
+                let infos = u64_at(&data, rec + 0x10) as usize;
+                let offs = u64_at(&data, rec + 0x18) as usize;
+                let mut bufs = Vec::new();
+                for k in 0..count {
+                    let size = u32_at(&data, infos + k * 0x10);
+                    let off = u64_at(&data, offs + k * 8) as usize;
+                    let at = b.buffer_offset + off;
+                    let head: Vec<String> = (0..24)
+                        .map(|w| {
+                            if at + w * 4 + 4 <= data.len() {
+                                format!("{:x}", u32_at(&data, at + w * 4))
+                            } else {
+                                "-".into()
+                            }
+                        })
+                        .collect();
+                    bufs.push(format!(
+                        "buf{k} size {size:#x} at +{off:#x}: {}",
+                        head.join(" ")
+                    ));
+                }
+                println!(
+                    "TABLE {f} | {} | rec {} | count {count} lods {lods} | a20 {a20:?} | a28 {a28:?} | {}",
+                    s.name,
+                    words.join(" "),
+                    bufs.join(" || ")
+                );
+            }
         }
         if dumped < dump {
             dumped += 1;

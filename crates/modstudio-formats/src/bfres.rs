@@ -227,6 +227,39 @@ pub struct Shape<'a> {
     /// (Syroot reads one per mesh there, which runs into the next structure in this game's files).
     pub spheres: Vec<[f32; 4]>,
     pub radius_at: usize,
+    /// A shape stored as meshlets: its buffer (read with [`crate::meshlet`]).
+    pub meshlet: Option<MeshletBuffer<'a>>,
+}
+
+/// Where a meshlet shape's geometry is: the record at the pointer at shape + 0x18 names one GPU buffer (its size at
+/// the pointer at +0x10, its offset from the start of the GPU data at the pointer at +0x18), the buffer count (+0x44)
+/// and the LOD count (+0x45).
+#[derive(Debug, Clone, Copy)]
+pub struct MeshletBuffer<'a> {
+    pub data: &'a [u8],
+    /// Where the buffer starts in the file.
+    pub at: usize,
+    /// Where the shape's meshlet record is.
+    pub record_at: usize,
+    pub lods: usize,
+}
+
+impl<'a> MeshletBuffer<'a> {
+    fn locate(d: &'a [u8], shape_at: usize, buffer_offset: usize) -> Result<Self> {
+        let record_at = d.offset_at(shape_at + 0x18)?;
+        let buffers = d.u8_at(record_at + 0x44)?;
+        if buffers != 1 {
+            return Err(unsupported(format!("{buffers} meshlet buffers")));
+        }
+        let size = d.u32_at(d.offset_at(record_at + 0x10)?)? as usize;
+        let at = buffer_offset + d.offset_at(d.offset_at(record_at + 0x18)?)?;
+        Ok(MeshletBuffer {
+            data: d.slice_at(at, size)?,
+            at,
+            record_at,
+            lods: d.u8_at(record_at + 0x45)? as usize,
+        })
+    }
 }
 
 /// An axis-aligned box: centre and half size.
@@ -257,7 +290,7 @@ pub const PRIMITIVE_TRIANGLES: u32 = 0x03;
 pub mod shape_flags {
     pub const SUB_MESH_BOUNDARY_CONSISTENT: u32 = 1 << 1;
     pub const HAS_VERTEX_BUFFER: u32 = 1 << 2;
-    /// The geometry is stored as meshlets, which this reader doesn't handle: no meshes, an empty vertex buffer.
+    /// The geometry is stored as meshlets (no meshes, an empty vertex buffer): read with [`crate::meshlet`].
     pub const MESHLET: u32 = 1 << 4;
 }
 
@@ -637,13 +670,23 @@ impl<'a> Shape<'a> {
                 })
                 .collect::<Result<Vec<_>>>()?
         };
+        let flags = d.u32_at(at + 0x04)?;
+        let meshlet = if flags & shape_flags::MESHLET != 0 {
+            Some(
+                MeshletBuffer::locate(d, at, buffer_offset)
+                    .map_err(|e| invalid(format!("shape {name}: meshlets: {e}")))?,
+            )
+        } else {
+            None
+        };
         Ok(Shape {
             boundings,
             bounding_at,
             spheres,
             radius_at,
+            meshlet,
             at,
-            flags: d.u32_at(at + 0x04)?,
+            flags,
             material: d.u16_at(at + 0x52)? as usize,
             bone: d.u16_at(at + 0x54)? as usize,
             vertex_buffer: d.u16_at(at + 0x56)? as usize,

@@ -185,7 +185,9 @@ pub fn write_edited(
         return Err(unsupported("files without meshes (skeletons)"));
     }
     if model.shapes.iter().any(|s| s.is_meshlet()) {
-        return Err(unsupported("models with meshlet shapes"));
+        return Err(unsupported(
+            "models with meshlet shapes (map pieces, objects): they are read and exported, not written yet",
+        ));
     }
     let rlt = Relocations::parse(d)?;
     if rlt.sections.len() < 3 {

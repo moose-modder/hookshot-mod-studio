@@ -10,6 +10,7 @@
 //! - [`bfres_anim_write`]: an animation file with some bones' curves replaced
 //! - [`bfres_bones`]: bones added to a model's skeleton
 //! - [`bfres_write`]: a model written back with new geometry for some shapes
+//! - [`meshlet`]: shapes stored as meshlets (map pieces, objects), read
 //! - [`byml`]: parameter files (`*.bgyml`: an actor pack's model info and physics controllers), read
 //! - [`aamp`]: parameter archives (the cloth files' lists of meshes and colliders), read and written
 //! - [`res_dict`]: the files' name dictionaries, built for a list of names
@@ -33,6 +34,7 @@ mod bytes;
 mod error;
 pub mod image;
 mod math_srgb;
+pub mod meshlet;
 pub mod phive;
 pub mod res_dict;
 pub mod restbl;
