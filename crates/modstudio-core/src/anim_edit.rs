@@ -10,7 +10,9 @@
 //! new curves for that (a key at every frame; Euler angles kept near the frame before's, so they don't jump a turn),
 //! and keeps its other curves as they are. A bone the scene moves that the game's animation has no track for (a bone
 //! added to the model, or one of the game's it leaves at rest) gets one: its rotation kept as its nearest animated
-//! parent's is (Euler angles or a quaternion). The animation keeps its length.
+//! parent's is (Euler angles or a quaternion). An action of another length than the game's animation (its frame range,
+//! `anim_scene.action_length`) gives the animation that length, every bone the scene has written over it; the game's
+//! events for the animation's frames (`AnimationEvent/Animation/*.baev`) stay where they are, and the build says so.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -404,6 +406,14 @@ fn bone_edit(
     }
 }
 
+/// The game's event file for the animations of `file` (`AnimationEvent/Animation/<name>.anim.baev.zs`: sounds,
+/// effects and the like at given frames), if it has one.
+fn event_file(romfs: &Romfs, file: &str) -> Option<String> {
+    let stem = file.rsplit('/').next()?.strip_suffix(".anim.bfres.zs")?;
+    let rel = format!("AnimationEvent/Animation/{stem}.anim.baev.zs");
+    romfs.root().join(&rel).is_file().then_some(rel)
+}
+
 /// A bone's track as it is where an animation has none: at rest, no curves (its rotation a quaternion or not).
 fn untracked(name: &str, quaternion: bool) -> BoneAnim {
     BoneAnim {
@@ -509,15 +519,30 @@ pub fn apply(romfs: &Romfs, model: &str, edits: &Path) -> Result<Applied> {
                 ));
                 continue;
             };
-            if sa.frame_count != anim.frame_count {
-                applied.warnings.push(format!(
-                    "{label}: the scene has {} frames and the game's animation {}; its first {} are used",
-                    sa.frame_count + 1,
-                    anim.frame_count + 1,
-                    anim.frame_count.min(sa.frame_count) + 1
+            // the scene's action at another length than the game's animation: the animation gets it, every bone the
+            // scene has written over it (the game's own events for its frames stay where they are)
+            let length = sa.frame_count.max(0);
+            let relength = length != anim.frame_count;
+            if relength {
+                writer.set_frame_count(anim, length).context(file)?;
+                any = true;
+                applied.changes.push(format!(
+                    "{label}: {} frames long, the game's {}",
+                    length + 1,
+                    anim.frame_count + 1
                 ));
+                if let Some(events) = event_file(romfs, file) {
+                    applied.warnings.push(format!(
+                        "{label}: its length changed; the game's events for it ({events}: sounds, effects and the like at given frames) stay at their frames{}",
+                        if length < anim.frame_count {
+                            format!(", and those after frame {length} won't come")
+                        } else {
+                            String::new()
+                        }
+                    ));
+                }
             }
-            let frames = (anim.frame_count.min(sa.frame_count).max(0) + 1) as usize;
+            let frames = (length + 1) as usize;
             let clip = Clip::sample(file, anim, skeleton.clone());
             let locals = locals_from_scene(&skeleton, &rest, sa, &floats, frames)?;
             let mut changed_bones = Vec::new();
@@ -544,9 +569,15 @@ pub fn apply(romfs: &Romfs, model: &str, edits: &Path) -> Result<Applied> {
                     (0..frames).any(|f| degrees_between(l.r[f], at(or, f, skel.rotation)) > TURN);
                 let stretched =
                     (0..frames).any(|f| distance(l.s[f], at(os, f, skel.scale)) > STRETCH);
-                if !(moved || turned || stretched) {
+                if !(moved || turned || stretched || relength) {
                     continue;
                 }
+                // a new length: every part as the scene has it
+                let (moved, turned, stretched) = if relength {
+                    (true, true, true)
+                } else {
+                    (moved, turned, stretched)
+                };
                 // the scene's values over this animation's frames
                 let trimmed = Locals {
                     t: l.t[..frames].to_vec(),
@@ -554,7 +585,7 @@ pub fn apply(romfs: &Romfs, model: &str, edits: &Path) -> Result<Applied> {
                     s: l.s[..frames].to_vec(),
                 };
                 let mut edit = bone_edit(bone, skel, &trimmed, [moved, turned, stretched], frames);
-                fit_to(&mut edit, anim.frame_count.max(0) as usize + 1);
+                fit_to(&mut edit, length as usize + 1);
                 writer.edit_bone(&data, anim, bi, &edit).context(file)?;
                 changed_bones.push(bone.name.clone());
             }
@@ -588,7 +619,7 @@ pub fn apply(romfs: &Romfs, model: &str, edits: &Path) -> Result<Applied> {
                     [moved, turned, stretched],
                     frames,
                 );
-                fit_to(&mut edit, anim.frame_count.max(0) as usize + 1);
+                fit_to(&mut edit, length as usize + 1);
                 tracks.push(NewTrack {
                     name: skel.name.clone(),
                     quaternion,

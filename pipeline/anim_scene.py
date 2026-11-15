@@ -179,13 +179,21 @@ def add_anim(arm, header_path):
 
 
 def game_actions():
-    """The scene's actions made from game animations."""
-    return [a for a in bpy.data.actions if FILE in a and NAME in a and FRAMES in a]
+    """The scene's actions standing for game animations: made from one (anim_scene's own), or any action given a
+    game animation's file and name (`game_anim_file`, `game_anim_name`), which replaces it."""
+    return [a for a in bpy.data.actions if FILE in a and NAME in a]
+
+
+def action_length(action):
+    """The game frames an action plays, its last frame's number (frame 1 is the game's frame 0): to the end of its
+    manual frame range where it has one (the Action panel), else to its last key. An action made from a game
+    animation and not lengthened or shortened has the game's."""
+    return max(0, round(action.frame_range[1]) - 1)
 
 
 def read_anims(arm, out_dir):
-    """Every game animation's action played on `arm` and each bone's place recorded at every frame of the game's
-    animation, as its change from rest in the game's space: `anim_edits.json` and `anim_edits.bin` in `out_dir`
+    """Every game animation's action played on `arm` and each bone's place recorded at every frame of it (its own
+    length, `action_length`: the game's animation gets that length), as its change from rest in the game's space: `anim_edits.json` and `anim_edits.bin` in `out_dir`
     (removed when the scene has none). The armature's action and pose are put back after."""
     json_path = os.path.join(out_dir, "anim_edits.json")
     bin_path = os.path.join(out_dir, "anim_edits.bin")
@@ -220,7 +228,7 @@ def read_anims(arm, out_dir):
                 ad.action_slot = action.slots[0]
             for pb in arm.pose.bones:
                 pb.matrix_basis = Matrix.Identity(4)
-            frames = int(action[FRAMES]) + 1
+            frames = action_length(action) + 1
             offset = len(data)
             for f in range(frames):
                 scene.frame_set(f + 1)

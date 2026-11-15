@@ -189,9 +189,17 @@ game in that animation; in the others it follows its parent. Cutscene animations
 have a skeleton file of their own (the player's shared event animations: bottles, chests, items, the ocarina), the
 build adds the new bones to it as well.
 
+**Your own animations, any length.** An action plays as long as its frame range: its manual frame range where it
+has one (the Action panel), else to its last key; frame 1 is the game's frame 0. An action of another length than
+the game's animation gives the animation that length, every bone written as the action has it. So to replace one of
+the game's animations with your own (a new idle, a pose, a dance), add it to the scene, delete the action's keys
+and animate it as you like, as long as you like. Any action can stand for one too: give it the custom properties
+`game_anim_file` (`Model/Player_Adult_04_Animation.anim.bfres.zs`) and `game_anim_name` (`Wait`). The game picks
+animations by name, so a new one replaces one of its own; there are no new names. The game's events for an
+animation (sounds, effects and the like at given frames, `AnimationEvent/Animation/*.baev`) stay at their frames:
+the build warns where the length changed, and events past a shortened animation's end don't come.
+
 What isn't written (the build says so where it applies):
-- A different length: the game's animation keeps its frame count. Frames past it are left out; a shorter action holds
-  its last frame.
 - Motion between whole frames: keys are read at every frame. A few of the game's curves (some bosses') have keys
   between frames; a bone changed in those loses that detail.
 - NLA strips: only the action itself is played.

@@ -44,7 +44,8 @@ projects, and Blender. Then:
   bundles among them, and its cutscenes), searched by name and played in a loop, a run shown in place. With cloth
   physics on, the cloth follows the animation. On a project's page, *Add to the scene* puts the one playing into the
   Blender scene as an action to edit; the build writes the bones you change into the game's animation file
-  ([pipeline/README.md](pipeline/README.md), *Editing animations*).
+  ([pipeline/README.md](pipeline/README.md), *Editing animations*). An action of another length gives the animation
+  that length: replace any of the game's animations with your own.
 - **New bones**: bones added to the armature in Blender are added to the game's skeleton, with the meshes weighted
   to them; they follow their parent in game, and move as you animate them in the game's animations you edit.
   Bones named `Ph_...`, or with *Simulate as cloth* ticked in the Bone tab, are simulated (a part of the model's

@@ -677,7 +677,24 @@ cloth test; whether the plume bumps off the leg wasn't looked at closely.
   segment flipped over in the test motion). A two-bone plume, stiffness 0.6 against 0 (swing 1): its middle bends
   up to 108 degrees and ends 12 off, against 180 and 74. Colliders by name, gravity and swing as set, read back.
 
-**Next:** new animations and animation lengths; models with meshlet shapes.
+**Done (2026-11-14): animations of any length (your own in place of the game's).** The game picks animations by
+name through each actor's animation sequence (`AS/<actor>.root.asb`; adult Link's is 2.2 MB), so a new name would
+need new states there; instead an action replaces one of the game's animations, at its own length.
+- `anim_scene.action_length`: an action's length is its frame range (manual where set, else its keys; Blender's
+  `frame_range` doesn't widen a one-key range); any action given `game_anim_file` and `game_anim_name` stands for
+  that animation.
+- `AnimWriter::set_frame_count`: the animation's frame count, its new curves written that long, its baked size
+  counted for it. `anim_edit::apply`: a scene action of another length gives the animation that length and writes
+  every bone the scene has (base values, curves where they move).
+- Each animation file has an event file (`AnimationEvent/Animation/<file>.anim.baev`, 459 of them: sounds, effects,
+  foot IK at given frames); it isn't changed, and the build warns that its events stay at their frames.
+- Through Blender: adult Link's `Wait` (601 frames) made a new animation of 121 (every key removed, the head turning
+  40 degrees each way, everything else at rest): written 121 long, all 295 tracks, the head's turn and the arm's
+  rest read back. Checked in game (2026-11-14): standing still, adult Link plays the new idle (rest pose, the head
+  turning), looping at its own length.
+
+**Next:** models with meshlet shapes (read first: export and preview); new animation names (the sequence files)
+later.
 
 ## Risks and how they are contained
 

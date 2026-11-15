@@ -127,6 +127,8 @@ pub struct AnimWriter {
     counts: BTreeMap<usize, BTreeMap<usize, usize>>,
     /// Per animation given new tracks (its offset): where its track array is now, and how many tracks it gained.
     moved: BTreeMap<usize, (usize, usize)>,
+    /// Per animation given another length (its offset): its last frame's number now.
+    lengths: BTreeMap<usize, i32>,
 }
 
 fn write_f32(buf: &mut [u8], at: usize, v: f32) {
@@ -230,6 +232,7 @@ impl AnimWriter {
             relocated,
             counts: BTreeMap::new(),
             moved: BTreeMap::new(),
+            lengths: BTreeMap::new(),
         })
     }
 
@@ -241,6 +244,26 @@ impl AnimWriter {
             let t = at - self.base;
             self.tail[t..t + len].to_vec()
         }
+    }
+
+    /// Gives `anim` another length: `frame_count`, its last frame's number (the game's own count frames so: one
+    /// more than it are played). Its new curves are written that long, its baked size counted for it; curves kept as
+    /// they are keep their own frames (a longer animation holds their last value after them).
+    pub fn set_frame_count(&mut self, anim: &SkeletalAnim, frame_count: i32) -> Result<()> {
+        if !(0..=i32::from(u16::MAX) - 1).contains(&frame_count) {
+            return Err(unsupported(format!("an animation of {frame_count} frames")));
+        }
+        self.put(anim.at + 0x40, &frame_count.to_le_bytes());
+        self.lengths.insert(anim.at, frame_count);
+        Ok(())
+    }
+
+    /// The last frame's number of `anim` as written.
+    fn length(&self, anim: &SkeletalAnim) -> i32 {
+        self.lengths
+            .get(&anim.at)
+            .copied()
+            .unwrap_or(anim.frame_count)
     }
 
     /// Where track `index` of `anim` is now (its array moves when tracks are added).
@@ -429,7 +452,7 @@ impl AnimWriter {
         let rec = self.record(anim, index);
         let n = self.write_track(
             data,
-            anim.frame_count,
+            self.length(anim),
             rec,
             Some(bone),
             &bone.name,
@@ -536,8 +559,8 @@ impl AnimWriter {
             };
             let flags =
                 (t.flags & !(CURVE_BITS | bone_flags::QUATERNION)) | quaternion | TRANSFORM_BITS;
-            let count =
-                self.write_track(data, anim.frame_count, rec, None, &t.name, flags, &t.edit)?;
+            let length = self.length(anim);
+            let count = self.write_track(data, length, rec, None, &t.name, flags, &t.edit)?;
             self.counts.entry(anim.at).or_default().insert(n + j, count);
         }
         Ok(())
@@ -679,7 +702,8 @@ impl AnimWriter {
                     .unwrap_or_else(|| a.bones.get(i).map_or(0, |b| b.curves.len()));
             }
             self.put(a.at + 0x44, &(total as i32).to_le_bytes());
-            self.put(a.at + 0x48, &baked_size(total, a.frame_count).to_le_bytes());
+            let length = self.length(a);
+            self.put(a.at + 0x48, &baked_size(total, length).to_le_bytes());
         }
         let mut out = std::mem::take(&mut self.head);
         if !self.tail.is_empty() {
@@ -860,6 +884,51 @@ mod tests {
                     .len(),
                 3
             );
+        }
+    }
+
+    #[test]
+    fn an_animation_given_another_length() {
+        let data = tiny_anim();
+        let file = bfres_anim::parse(&data, None).unwrap();
+        let anim = &file.anims[0];
+        assert_eq!(anim.frame_count, 10);
+        let mut w = AnimWriter::new(&data).unwrap();
+        w.set_frame_count(anim, 20).unwrap();
+        let mut arm = arm_turning();
+        arm.curves = vec![CurveEdit::Scalar {
+            target: target::ROTATE_Z,
+            values: wave(21, 0.5, -0.5),
+        }];
+        w.edit_bone(&data, anim, 1, &arm).unwrap();
+        let mut track = plume();
+        track.edit.curves = vec![CurveEdit::Scalar {
+            target: target::ROTATE_X,
+            values: wave(21, 0.0, 1.0),
+        }];
+        w.add_bones(&data, anim, &[track]).unwrap();
+        // a curve of the old length is refused
+        assert!(
+            AnimWriter::new(&data)
+                .and_then(|mut w2| {
+                    w2.set_frame_count(anim, 20)?;
+                    w2.edit_bone(&data, anim, 1, &arm_turning())
+                })
+                .is_err()
+        );
+        assert!(w.set_frame_count(anim, -1).is_err());
+        let out = w.finish(&file.anims).unwrap();
+        check_relocations(&out).unwrap();
+        let a = &bfres_anim::parse(&out, None).unwrap().anims[0];
+        assert_eq!(a.frame_count, 20);
+        assert_eq!(a.baked_size, baked_size(2, 20));
+        let arm = a.bones[1].curve(target::ROTATE_Z).unwrap();
+        let nod = a.bones[2].curve(target::ROTATE_X).unwrap();
+        assert_eq!(arm.end_frame, 20.0);
+        for f in [0, 10, 20] {
+            let t = f as f32 / 20.0;
+            assert!((arm.value_at(f as f32) - (0.5 - t)).abs() < 1e-4);
+            assert!((nod.value_at(f as f32) - t).abs() < 1e-4);
         }
     }
 
