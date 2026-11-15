@@ -1886,7 +1886,7 @@ dependencies = [
 
 [[package]]
 name = "modstudio-app"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "modstudio-core",
  "modstudio-formats",
@@ -1899,7 +1899,7 @@ dependencies = [
 
 [[package]]
 name = "modstudio-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "modstudio-core",
  "modstudio-formats",
@@ -1908,7 +1908,7 @@ dependencies = [
 
 [[package]]
 name = "modstudio-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "havok-cloth",
  "havok-formats",
@@ -1919,7 +1919,7 @@ dependencies = [
 
 [[package]]
 name = "modstudio-formats"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "png",
  "ruzstd",
