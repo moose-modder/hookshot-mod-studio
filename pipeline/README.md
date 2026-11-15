@@ -340,14 +340,17 @@ it; `modstudio settings --hookshot <Hookshot folder> --workspace <dir>` too.
     app opens the scene (`scene_tools.py`); it is the bone's custom property `modstudio_cloth`, so a scene opened
     otherwise shows it under *Custom Properties* (or add it there: a boolean of that name, ticked).
     It swings as a pendulum from its top (hanging straight down when still), within half its length of where its
-    parent would carry it. Make the last bone as long as what hangs from it: the build reads its tip from the
+    parent would carry it; with a *Stiffness* it springs back to the angle it was made at instead (a bone that
+    sticks out: it bounces and settles where it was, sagging a little under gravity). Make the last bone as long as what hangs from it: the build reads its tip from the
     scene. It meets the model's colliders within its reach (the nearest 22; not the ones it starts inside of, such
     as those of the bone it hangs from); the build lists them. It needs the model to have a cloth file.
-    **Its settings**, on the chain's top bone (the panel's *Cloth settings* button adds them; custom properties,
-    so they can be set without the panel too): *Swing* (`modstudio_cloth_swing`, 0.5: how far each point may
+    **Its settings**, on the chain's top bone (ticking the box adds them, or the panel's *Cloth settings* button
+    on a `Ph_` bone; custom properties, so they can be set without the panel too): *Swing* (`modstudio_cloth_swing`, 0.5: how far each point may
     swing from where the bone above would carry it, as a share of its distance down the chain), *Stiffness*
-    (`modstudio_cloth_stiffness`, 0: how much a chain of two or more bones resists bending; 0 bends freely at its
-    joints), *Gravity* (`modstudio_cloth_gravity`, 1: the game's times this) and *Colliders*
+    (`modstudio_cloth_stiffness`, 0: how firmly it keeps the shape it was made in, its first bone's angle to the
+    bone it hangs from and the angles at its joints; 0 hangs and swings freely; at 0.3 a bone sticking out sideways
+    sags a degree or two and bounces back, at 1 it barely moves; small bones sag more: raise it, or lower
+    *Gravity*), *Gravity* (`modstudio_cloth_gravity`, 1: the game's times this) and *Colliders*
     (`modstudio_cloth_colliders`: `auto`, the nearest as above; `none`; or collider names, commas between, the
     objects of the scene's Cloth collection). Rigid meshes (one bone per vertex: eyes) can't go on a new bone; their weights go to the
     nearest parent that can hold one.

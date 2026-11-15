@@ -715,6 +715,25 @@ layout).
   vertices made one): the Keaton mask, Deku Tree cave rocks and a Gerudo Valley cliff rendered in Blender with their
   textures where they belong.
 
+**Done (2026-11-15): Stiffness holds a new part's first bone.** A tester's bones sticking out of a model (ticked
+*Simulate as cloth*) had nothing to set them back: a new part hinges at its top (the top two particles fixed, the
+segments rigid) and gravity took it down to the edge of its range, about 29 degrees at the default swing, whatever
+the stiffness (the links across joints need two bones). Now with a stiffness the strip gets a third fixed particle,
+the brace, off the strip's plane beside the top, a first bone's length away, linked to both particles at the first
+bone's tip: the link's length changes as the bone turns on its hinge, so it pulls the bone back to its angle at rest,
+a share of the error a pass (the stiffness) like the links across joints. A stiffness of 0 makes the part as before.
+- `cloth_new_check --forward`: one new bone sticking out forward from a bone on each model's middle, on all 170 cloth
+  files with a model. Stiffness 0: it settles 29 degrees down (median) and stays. 0.3: 1.8 (median; 2.9 for nine
+  in ten), up to 15 in the test motion (the jump) and back to 1.8. 1: 0.7 (2.2), up to 5. The bounce dies in about
+  half a second (adult Link: 10.6 degrees at the jump's landing, 3, 1.4, 0.5 ...). Small bones sag more (gravity's
+  pull a step against the link's share of a shorter bone's turn): a 2 cm bone at 0.3 sags 20 degrees.
+- Some files' parts have soft links (the largest share a tenth): there the brace bent the strip out of shape and the
+  bone swung about while the model stood still (Npc_Hylia_WU_002: 16 to 29 degrees, even at stiffness 1). The strip's
+  links now take half the error a pass at least (adult Link's are half: unchanged); the hanging chains still pass on
+  all 170 files. No template transfers motion (`transferMotionEnabled` false in all), so a part's skeleton not being
+  the template's doesn't matter there.
+- `scene_tools.py`: ticking *Simulate as cloth* adds the settings at once.
+
 **Next:** writing meshlet shapes (a build that replaces a map piece or object); new animation names (the sequence
 files) later.
 

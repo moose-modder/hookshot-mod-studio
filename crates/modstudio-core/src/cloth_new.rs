@@ -10,11 +10,12 @@
 //!
 //! - **a strip** of particles two wide down the chain: at each joint (each bone's head, then the last bone's tip) one
 //!   on the chain and one beside it (`across`); the top two fixed, carried by the bone the chain hangs from (its
-//!   anchor); two triangles a bone, the bone set from the one at its head (its stored matrix: the inverse of that
+//!   anchor), and with a stiffness a third (the brace) off the strip beside the top; two triangles a bone, the bone set from the one at its head (its stored matrix: the inverse of that
 //!   triangle's frame at rest times the bone's rest place, `havok-cloth::deform`);
-//! - **constraints**: links along every edge of the strip, a stretch link down the chain, a range keeping each free
-//!   particle near where the anchor would carry it at rest (half its distance down the chain), and the transition
-//!   set (all particles); run in the order the game's parts run them;
+//! - **constraints**: links along every edge of the strip, with a stiffness links across each joint and from the
+//!   brace to the first bone's tip (soft: they pull the chain back to its shape at rest), a stretch link down the
+//!   chain, a range keeping each free particle near where the anchor would carry it at rest (half its distance down
+//!   the chain), and the transition set (all particles); run in the order the game's parts run them;
 //! - **skinning**: every particle on the anchor alone, in blocks of the fewest bones a vertex whose type the file
 //!   spells out (the other bones the anchor too, without weight): in object space its place in the model packed as
 //!   an `hkPackedVector3` and the anchor's inverse rest place; in bone space its place relative to the anchor, its
@@ -53,8 +54,9 @@ pub struct RestBone {
 
 /// A part's settings as the scene gives them (custom properties of the chain's top bone, `scene_tools.py`), each
 /// optional: `swing`, a share of each point's distance down the chain it may swing from where its anchor would
-/// carry it; `stiffness`, 0 to 1, how much a chain of two or more bones resists bending; `gravity`, the game's times
-/// this; `colliders`, `auto`, `none` or collider names separated by commas.
+/// carry it; `stiffness`, 0 to 1, how firmly it keeps the shape it was made in (its first bone's angle to the bone it
+/// hangs from, and the angles at its joints: 0 hangs freely, a bone that sticks out springs back with more);
+/// `gravity`, the game's times this; `colliders`, `auto`, `none` or collider names separated by commas.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SceneClothSettings {
     #[serde(default)]
@@ -319,14 +321,14 @@ fn to_segment(p: [f32; 3], a: [f32; 3], b: [f32; 3]) -> f32 {
 
 /// The colliders of the file (`colliders`, as its scene has them) a new part meets: on a bone of `skeleton`, a capsule
 /// or a sphere, within reach of the chain (from its anchor, the chain's length and a particle's radius), but not one
-/// a free particle of the strip starts inside of; the nearest first, at most [`MOST_COLLIDERS`]. Notes on the ones
+/// a free particle of the strip (`free`, their places) starts inside of; the nearest first, at most [`MOST_COLLIDERS`]. Notes on the ones
 /// left out.
 fn colliders_for(
     colliders: &[crate::cloth_edit::SceneCollider],
     skeleton: &[RestBone],
     world: &[Mat4],
     part: &NewPart,
-    positions: &[[f32; 3]],
+    free: &[[f32; 3]],
     particle_radius: f32,
 ) -> (Vec<PartCollider>, Vec<String>) {
     use crate::cloth_edit::SceneShape;
@@ -362,9 +364,8 @@ fn colliders_for(
         if near > reach {
             continue;
         }
-        if positions
+        if free
             .iter()
-            .skip(2)
             .any(|&p| to_segment(p, a, b) < r + particle_radius)
         {
             inside.push(c.name.clone());
@@ -789,10 +790,12 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
-/// The strip of a part: particles (on the chain at even indices, beside it at odd ones), triangles, and which
-/// triangle sets each bone.
+/// The strip of a part: particles (on the chain at even indices, beside it at odd ones; with a stiffness, the brace
+/// after them), triangles, and which triangle sets each bone.
 struct Strip {
     positions: Vec<[f32; 3]>,
+    /// The particles the anchor carries: the top two, and the brace.
+    fixed: Vec<u16>,
     triangles: Vec<[u16; 3]>,
     /// Per bone of the chain: its triangle.
     bone_triangles: Vec<usize>,
@@ -801,8 +804,23 @@ struct Strip {
     rails: Vec<(u16, u16)>,
     /// Links across two joints down each side (holding a chain straight: the part's stiffness).
     bends: Vec<(u16, u16)>,
+    /// Links from the brace to the first bone's tip, both sides (holding the first bone at its angle to the anchor:
+    /// the part's stiffness).
+    braces: Vec<(u16, u16)>,
 }
 
+impl Strip {
+    /// Whether particle `i` moves (isn't carried by the anchor).
+    fn free(&self, i: usize) -> bool {
+        !self.fixed.contains(&(i as u16))
+    }
+}
+
+/// A part's strip of particles and links. The top two particles fix the first bone's hinge: the strip's segments are
+/// rigid, so the chain folds at its top across the strip (and at each joint below), and with nothing else gravity
+/// takes it down until its range stops it. With a stiffness, a third fixed particle (the brace), off the strip's
+/// plane at the top, is linked to the first bone's tip: the link's length changes as the first bone turns on its
+/// hinge, so it pulls the bone back to its angle at rest (a bone that sticks out springs back rather than hanging).
 fn strip(part: &NewPart) -> Result<Strip> {
     let n = part.bones.len();
     if n == 0 || part.joints.len() != n + 1 || part.across.len() != n + 1 {
@@ -844,14 +862,49 @@ fn strip(part: &NewPart) -> Result<Strip> {
     let bends = (1..n)
         .flat_map(|k| [(l(k - 1), l(k + 1)), (r(k - 1), r(k + 1))])
         .collect();
+    let mut fixed = vec![l(0), r(0)];
+    let mut braces = Vec::new();
+    if part.settings.stiffness > 0.0 {
+        // off the strip's plane (square to the first bone and to the strip across it), as far from the top as the
+        // first bone is long: the brace's links meet the bone at a right angle's worth of slant, so a turn either
+        // way on its hinge changes their length at once
+        let (top, next) = (part.joints[0], part.joints[1]);
+        let along = [next[0] - top[0], next[1] - top[1], next[2] - top[2]];
+        let length = distance(top, next);
+        let normal = math::normalize3(cross(along, part.across[0]));
+        if length > 1e-5 && normal.iter().all(|x| x.is_finite()) && dot(normal, normal) > 0.5 {
+            let brace = positions.len() as u16;
+            positions.push([
+                top[0] + normal[0] * length,
+                top[1] + normal[1] * length,
+                top[2] + normal[2] * length,
+            ]);
+            fixed.push(brace);
+            braces.extend([(brace, l(1)), (brace, r(1))]);
+        }
+    }
     Ok(Strip {
         positions,
+        fixed,
         triangles,
         bone_triangles,
         edges,
         rails,
         bends,
+        braces,
     })
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// The cloth container's and the animation container's objects, from the root's named variants.
@@ -1034,13 +1087,17 @@ pub fn add_parts(
     for part in parts {
         ed.copies.clear();
         let s = strip(part)?;
+        let moving: Vec<[f32; 3]> = (0..s.positions.len())
+            .filter(|&i| s.free(i))
+            .map(|i| s.positions[i])
+            .collect();
         let (colliders, part_notes) = match &part.settings.colliders {
             ColliderChoice::Auto => colliders_for(
                 &scene.colliders,
                 skeleton,
                 &world,
                 part,
-                &s.positions,
+                &moving,
                 free_radius,
             ),
             ColliderChoice::None => (Vec::new(), Vec::new()),
@@ -1167,7 +1224,7 @@ pub fn add_parts(
             .iter()
             .find(|c| c.name == part.name)
             .ok_or_else(|| Error(format!("the written file has no part {}", part.name)))?;
-        let n = 2 * (part.bones.len() + 1);
+        let n = strip(part)?.positions.len();
         if c.sim_cloths[0].particles.len() != n {
             return Err(Error(format!(
                 "the written part {}: {} particles, not {n}",
@@ -1199,7 +1256,7 @@ fn make_part(
     let (t_value, t_cloth, t_skeleton) = (template.value, template.cloth, template.skeleton);
     let s = strip(part)?;
     let n = s.positions.len();
-    let fixed: Vec<u16> = vec![0, 1];
+    let fixed = s.fixed.clone();
     // the part's skeleton: the anchor, the colliders' bones and their parents from the root (in the model's order,
     // every parent before its children), then the chain
     let mut base: Vec<usize> = Vec::new();
@@ -1359,7 +1416,9 @@ fn make_part(
             radius: free.radius * 0.01,
             friction: free.friction,
         });
-    let particles: Vec<cloth::Particle> = (0..n).map(|i| if i < 2 { held } else { free }).collect();
+    let particles: Vec<cloth::Particle> = (0..n)
+        .map(|i| if s.free(i) { free } else { held })
+        .collect();
     let f = sim.field("particleDatas").map_err(fail("a sim cloth"))?;
     let rows: Vec<Vec<(&str, Vec<u8>)>> = particles
         .iter()
@@ -1413,7 +1472,7 @@ fn make_part(
     let all: u64 = (0..colliders.len()).fold(0, |m, k| m | 1 << k);
     let masks: Vec<u8> = (0..n)
         .flat_map(|i| {
-            let m: u64 = if i < 2 { 0 } else { all };
+            let m: u64 = if s.free(i) { all } else { 0 };
             m.to_le_bytes()[..size].to_vec()
         })
         .collect();
@@ -1523,7 +1582,9 @@ fn make_part(
     // a standard link moves each of its particles by the stored stiffness times that particle's inverse mass (not
     // divided by the two's sum: `havok-cloth::constraints`), so the game's files store the share of the error a pass
     // corrects divided by the pair's inverse masses (the feather: 0.05 for a particle of 10 a kilogram, a half). The
-    // template's share (its largest), on every link of the strip.
+    // template's share (its largest), on every link of the strip, but half at least: the strip's segments are to be
+    // rigid, and some parts' links are soft (a tenth: a stiff part's brace then bends its strip out of shape, and
+    // the bone it sets swings about where it stands).
     let inv_mass = |i: u16| particles[i as usize].inv_mass;
     let share = match kind_of(
         t_sets
@@ -1547,7 +1608,7 @@ fn make_part(
             .fold(0f32, f32::max),
         _ => 0.5,
     }
-    .clamp(0.1, 1.0);
+    .clamp(0.5, 1.0);
     // stretch links move particle B by the stiffness alone (`None`); standard ones by `Some(share)`
     let links = |edges: &[(u16, u16)], standard: Option<f32>| -> Vec<Vec<(&str, Vec<u8>)>> {
         edges
@@ -1570,10 +1631,12 @@ fn make_part(
             .collect()
     };
     let f = standard.field("links").map_err(fail("links"))?;
-    // the strip's edges, then (with a stiffness) the links across two joints, which hold the chain straight
+    // the strip's edges, then (with a stiffness) the links across two joints, which hold the chain straight, and
+    // the brace's, which hold its first bone at its angle to the anchor
     let mut rows = links(&s.edges, Some(share));
     if part.settings.stiffness > 0.0 {
         rows.extend(links(&s.bends, Some(part.settings.stiffness)));
+        rows.extend(links(&s.braces, Some(part.settings.stiffness)));
     }
     let count_links = rows.len();
     let data = ed.elements(f, &rows)?;
@@ -1624,7 +1687,8 @@ fn make_part(
             _ => None,
         })
         .unwrap_or(1.0);
-    let rows: Vec<Vec<(&str, Vec<u8>)>> = (2..n)
+    let rows: Vec<Vec<(&str, Vec<u8>)>> = (0..n)
+        .filter(|&i| s.free(i))
         .map(|i| {
             let mut row = vec![
                 ("particleIndex", le16(i as u16)),
@@ -1643,7 +1707,7 @@ fn make_part(
         })
         .collect();
     let data = ed.elements(f, &rows)?;
-    ed.set_array(f, n - 2, data)?;
+    ed.set_array(f, n - fixed.len(), data)?;
     if let Some(o) = other {
         ed.set_array(o, 0, Vec::new())?;
     }
@@ -2291,6 +2355,9 @@ mod tests {
         assert_eq!(s.rails, [(0, 2), (2, 4)]);
         // across the middle joint, down each side: what holds the chain straight
         assert_eq!(s.bends, [(0, 4), (1, 5)]);
+        // no stiffness: the top two fixed, no brace
+        assert_eq!(s.fixed, [0, 1]);
+        assert!(s.braces.is_empty());
         // every edge of every triangle is a link, but the one between the two fixed particles
         assert!(!s.edges.contains(&(0, 1)) && !s.edges.contains(&(1, 0)));
         for t in &s.triangles {
@@ -2304,6 +2371,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_stiff_part_is_braced_at_its_top() {
+        // one bone sticking out forward (+z), the strip across it along x
+        let part = NewPart {
+            name: "SimulationMesh_Test".into(),
+            anchor: 0,
+            bones: vec![1],
+            joints: vec![[0.0, 1.0, 0.0], [0.0, 1.0, 0.2]],
+            across: vec![[0.05, 0.0, 0.0]; 2],
+            settings: PartSettings {
+                stiffness: 0.3,
+                ..PartSettings::default()
+            },
+        };
+        let s = strip(&part).unwrap();
+        // the brace after the strip, fixed, linked to the bone's tip on both sides
+        assert_eq!(s.positions.len(), 5);
+        assert_eq!(s.fixed, [0, 1, 4]);
+        assert_eq!(s.braces, [(4, 2), (4, 3)]);
+        assert!(!s.free(4) && s.free(2) && s.free(3));
+        // off the strip's plane (here up or down), a bone's length from the top
+        let b = s.positions[4];
+        assert!(b[0].abs() < 1e-6 && b[2].abs() < 1e-6, "{b:?}");
+        assert!(((b[1] - 1.0).abs() - 0.2).abs() < 1e-5, "{b:?}");
+        // turning the bone on its hinge (about x at the top) changes the brace's link: it pulls it back
+        let rest = distance(b, s.positions[2]);
+        let turned = [0.0, 1.0 - 0.2 * 0.1f32.sin(), 0.2 * 0.1f32.cos()];
+        assert!((distance(b, turned) - rest).abs() > 0.01);
     }
 
     #[test]

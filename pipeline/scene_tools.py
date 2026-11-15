@@ -6,8 +6,8 @@
   named `Ph_...`, the game's own prefix for bones its physics moves) is simulated: the build makes a part of the
   model's cloth file for it and the ticked or `Ph_` bones chained below it (`pipeline/README.md`, *Bones*).
 - On a simulated bone, **the chain's settings** (the topmost bone of a chain that has them counts): Swing, Stiffness,
-  Gravity and Colliders, custom properties too (`modstudio_cloth_swing` ...), made with their defaults by the
-  panel's "Cloth settings" button.
+  Gravity and Colliders, custom properties too (`modstudio_cloth_swing` ...), made with their defaults when the box
+  is ticked (or by the panel's "Cloth settings" button, on a `Ph_` bone or one ticked before).
 
 The tick is a custom property of the bone (`modstudio_cloth`, true or false), not a property this script registers:
 Blender 5 keeps those apart from the bone's own custom properties, out of reach of a scene opened without the
@@ -25,7 +25,9 @@ SETTINGS = (
      "How far it may swing: a share of each point's distance down the chain, from where the bone above would carry "
      "it (0.5: half)"),
     ("modstudio_cloth_stiffness", 0.0, 0.0, 1.0, "Stiffness",
-     "How much a chain of two or more bones resists bending (0: it bends freely at its joints)"),
+     "How firmly it keeps the shape it was made in: its first bone's angle to the bone it hangs from, and the angles "
+     "at its joints (0: it hangs and swings freely; more: a bone that sticks out springs back to its place, with a "
+     "bounce; small bones need more)"),
     ("modstudio_cloth_gravity", 1.0, 0.0, 10.0, "Gravity", "The game's gravity times this"),
 )
 COLLIDERS = "modstudio_cloth_colliders"
@@ -34,6 +36,20 @@ COLLIDERS = "modstudio_cloth_colliders"
 def _bone(context):
     # (a context has these where a bone is shown: the Bone tab, in edit mode and out of it)
     return getattr(context, "edit_bone", None) or getattr(context, "bone", None)
+
+
+def _add_settings(bone):
+    """The chain's settings on `bone`, the ones it lacks at their defaults, with their ranges and descriptions."""
+    for name, default, low, high, _label, description in SETTINGS:
+        if name not in bone.keys():
+            bone[name] = default
+        try:
+            bone.id_properties_ui(name).update(min=low, max=high, soft_min=low, soft_max=high,
+                                               description=description)
+        except (TypeError, AttributeError):
+            pass
+    if COLLIDERS not in bone.keys():
+        bone[COLLIDERS] = "auto"
 
 
 class MODSTUDIO_OT_bone_cloth(bpy.types.Operator):
@@ -48,7 +64,9 @@ class MODSTUDIO_OT_bone_cloth(bpy.types.Operator):
         return _bone(context) is not None
 
     def execute(self, context):
-        _bone(context)[PROP] = True
+        bone = _bone(context)
+        bone[PROP] = True
+        _add_settings(bone)
         return {'FINISHED'}
 
 
@@ -64,17 +82,7 @@ class MODSTUDIO_OT_cloth_settings(bpy.types.Operator):
         return _bone(context) is not None
 
     def execute(self, context):
-        bone = _bone(context)
-        for name, default, low, high, _label, description in SETTINGS:
-            if name not in bone.keys():
-                bone[name] = default
-            try:
-                bone.id_properties_ui(name).update(min=low, max=high, soft_min=low, soft_max=high,
-                                                   description=description)
-            except (TypeError, AttributeError):
-                pass
-        if COLLIDERS not in bone.keys():
-            bone[COLLIDERS] = "auto"
+        _add_settings(_bone(context))
         return {'FINISHED'}
 
 
