@@ -661,7 +661,23 @@ actor's animation sequence, `AS/Player_Adult.root.asb`, names them); a first tes
 the cloth plume (its skeleton file changed too), taking out the ocarina plays as before. The colliders were in the
 cloth test; whether the plume bumps off the leg wasn't looked at closely.
 
-**Next:** a release.
+**Done (2026-11-14), after 0.4.0:**
+- **Untouched meshes kept.** The round trip through Blender changed four of the player's meshes a little: Blender
+  averages the custom normals of a vertex the game splits on a hard edge (adult Link's `Hood_B_low`, child Link's
+  `Angin_Knot_Head_Band` and `Boots_Cover`), and positions on bones whose bind place isn't quite their rest place move
+  by about 0.1 mm (`Shirt_Inner_Body_low2`). So `make_scene.py` stamps each mesh with a fingerprint of its geometry as
+  Blender holds it (`scene_nodes.mesh_fingerprint`: vertices, faces, corner normals, UVs, attributes, weights,
+  materials, shape keys, modifiers, its place), `prep_for_game.py` lists the meshes whose fingerprint is unchanged
+  (after joining new meshes, before its own changes) in `unchanged_meshes.json`, and the build keeps those as the game
+  has them. Unedited adult and child Link: all 25 meshes kept, the model byte for byte the game's; with the feather
+  edited, it alone is replaced. Projects made before have no fingerprints: the comparison as before.
+- **New parts' settings from the scene**: Swing, Stiffness, Gravity and Colliders on the chain's top bone
+  (`scene_tools.py`'s *Cloth settings*; `bones.json`; `cloth_new::PartSettings`). Stiffness adds links across each
+  joint down both sides; every segment now has both diagonals, so it can't twist about the chain (with one, a lower
+  segment flipped over in the test motion). A two-bone plume, stiffness 0.6 against 0 (swing 1): its middle bends
+  up to 108 degrees and ends 12 off, against 180 and 74. Colliders by name, gravity and swing as set, read back.
+
+**Next:** new animations and animation lengths; models with meshlet shapes.
 
 ## Risks and how they are contained
 

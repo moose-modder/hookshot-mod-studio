@@ -51,6 +51,86 @@ pub struct RestBone {
     pub scale: [f32; 3],
 }
 
+/// A part's settings as the scene gives them (custom properties of the chain's top bone, `scene_tools.py`), each
+/// optional: `swing`, a share of each point's distance down the chain it may swing from where its anchor would
+/// carry it; `stiffness`, 0 to 1, how much a chain of two or more bones resists bending; `gravity`, the game's times
+/// this; `colliders`, `auto`, `none` or collider names separated by commas.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SceneClothSettings {
+    #[serde(default)]
+    pub swing: Option<f32>,
+    #[serde(default)]
+    pub stiffness: Option<f32>,
+    #[serde(default)]
+    pub gravity: Option<f32>,
+    #[serde(default)]
+    pub colliders: Option<String>,
+}
+
+/// Which colliders a new part meets.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ColliderChoice {
+    /// The file's within reach of the chain, the nearest first ([`MOST_COLLIDERS`] at most), but those it starts
+    /// inside of.
+    Auto,
+    None,
+    /// These, by name.
+    Named(Vec<String>),
+}
+
+/// A new part's settings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartSettings {
+    pub swing: f32,
+    pub stiffness: f32,
+    pub gravity: f32,
+    pub colliders: ColliderChoice,
+}
+
+impl Default for PartSettings {
+    fn default() -> Self {
+        PartSettings {
+            swing: 0.5,
+            stiffness: 0.0,
+            gravity: 1.0,
+            colliders: ColliderChoice::Auto,
+        }
+    }
+}
+
+impl PartSettings {
+    /// The scene's settings, the defaults where it gives none (values kept to what makes sense).
+    pub fn from_scene(s: &SceneClothSettings) -> PartSettings {
+        let d = PartSettings::default();
+        let colliders = match s.colliders.as_deref().map(str::trim) {
+            None | Some("") => ColliderChoice::Auto,
+            Some(x) if x.eq_ignore_ascii_case("auto") => ColliderChoice::Auto,
+            Some(x) if x.eq_ignore_ascii_case("none") => ColliderChoice::None,
+            Some(x) => ColliderChoice::Named(
+                x.split([',', ';'])
+                    .map(|n| n.trim().to_owned())
+                    .filter(|n| !n.is_empty())
+                    .collect(),
+            ),
+        };
+        PartSettings {
+            swing: s
+                .swing
+                .filter(|x| x.is_finite())
+                .map_or(d.swing, |x| x.clamp(0.01, 4.0)),
+            stiffness: s
+                .stiffness
+                .filter(|x| x.is_finite())
+                .map_or(d.stiffness, |x| x.clamp(0.0, 1.0)),
+            gravity: s
+                .gravity
+                .filter(|x| x.is_finite())
+                .map_or(d.gravity, |x| x.clamp(0.0, 10.0)),
+            colliders,
+        }
+    }
+}
+
 /// A chain of bones to simulate as a new part.
 #[derive(Debug, Clone)]
 pub struct NewPart {
@@ -64,6 +144,7 @@ pub struct NewPart {
     pub joints: Vec<[f32; 3]>,
     /// For each joint, where its second particle is: the joint plus this.
     pub across: Vec<[f32; 3]>,
+    pub settings: PartSettings,
 }
 
 /// A model's skeleton as [`RestBone`]s (Euler angles turned into quaternions).
@@ -93,12 +174,14 @@ pub const SIMULATED_PREFIX: &str = "Ph_";
 /// as cloth" ticked in the scene), as parts: each starts at such a bone whose parent isn't one, hangs from that parent
 /// (its anchor), and goes on down the only such child of each bone. Its joints are the bones' heads and the last one's tip (`tips`, in the model's space; else as far on from
 /// its head as the bone before it was long, or a tenth of the chain's height down); the strip across it is a quarter
-/// of its first bone's length wide, along the model's x axis (across the chain). Notes on what was left out.
+/// of its first bone's length wide, along the model's x axis (across the chain); its settings those of the topmost
+/// bone of it in `settings` (the scene's), the defaults else. Notes on what was left out.
 pub fn chains_of(
     skeleton: &[RestBone],
     added: &[String],
     ticked: &[String],
     tips: &std::collections::BTreeMap<String, [f32; 3]>,
+    settings: &std::collections::BTreeMap<String, SceneClothSettings>,
 ) -> (Vec<NewPart>, Vec<String>) {
     let world = rest_world(skeleton);
     let head = |i: usize| [world[i][12], world[i][13], world[i][14]];
@@ -190,12 +273,19 @@ pub fn chains_of(
             .name
             .strip_prefix(SIMULATED_PREFIX)
             .unwrap_or(&skeleton[start].name);
+        // the settings of the topmost bone of the chain that has any
+        let part_settings = bones
+            .iter()
+            .find_map(|&b| settings.get(&skeleton[b].name))
+            .map(PartSettings::from_scene)
+            .unwrap_or_default();
         parts.push(NewPart {
             name: format!("SimulationMesh_{what}"),
             anchor,
             bones,
             joints,
             across,
+            settings: part_settings,
         });
     }
     (parts, notes)
@@ -311,6 +401,60 @@ fn colliders_for(
         ));
     }
     (found.into_iter().map(|(_, c)| c).collect(), notes)
+}
+
+/// The colliders of the file named in `names` (a part's choice in the scene), on bones of `skeleton`, any shape, at
+/// most 30 (what a particle's mask holds besides the landscape's bit). Notes on names not found and the rest.
+fn named_colliders(
+    colliders: &[crate::cloth_edit::SceneCollider],
+    skeleton: &[RestBone],
+    world: &[Mat4],
+    part: &NewPart,
+    names: &[String],
+) -> (Vec<PartCollider>, Vec<String>) {
+    let mut out = Vec::new();
+    let mut notes = Vec::new();
+    for name in names {
+        let Some(c) = colliders.iter().find(|c| &c.name == name) else {
+            notes.push(format!(
+                "{}: no collider {name} in the cloth file",
+                part.name
+            ));
+            continue;
+        };
+        let Some(bone) = c
+            .bone
+            .as_ref()
+            .and_then(|n| skeleton.iter().position(|b| &b.name == n))
+        else {
+            notes.push(format!(
+                "{}: {name} follows no bone of the model; left out",
+                part.name
+            ));
+            continue;
+        };
+        let Some(inverse) = math::inverse_affine(&world[bone]) else {
+            continue;
+        };
+        if out.iter().any(|x: &PartCollider| x.item == c.id) {
+            continue;
+        }
+        out.push(PartCollider {
+            item: c.id,
+            name: c.name.clone(),
+            bone,
+            offset: math::mul(&inverse, &c.place),
+        });
+    }
+    if out.len() > 30 {
+        notes.push(format!(
+            "{}: {} colliders named; the first 30 are used (a particle meets 30 at most)",
+            part.name,
+            out.len()
+        ));
+        out.truncate(30);
+    }
+    (out, notes)
 }
 
 /// Each bone's place in the model at rest.
@@ -655,6 +799,8 @@ struct Strip {
     /// Edges of the strip (every link), and the ones down the chain.
     edges: Vec<(u16, u16)>,
     rails: Vec<(u16, u16)>,
+    /// Links across two joints down each side (holding a chain straight: the part's stiffness).
+    bends: Vec<(u16, u16)>,
 }
 
 fn strip(part: &NewPart) -> Result<Strip> {
@@ -684,20 +830,27 @@ fn strip(part: &NewPart) -> Result<Strip> {
         bone_triangles.push(triangles.len());
         triangles.push([l(k - 1), r(k - 1), l(k)]);
         triangles.push([r(k - 1), r(k), l(k)]);
+        // both diagonals: each segment rigid, so the chain only folds at its joints (one diagonal lets a segment
+        // twist about the chain, flipping its bone)
         edges.extend([
             (l(k - 1), l(k)),
             (r(k - 1), r(k)),
             (r(k - 1), l(k)),
+            (l(k - 1), r(k)),
             (l(k), r(k)),
         ]);
         rails.push((l(k - 1), l(k)));
     }
+    let bends = (1..n)
+        .flat_map(|k| [(l(k - 1), l(k + 1)), (r(k - 1), r(k + 1))])
+        .collect();
     Ok(Strip {
         positions,
         triangles,
         bone_triangles,
         edges,
         rails,
+        bends,
     })
 }
 
@@ -881,14 +1034,20 @@ pub fn add_parts(
     for part in parts {
         ed.copies.clear();
         let s = strip(part)?;
-        let (colliders, part_notes) = colliders_for(
-            &scene.colliders,
-            skeleton,
-            &world,
-            part,
-            &s.positions,
-            free_radius,
-        );
+        let (colliders, part_notes) = match &part.settings.colliders {
+            ColliderChoice::Auto => colliders_for(
+                &scene.colliders,
+                skeleton,
+                &world,
+                part,
+                &s.positions,
+                free_radius,
+            ),
+            ColliderChoice::None => (Vec::new(), Vec::new()),
+            ColliderChoice::Named(names) => {
+                named_colliders(&scene.colliders, skeleton, &world, part, names)
+            }
+        };
         notes.push(if colliders.is_empty() {
             format!("{}: no collider within reach", part.name)
         } else {
@@ -1230,6 +1389,14 @@ fn make_part(
             .collect();
         ed.set_array(f, n, data)?;
     }
+    // gravity: the template's times the part's setting
+    let g = t_sim.gravity;
+    let k = part.settings.gravity;
+    let gravity_field = sim
+        .field("simulationInfo")
+        .and_then(|i| i.field("gravity"))
+        .map_err(fail("a sim cloth"))?;
+    ed.put(gravity_field, &f32s(&[g[0] * k, g[1] * k, g[2] * k, g[3]]))?;
     let max_radius = particles.iter().fold(0f32, |m, p| m.max(p.radius));
     ed.put_f32(
         sim.field("maxParticleRadius")
@@ -1381,19 +1548,17 @@ fn make_part(
         _ => 0.5,
     }
     .clamp(0.1, 1.0);
-    // stretch links move particle B by the stiffness alone
-    let links = |edges: &[(u16, u16)], standard: bool| -> Vec<Vec<(&str, Vec<u8>)>> {
+    // stretch links move particle B by the stiffness alone (`None`); standard ones by `Some(share)`
+    let links = |edges: &[(u16, u16)], standard: Option<f32>| -> Vec<Vec<(&str, Vec<u8>)>> {
         edges
             .iter()
             .map(|&(a, b)| {
                 let rest = distance(s.positions[a as usize], s.positions[b as usize]);
                 let w = inv_mass(a) + inv_mass(b);
-                let stiffness = if !standard {
-                    1.0
-                } else if w > 0.0 {
-                    share / w
-                } else {
-                    0.0
+                let stiffness = match standard {
+                    None => 1.0,
+                    Some(share) if w > 0.0 => share / w,
+                    Some(_) => 0.0,
                 };
                 vec![
                     ("particleA", le16(a)),
@@ -1405,11 +1570,17 @@ fn make_part(
             .collect()
     };
     let f = standard.field("links").map_err(fail("links"))?;
-    let data = ed.elements(f, &links(&s.edges, true))?;
-    ed.set_array(f, s.edges.len(), data)?;
+    // the strip's edges, then (with a stiffness) the links across two joints, which hold the chain straight
+    let mut rows = links(&s.edges, Some(share));
+    if part.settings.stiffness > 0.0 {
+        rows.extend(links(&s.bends, Some(part.settings.stiffness)));
+    }
+    let count_links = rows.len();
+    let data = ed.elements(f, &rows)?;
+    ed.set_array(f, count_links, data)?;
     if let Some(st) = stretch {
         let f = st.field("links").map_err(fail("stretch links"))?;
-        let data = ed.elements(f, &links(&s.rails, false))?;
+        let data = ed.elements(f, &links(&s.rails, None))?;
         ed.set_array(f, s.rails.len(), data)?;
     }
     // ranges: each free particle within half its distance down the chain of its place at rest
@@ -1458,7 +1629,10 @@ fn make_part(
             let mut row = vec![
                 ("particleIndex", le16(i as u16)),
                 ("referenceVertex", le16(i as u16)),
-                (distance_member, le32((0.5 * down[i]).max(0.01).to_bits())),
+                (
+                    distance_member,
+                    le32((part.settings.swing * down[i]).max(0.01).to_bits()),
+                ),
                 ("maxNormalDistance", le32(3.40282e38f32.to_bits())),
                 ("minNormalDistance", le32((-3.40282e38f32).to_bits())),
             ];
@@ -2018,7 +2192,7 @@ mod tests {
             "Extra".to_owned(),
         ];
         let tips = std::collections::BTreeMap::from([("Ph_Tail_2".to_owned(), [0.5, 0.5, 0.0])]);
-        let (parts, notes) = chains_of(&skeleton, &added, &[], &tips);
+        let (parts, notes) = chains_of(&skeleton, &added, &[], &tips, &Default::default());
         assert!(notes.is_empty(), "{notes:?}");
         assert_eq!(parts.len(), 1);
         let p = &parts[0];
@@ -2031,15 +2205,73 @@ mod tests {
         // across: along x, a quarter of the first bone (0.2 m)
         assert!(near(p.across[0], [0.05, 0.0, 0.0]));
         // without the tips: the last bone as long as the one before
-        let (parts, notes) = chains_of(&skeleton, &added, &[], &Default::default());
+        let (parts, notes) = chains_of(
+            &skeleton,
+            &added,
+            &[],
+            &Default::default(),
+            &Default::default(),
+        );
         assert_eq!(notes.len(), 1);
         assert!(near(parts[0].joints[2], [0.5, 0.5, 0.0]));
         // a new bone ticked is simulated whatever its name (its own part, hanging from Hand); a game bone isn't
         let ticked = vec!["Extra".to_owned(), "Ph_Game".to_owned()];
-        let (parts, _) = chains_of(&skeleton, &added, &ticked, &tips);
+        let (parts, _) = chains_of(&skeleton, &added, &ticked, &tips, &Default::default());
         let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["SimulationMesh_Tail_1", "SimulationMesh_Extra"]);
         assert_eq!((parts[1].anchor, parts[1].bones.clone()), (1, vec![5]));
+    }
+
+    #[test]
+    fn settings_from_the_scene() {
+        assert_eq!(
+            PartSettings::from_scene(&SceneClothSettings::default()),
+            PartSettings::default()
+        );
+        let s = PartSettings::from_scene(&SceneClothSettings {
+            swing: Some(1.0),
+            stiffness: Some(2.0),
+            gravity: Some(0.5),
+            colliders: Some(" Collidable_Leg_1_R, Collidable_Waist ;".into()),
+        });
+        assert_eq!((s.swing, s.stiffness, s.gravity), (1.0, 1.0, 0.5));
+        assert_eq!(
+            s.colliders,
+            ColliderChoice::Named(vec!["Collidable_Leg_1_R".into(), "Collidable_Waist".into()])
+        );
+        let none = |c: &str| {
+            PartSettings::from_scene(&SceneClothSettings {
+                colliders: Some(c.into()),
+                ..Default::default()
+            })
+            .colliders
+        };
+        assert_eq!(none("None"), ColliderChoice::None);
+        assert_eq!(none("AUTO"), ColliderChoice::Auto);
+        assert_eq!(none(""), ColliderChoice::Auto);
+        // a chain takes the settings of its topmost bone that has any
+        let bone = |name: &str, parent: Option<usize>| RestBone {
+            name: name.into(),
+            parent,
+            translation: [0.0, -0.1, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+        };
+        let skeleton = vec![
+            bone("Root", None),
+            bone("Ph_A", Some(0)),
+            bone("Ph_B", Some(1)),
+        ];
+        let added = vec!["Ph_A".to_owned(), "Ph_B".to_owned()];
+        let settings = std::collections::BTreeMap::from([(
+            "Ph_B".to_owned(),
+            SceneClothSettings {
+                gravity: Some(2.0),
+                ..Default::default()
+            },
+        )]);
+        let (parts, _) = chains_of(&skeleton, &added, &[], &Default::default(), &settings);
+        assert_eq!(parts[0].settings.gravity, 2.0);
     }
 
     #[test]
@@ -2050,12 +2282,15 @@ mod tests {
             bones: vec![1, 2],
             joints: vec![[0.0, 1.0, 0.0], [0.0, 0.8, 0.0], [0.0, 0.6, 0.0]],
             across: vec![[0.05, 0.0, 0.0]; 3],
+            settings: PartSettings::default(),
         };
         let s = strip(&part).unwrap();
         assert_eq!(s.positions.len(), 6);
         assert_eq!(s.triangles, [[0, 1, 2], [1, 3, 2], [2, 3, 4], [3, 5, 4]]);
         assert_eq!(s.bone_triangles, [0, 2]);
         assert_eq!(s.rails, [(0, 2), (2, 4)]);
+        // across the middle joint, down each side: what holds the chain straight
+        assert_eq!(s.bends, [(0, 4), (1, 5)]);
         // every edge of every triangle is a link, but the one between the two fixed particles
         assert!(!s.edges.contains(&(0, 1)) && !s.edges.contains(&(1, 0)));
         for t in &s.triangles {

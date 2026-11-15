@@ -8,6 +8,8 @@ RG_GROUP = "Reconstruct RG Normal"
 
 # make_scene.py stamps each game material with its fingerprint; the build compares (prep_for_game.py).
 FINGERPRINT = "modstudio_fingerprint"
+# A mesh's geometry as the scene was made (make_scene.py): the build keeps the game's own mesh for one still so
+MESH_FINGERPRINT = "modstudio_mesh_fingerprint"
 # Node settings that change what a node does (the rest is layout: location, width, colour, label, ...).
 _SETTINGS = ("operation", "blend_type", "data_type", "interpolation", "projection", "extension", "space",
              "uv_map", "use_clamp", "clamp_type", "interpolation_type", "attribute_name", "attribute_type",
@@ -59,6 +61,64 @@ def material_fingerprint(mat, image_key=None):
     groups = {}
     data = {"tree": _tree(mat.node_tree, groups, image_key or (lambda n: n.image.name)), "groups": groups}
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode("utf-8")).hexdigest()[:24]
+
+
+def mesh_fingerprint(obj):
+    """A hash of a mesh object's geometry as the scene holds it: its vertices, faces, corner normals, UV maps and
+    other attributes, vertex groups and weights, materials, shape keys, modifiers, and its place under its parent.
+    Anything an edit changes changes it; a scene saved and opened again without edits doesn't (the build then keeps
+    the game's own mesh: Blender's import and export lose a little of some meshes, normals of a hard edge's two
+    sides, positions on bones whose bind place isn't quite their rest place)."""
+    from array import array
+
+    me = obj.data
+    h = hashlib.sha256()
+
+    def put(text):
+        h.update(str(text).encode("utf-8"))
+        h.update(b"\0")
+
+    def values(collection, prop, per, code="f"):
+        a = array(code, [0]) * (len(collection) * per)
+        if len(a):
+            collection.foreach_get(prop, a)
+        h.update(a.tobytes())
+
+    put((len(me.vertices), len(me.edges), len(me.loops), len(me.polygons)))
+    values(me.vertices, "co", 3)
+    values(me.loops, "vertex_index", 1, "i")
+    values(me.polygons, "loop_start", 1, "i")
+    values(me.polygons, "loop_total", 1, "i")
+    values(me.corner_normals, "vector", 3)
+    for uv in me.uv_layers:
+        put(uv.name)
+        values(uv.uv, "vector", 2)
+    sizes = {"FLOAT": ("value", 1, "f"), "INT": ("value", 1, "i"), "BOOLEAN": ("value", 1, "b"),
+             "INT8": ("value", 1, "i"), "FLOAT2": ("vector", 2, "f"), "FLOAT_VECTOR": ("vector", 3, "f"),
+             "FLOAT_COLOR": ("color", 4, "f"), "BYTE_COLOR": ("color", 4, "f"), "QUATERNION": ("value", 4, "f")}
+    for a in sorted(me.attributes, key=lambda a: a.name):
+        if a.name.startswith("."):
+            continue
+        put((a.name, a.domain, a.data_type))
+        if a.data_type in sizes:
+            prop, per, code = sizes[a.data_type]
+            values(a.data, prop, per, code)
+    put([g.name for g in obj.vertex_groups])
+    weights = array("f")
+    for v in me.vertices:
+        for g in v.groups:
+            weights.extend((float(v.index), float(g.group), g.weight))
+    h.update(weights.tobytes())
+    put([m.name if m else "" for m in me.materials])
+    if me.shape_keys:
+        for kb in me.shape_keys.key_blocks:
+            put((kb.name, kb.value, kb.mute))
+            values(kb.data, "co", 3)
+    put([(m.type, m.name, m.show_viewport, m.show_render,
+          getattr(getattr(m, "object", None), "name", None)) for m in obj.modifiers])
+    put((obj.parent.name if obj.parent else None, obj.parent_type, obj.parent_bone))
+    put([round(x, 6) for row in obj.matrix_local for x in row])
+    return h.hexdigest()[:24]
 
 
 def rg_normal_group():

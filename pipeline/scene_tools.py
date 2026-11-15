@@ -5,6 +5,9 @@
 - **Bone tab, "Mod Studio" panel: "Simulate as cloth"**: a bone added to the game's skeleton with this ticked (or
   named `Ph_...`, the game's own prefix for bones its physics moves) is simulated: the build makes a part of the
   model's cloth file for it and the ticked or `Ph_` bones chained below it (`pipeline/README.md`, *Bones*).
+- On a simulated bone, **the chain's settings** (the topmost bone of a chain that has them counts): Swing, Stiffness,
+  Gravity and Colliders, custom properties too (`modstudio_cloth_swing` ...), made with their defaults by the
+  panel's "Cloth settings" button.
 
 The tick is a custom property of the bone (`modstudio_cloth`, true or false), not a property this script registers:
 Blender 5 keeps those apart from the bone's own custom properties, out of reach of a scene opened without the
@@ -16,6 +19,16 @@ import bpy
 
 PROP = "modstudio_cloth"
 PREFIX = "Ph_"
+# a simulated chain's settings, on its top bone: (property, default, min, max, label, description)
+SETTINGS = (
+    ("modstudio_cloth_swing", 0.5, 0.01, 4.0, "Swing",
+     "How far it may swing: a share of each point's distance down the chain, from where the bone above would carry "
+     "it (0.5: half)"),
+    ("modstudio_cloth_stiffness", 0.0, 0.0, 1.0, "Stiffness",
+     "How much a chain of two or more bones resists bending (0: it bends freely at its joints)"),
+    ("modstudio_cloth_gravity", 1.0, 0.0, 10.0, "Gravity", "The game's gravity times this"),
+)
+COLLIDERS = "modstudio_cloth_colliders"
 
 
 def _bone(context):
@@ -39,6 +52,32 @@ class MODSTUDIO_OT_bone_cloth(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class MODSTUDIO_OT_cloth_settings(bpy.types.Operator):
+    """The simulated chain's settings on this bone, at their defaults: how far it swings, how stiff it is, its gravity
+    and which colliders it meets"""
+    bl_idname = "modstudio.cloth_settings"
+    bl_label = "Cloth settings"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return _bone(context) is not None
+
+    def execute(self, context):
+        bone = _bone(context)
+        for name, default, low, high, _label, description in SETTINGS:
+            if name not in bone.keys():
+                bone[name] = default
+            try:
+                bone.id_properties_ui(name).update(min=low, max=high, soft_min=low, soft_max=high,
+                                                   description=description)
+            except (TypeError, AttributeError):
+                pass
+        if COLLIDERS not in bone.keys():
+            bone[COLLIDERS] = "auto"
+        return {'FINISHED'}
+
+
 class MODSTUDIO_PT_bone(bpy.types.Panel):
     bl_label = "Mod Studio"
     bl_space_type = 'PROPERTIES'
@@ -59,9 +98,21 @@ class MODSTUDIO_PT_bone(bpy.types.Panel):
         if bone.name.startswith(PREFIX):
             layout.label(text=f"Simulated: its name starts with {PREFIX}", icon='INFO')
         layout.label(text="Only for bones you add to the game's skeleton.")
+        if bone.name.startswith(PREFIX) or bone.get(PROP):
+            box = layout.box()
+            box.label(text="The chain from here down:")
+            if any(name in bone.keys() for name, *_ in SETTINGS) or COLLIDERS in bone.keys():
+                for name, _default, _low, _high, label, _description in SETTINGS:
+                    if name in bone.keys():
+                        box.prop(bone, f'["{name}"]', text=label)
+                if COLLIDERS in bone.keys():
+                    box.prop(bone, f'["{COLLIDERS}"]', text="Colliders")
+                    box.label(text="auto, none, or names (the Cloth collection's), commas between")
+            else:
+                box.operator(MODSTUDIO_OT_cloth_settings.bl_idname, icon='PREFERENCES')
 
 
-CLASSES = (MODSTUDIO_OT_bone_cloth, MODSTUDIO_PT_bone)
+CLASSES = (MODSTUDIO_OT_bone_cloth, MODSTUDIO_OT_cloth_settings, MODSTUDIO_PT_bone)
 
 
 def register():

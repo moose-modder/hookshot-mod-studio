@@ -63,9 +63,13 @@ modstudio build <workspace>\zelda --install
 3. **Builds the mod** (`modstudio-core`'s replace): the game's model with each scene mesh in place of the game
    mesh of its name, in that mesh's vertex formats, skin count (the strongest influences) and LOD count (the lower
    LODs are the mesh decimated in the proportions of the game's own, see `prep.lods`); a game mesh missing from
-   the scene is removed. A scene mesh that is still the game's own (the same triangles with the same positions,
-   UVs, colours and skinning, normals within 1 degree) is **kept** as the game has it, its LODs and tangents
-   included. Each changed texture is written in its own format, or for ASTC (not encoded here) as BC5 (normal
+   the scene is removed. A scene mesh left as the scene was made (its fingerprint, stamped on it when the project
+   was made, still the same: its vertices, faces, normals, UVs, attributes, weights, materials, modifiers) is
+   **kept** as the game has it, its LODs and tangents included: the round trip through Blender changes a few of
+   the game's meshes a little (the normals of a hard edge's two sides, positions on bones whose bind place isn't
+   quite their rest place), and an untouched mesh shouldn't pick that up. In a project made by an older version
+   (no fingerprints) a mesh is kept when it is still the game's own: the same triangles with the same positions, UVs,
+   colours and skinning, normals within 1 degree. Each changed texture is written in its own format, or for ASTC (not encoded here) as BC5 (normal
    maps), BC4 (one channel) or BC7. Files of an earlier build are removed first. The mod is `mod\romfs`.
 4. **Checks the result** against the game's model: every mesh keeps its material, skin count and LOD count.
 5. **Compares the result with the scene** (`check_result.py`, Blender): the built model is read back (with the
@@ -330,7 +334,14 @@ it; `modstudio settings --hookshot <Hookshot folder> --workspace <dir>` too.
     It swings as a pendulum from its top (hanging straight down when still), within half its length of where its
     parent would carry it. Make the last bone as long as what hangs from it: the build reads its tip from the
     scene. It meets the model's colliders within its reach (the nearest 22; not the ones it starts inside of, such
-    as those of the bone it hangs from); the build lists them. It needs the model to have a cloth file. Rigid meshes (one bone per vertex: eyes) can't go on a new bone; their weights go to the
+    as those of the bone it hangs from); the build lists them. It needs the model to have a cloth file.
+    **Its settings**, on the chain's top bone (the panel's *Cloth settings* button adds them; custom properties,
+    so they can be set without the panel too): *Swing* (`modstudio_cloth_swing`, 0.5: how far each point may
+    swing from where the bone above would carry it, as a share of its distance down the chain), *Stiffness*
+    (`modstudio_cloth_stiffness`, 0: how much a chain of two or more bones resists bending; 0 bends freely at its
+    joints), *Gravity* (`modstudio_cloth_gravity`, 1: the game's times this) and *Colliders*
+    (`modstudio_cloth_colliders`: `auto`, the nearest as above; `none`; or collider names, commas between, the
+    objects of the scene's Cloth collection). Rigid meshes (one bone per vertex: eyes) can't go on a new bone; their weights go to the
     nearest parent that can hold one.
   - A **moved bone** (in edit mode): the game's animations set each animated bone's own position (the
     townsman's animations hold the rest positions of most of his bones, `examples/anim_probe.rs`), so it would

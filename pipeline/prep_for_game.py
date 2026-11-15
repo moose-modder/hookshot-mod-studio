@@ -57,7 +57,8 @@ import numpy as np
 from mathutils import Matrix
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from scene_nodes import FINGERPRINT, RG_GROUP, material_fingerprint, rg_normal_group  # noqa: E402
+from scene_nodes import (FINGERPRINT, MESH_FINGERPRINT, RG_GROUP, material_fingerprint,  # noqa: E402
+                         mesh_fingerprint, rg_normal_group)
 import cloth_scene  # noqa: E402
 import anim_scene  # noqa: E402
 
@@ -1667,6 +1668,15 @@ def main():
         rep.warn(w)
     textures = Textures(cfg, model, rep)
     objects, first_joined = join_new_meshes(objects, vanilla_meshes, textures, arm, cfg, rep)
+    # The game's meshes left as the scene was made (their fingerprint, from make_scene.py, as it was; a new mesh
+    # joined into one changes it): the build keeps the game's own for them, which the round trip through Blender
+    # would otherwise change a little
+    unchanged = sorted(o.name for o in objects
+                       if o.get(MESH_FINGERPRINT) and mesh_fingerprint(o) == o[MESH_FINGERPRINT])
+    with open(os.path.join(cfg["output"], "unchanged_meshes.json"), "w", encoding="utf-8") as f:
+        json.dump({"meshes": unchanged}, f)
+    if unchanged:
+        log(f"Unchanged since the scene was made (the game's own kept): {len(unchanged)} mesh(es)")
 
     rules = {r["mesh"]: r for r in cfg.get("merge", [])}
     for name in rules:
@@ -1825,8 +1835,15 @@ def main():
                 w = arm.matrix_world @ b.tail_local
                 tips[b.name] = [w.x, w.z, -w.y]
             ticked = [b.name for b in arm.data.bones if b.get("modstudio_cloth")]
+            # a simulated chain's settings (scene_tools.py), on its bones
+            settings = {}
+            for b in arm.data.bones:
+                s = {key: b[f"modstudio_cloth_{key}"] for key in ("swing", "stiffness", "gravity", "colliders")
+                     if f"modstudio_cloth_{key}" in b}
+                if s:
+                    settings[b.name] = {k: (str(v) if k == "colliders" else float(v)) for k, v in s.items()}
             with open(os.path.join(cfg["output"], "bones.json"), "w", encoding="utf-8") as f:
-                json.dump({"tips": tips, "cloth": ticked}, f)
+                json.dump({"tips": tips, "cloth": ticked, "settings": settings}, f)
             if ticked:
                 log(f"Simulate as cloth ticked: {ticked}")
         else:

@@ -61,6 +61,9 @@ pub struct GeometryReport {
     /// The bones added with "Simulate as cloth" ticked in the scene (`bones.json`).
     #[serde(skip)]
     pub added_cloth: Vec<String>,
+    /// The cloth settings the scene gives bones added (`bones.json`), by bone.
+    #[serde(skip)]
+    pub added_cloth_settings: BTreeMap<String, crate::cloth_new::SceneClothSettings>,
     /// The names of the bones added, in the skeleton's order.
     #[serde(skip)]
     pub added_names: Vec<String>,
@@ -1050,6 +1053,27 @@ fn same_as_game(
         });
         if !same {
             *why.entry(first_reason.unwrap_or("?")).or_default() += 1;
+            if std::env::var_os("MODSTUDIO_DEBUG_KEEP").is_some()
+                && why.values().sum::<usize>() <= 4
+            {
+                for c in 0..3 {
+                    let get = |geo: &ShapeGeometry, name: &str, v: usize| {
+                        geo.attributes.get(name).and_then(|a| a.get(v)).copied()
+                    };
+                    eprintln!(
+                        "    {} corner {c}: game v{} p {:?} n {:?} skin {:?} | scene v{} p {:?} n {:?} skin {:?}",
+                        shape.name,
+                        vo[c],
+                        get(&original, "_p0", vo[c]),
+                        get(&original, "_n0", vo[c]),
+                        skin(&original, vo[c], true),
+                        vn[c],
+                        get(g, "_p0", vn[c]),
+                        get(g, "_n0", vn[c]),
+                        skin(g, vn[c], false),
+                    );
+                }
+            }
         }
     }
     if why.is_empty() {
@@ -1247,6 +1271,16 @@ fn weighted_bones(skeleton: &Skeleton, shape: &Shape, g: &ShapeGeometry) -> Vec<
 }
 
 pub fn geometry_from_gltf(model: &Model, gltf: &Gltf) -> Result<SceneGeometry> {
+    geometry_from_gltf_with(model, gltf, &BTreeSet::new())
+}
+
+/// [`geometry_from_gltf`], the game's shapes named in `unchanged` (meshes the scene has as it was made:
+/// `unchanged_meshes.json`, from their fingerprints) kept as the game has them without comparing them.
+pub fn geometry_from_gltf_with(
+    model: &Model,
+    gltf: &Gltf,
+    unchanged: &BTreeSet<String>,
+) -> Result<SceneGeometry> {
     let mut report = GeometryReport::default();
     let (_, game_world) = bone_matrices(model)?;
     let mut scene_world = gltf.world_matrices()?;
@@ -1358,7 +1392,11 @@ pub fn geometry_from_gltf(model: &Model, gltf: &Gltf) -> Result<SceneGeometry> {
                 // (warnings about a mesh that turns out unchanged would only be noise)
                 let mut own = GeometryReport::default();
                 let g = shape_geometry(model, &skeleton, shape, &lods, &game_world, &mut own)?;
-                let same = same_as_game(model, shape, &g, new_bones.len())?;
+                let same = if unchanged.contains(&shape.name) {
+                    Ok(())
+                } else {
+                    same_as_game(model, shape, &g, new_bones.len())?
+                };
                 if std::env::var_os("MODSTUDIO_DEBUG_KEEP").is_some() {
                     eprintln!("{}: {:?}", shape.name, same);
                 }
@@ -1438,7 +1476,17 @@ pub fn replace_model(
         .first()
         .ok_or_else(|| Error("no model in the file".into()))?;
     let gltf = Gltf::parse(&romfs::read_file(glb)?).context(glb.display())?;
-    let scene = geometry_from_gltf(model, &gltf)?;
+    // the meshes the scene has as it was made (the build's Blender step lists them beside the export)
+    #[derive(serde::Deserialize, Default)]
+    struct Unchanged {
+        #[serde(default)]
+        meshes: BTreeSet<String>,
+    }
+    let unchanged = std::fs::read_to_string(glb.with_file_name("unchanged_meshes.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Unchanged>(&t).ok())
+        .unwrap_or_default();
+    let scene = geometry_from_gltf_with(model, &gltf, &unchanged.meshes)?;
     let data =
         bfres_write::write_edited(&bfres, &scene.shapes, &scene.new_bones, &scene.skin_bones)
             .context("writing the model")?;
@@ -1451,6 +1499,8 @@ pub fn replace_model(
         tips: BTreeMap<String, [f32; 3]>,
         #[serde(default)]
         cloth: Vec<String>,
+        #[serde(default)]
+        settings: BTreeMap<String, crate::cloth_new::SceneClothSettings>,
     }
     let bones_file = glb.with_file_name("bones.json");
     if let Ok(text) = std::fs::read_to_string(&bones_file)
@@ -1465,6 +1515,11 @@ pub fn replace_model(
             }
             if bones.cloth.contains(&b.name) {
                 report.added_cloth.push(b.name.clone());
+            }
+            if let Some(s) = bones.settings.get(&b.name) {
+                report
+                    .added_cloth_settings
+                    .insert(b.name.clone(), s.clone());
             }
         }
     }

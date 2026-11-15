@@ -110,6 +110,7 @@ fn main() {
                 bones: bones.clone(),
                 joints: joints.clone(),
                 across: vec![[step * 0.3, 0.0, 0.0]; 3],
+                settings: cloth_new::PartSettings::default(),
             };
             let bytes = romfs.read(&mut d, f).map_err(|e| e.to_string())?;
             let (written, met) =

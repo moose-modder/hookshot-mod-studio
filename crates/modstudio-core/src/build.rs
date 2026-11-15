@@ -510,6 +510,7 @@ fn run(
             &summary.geometry.added_names,
             &summary.geometry.added_cloth,
             &summary.geometry.added_tips,
+            &summary.geometry.added_cloth_settings,
         );
         for n in notes {
             progress.warn(n.clone());

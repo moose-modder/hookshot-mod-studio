@@ -33,7 +33,8 @@ import sys
 import bpy
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from scene_nodes import FINGERPRINT, RG_GROUP, material_fingerprint, rg_normal_group  # noqa: E402
+from scene_nodes import (FINGERPRINT, MESH_FINGERPRINT, RG_GROUP, material_fingerprint,  # noqa: E402
+                         mesh_fingerprint, rg_normal_group)
 
 ARMATURE = "Armature"
 
@@ -306,6 +307,10 @@ def main():
         fp = material_fingerprint(m)
         if fp:
             m[FINGERPRINT] = fp
+    # Each mesh as made, likewise: the build keeps the game's own mesh for one whose geometry is still this
+    for o in bpy.data.objects:
+        if o.type == "MESH":
+            o[MESH_FINGERPRINT] = mesh_fingerprint(o)
     # images are referenced from the export folder, beside the .blend
     bpy.ops.wm.save_as_mainfile(filepath=a.blend, relative_remap=True)
     log(f"saved {a.blend}")

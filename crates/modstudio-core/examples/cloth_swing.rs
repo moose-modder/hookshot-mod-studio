@@ -50,10 +50,21 @@ fn main() {
         .iter()
         .map(|&i| turn(&live.places()[i], &live.bones[i].rest))
         .collect();
+    // the bend between each picked bone and the next (a chain, top first): its turn relative to it, against rest
+    let mut bend = vec![0f32; picked.len().saturating_sub(1)];
+    let relative = |a: &math::Mat4, b: &math::Mat4| {
+        math::mul(&math::inverse_affine(a).unwrap_or(math::IDENTITY), b)
+    };
     for f in 0..frames {
         let m = motion.at(f as f32 / 60.0);
         live.step(&m, 1.0 / 60.0).expect("a step");
         let places = live.places();
+        for k in 0..bend.len() {
+            let (i, j) = (picked[k], picked[k + 1]);
+            let now = relative(&places[i], &places[j]);
+            let rest = relative(&live.bones[i].rest, &live.bones[j].rest);
+            bend[k] = bend[k].max(turn(&now, &rest));
+        }
         for (k, &i) in picked.iter().enumerate() {
             let carried = math::mul(&m, &live.bones[i].rest);
             let d = distance(&places[i], &carried);
@@ -70,6 +81,13 @@ fn main() {
         picked.len(),
         motion.seconds()
     );
+    for (k, b) in bend.iter().enumerate() {
+        println!(
+            "  bend between {} and {}: up to {b:.1} deg from rest",
+            live.bones[picked[k]].name,
+            live.bones[picked[k + 1]].name
+        );
+    }
     for (k, &i) in picked.iter().enumerate() {
         println!(
             "  {:28} settles {:.4} m and {:.1} deg from rest; in the motion up to {:.3} m and {:.1} deg from where it would be carried, {:.3} m and {:.1} deg at the end",
