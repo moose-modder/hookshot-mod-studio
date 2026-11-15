@@ -685,6 +685,8 @@ pub fn open_preview(
         &project.blend(),
         &args![
             "--python",
+            scripts.join("scene_tools.py"),
+            "--python",
             scripts.join("cloth_preview.py"),
             "--",
             "--preview",

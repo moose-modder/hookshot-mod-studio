@@ -1817,6 +1817,18 @@ def main():
                                       export_rest_position_armature=True, export_extras=False,
                                       export_cameras=False, export_lights=False)
             log(f"Exported {glb}")
+            # what the glTF doesn't hold of the bones, for the bones the build simulates (new ones named Ph_... or
+            # with "Simulate as cloth" ticked, scene_tools.py): each bone's tip (its tail), where the export puts the
+            # armature (glTF's axes: y up), so a chain's last bone is as long as in the scene; and the ticked ones
+            tips = {}
+            for b in arm.data.bones:
+                w = arm.matrix_world @ b.tail_local
+                tips[b.name] = [w.x, w.z, -w.y]
+            ticked = [b.name for b in arm.data.bones if b.get("modstudio_cloth")]
+            with open(os.path.join(cfg["output"], "bones.json"), "w", encoding="utf-8") as f:
+                json.dump({"tips": tips, "cloth": ticked}, f)
+            if ticked:
+                log(f"Simulate as cloth ticked: {ticked}")
         else:
             fbx = os.path.join(cfg["output"], cfg["fbx_name"])
             #Scale 0.01: Toolbox (Assimp) applies the FBX unit scale that Blender writes

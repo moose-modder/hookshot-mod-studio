@@ -342,6 +342,18 @@ impl TagfileImage {
         self.items.len().saturating_sub(1)
     }
 
+    /// The references item `item` stores: for each non-null reference slot, its byte offset in the item's data and
+    /// the item it refers to, in the order the writer numbers them. (Added for Hookshot Mod Studio: copying a group
+    /// of objects means following these.)
+    pub fn references_of(&self, item: usize) -> Result<Vec<(usize, usize)>> {
+        let mut layouts = Layouts::new(&self.types);
+        Ok(self
+            .references(&mut layouts, item)?
+            .into_iter()
+            .map(|r| (r.position, r.target))
+            .collect())
+    }
+
     /// The references an item stores, in the order they are numbered. Refused: bytes of the wrong length, a slot that
     /// holds more than an index, an index outside the items.
     fn references(&self, layouts: &mut Layouts<'_>, index: usize) -> Result<Vec<Reference>> {

@@ -28,8 +28,8 @@ use crate::progress::Progress;
 use crate::project::Project;
 use crate::settings::Settings;
 use crate::{
-    Context, Error, Result, anim_edit, args, cloth, cloth_edit, mods, replace, sizetable, texture,
-    tools,
+    Context, Error, Result, anim_edit, args, cloth, cloth_edit, cloth_new, mods, replace,
+    sizetable, texture, tools,
 };
 
 /// The last build's report, in the work folder.
@@ -368,6 +368,97 @@ fn run(
                 }
             }
             None => progress.line("as the game has it: the game's cloth file is used"),
+        }
+        progress.check()?;
+    }
+
+    // 3b2. New cloth parts: chains of bones the build added named Ph_... (the game's prefix for bones its physics
+    // moves) or with "Simulate as cloth" ticked in the scene, each simulated as a part of its own in the model's
+    // cloth file (the one just written, else the game's)
+    let added_simulated: Vec<&String> = summary
+        .geometry
+        .added_names
+        .iter()
+        .filter(|n| {
+            n.starts_with(cloth_new::SIMULATED_PREFIX) || summary.geometry.added_cloth.contains(n)
+        })
+        .collect();
+    if !added_simulated.is_empty() {
+        progress.step("Cloth for new bones");
+        let built_model = mod_romfs.join(&project.data.model);
+        let mut decoder = romfs.decoder()?;
+        let strings = crate::model::load_external_strings(&romfs, &mut decoder)?;
+        let built = romfs
+            .read(&mut decoder, &built_model)
+            .context(built_model.display())?;
+        let bfres = modstudio_formats::bfres::Bfres::parse(&built, Some(&strings))
+            .context(built_model.display())?;
+        let skeleton = cloth_new::rest_bones(
+            &bfres
+                .models
+                .first()
+                .ok_or_else(|| Error("the built model has no model".to_owned()))?
+                .skeleton,
+        );
+        let (parts, notes) = cloth_new::chains_of(
+            &skeleton,
+            &summary.geometry.added_names,
+            &summary.geometry.added_cloth,
+            &summary.geometry.added_tips,
+        );
+        for n in notes {
+            progress.warn(n.clone());
+            report.warnings.push(n);
+        }
+        let source = cloth::cloth_sources(
+            romfs.root(),
+            Some(&settings.cache_dir()),
+            &project.data.model,
+        )
+        .into_iter()
+        .next();
+        match source {
+            None => {
+                let w = format!(
+                    "{} bone(s) to simulate (named Ph_... or ticked) were added, but the model has no cloth file to simulate them in: they follow their parents",
+                    added_simulated.len()
+                );
+                progress.warn(w.clone());
+                report.warnings.push(w);
+            }
+            Some(source) => {
+                let written = mod_romfs.join(&source);
+                let bytes = if written.is_file() {
+                    std::fs::read(&written).context(written.display())?
+                } else {
+                    std::fs::read(romfs.root().join(&source)).context(&source)?
+                };
+                let out = cloth_new::add_parts(&bytes, &skeleton, &parts)?;
+                // it has to simulate before it goes into the mod
+                let mut live = cloth::LiveCloth::new(&out, &source)?;
+                for _ in 0..60 {
+                    live.step(&crate::math::IDENTITY, 1.0 / cloth::FPS as f32)?;
+                }
+                if let Some(dir) = written.parent() {
+                    std::fs::create_dir_all(dir).context(dir.display())?;
+                }
+                std::fs::write(&written, &out).context(written.display())?;
+                for p in &parts {
+                    let line = format!(
+                        "new part {}: {} hanging from {}",
+                        p.name,
+                        p.bones
+                            .iter()
+                            .map(|&b| skeleton[b].name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        skeleton[p.anchor].name
+                    );
+                    progress.line(line.clone());
+                    report.cloth.push(line);
+                }
+                progress.line(format!("{source} written (it reads back and simulates)"));
+            }
         }
         progress.check()?;
     }

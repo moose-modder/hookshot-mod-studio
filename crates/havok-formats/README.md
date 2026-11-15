@@ -98,3 +98,4 @@ of Time for Switch 2. Those are tagfiles of SDK 2025.2. Changes, each commented 
   definitions named `bufferName`; local range constraints' `shapeRadius` (in `maximumDistance`'s place) and
   `localStiffnessConstraints` (`LocalRange::stiffness`), with non-empty capsule local ranges refused; transform set
   usage flags of one component; deformers with `batchOffset` 0 and no `partialWrite`.
+- `tagfile_write.rs`: `TagfileImage::references_of`, an item's references (for copying a group of objects).

@@ -54,6 +54,16 @@ pub struct GeometryReport {
     /// Bones added to the skeleton: "<name> on <parent>".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub added_bones: Vec<String>,
+    /// The tips of the bones added (their tails in the scene, in the model's space), from `bones.json` beside the
+    /// scene's export: what a chain's last joint is when the build simulates it.
+    #[serde(skip)]
+    pub added_tips: BTreeMap<String, [f32; 3]>,
+    /// The bones added with "Simulate as cloth" ticked in the scene (`bones.json`).
+    #[serde(skip)]
+    pub added_cloth: Vec<String>,
+    /// The names of the bones added, in the skeleton's order.
+    #[serde(skip)]
+    pub added_names: Vec<String>,
 }
 
 impl GeometryReport {
@@ -1187,6 +1197,7 @@ fn new_bones_of(
             q
         };
         index_of_node.insert(j, count + out.len());
+        report.added_names.push(name.clone());
         report.added_bones.push(format!(
             "{name} on {}",
             if parent < count {
@@ -1431,7 +1442,32 @@ pub fn replace_model(
     let data =
         bfres_write::write_edited(&bfres, &scene.shapes, &scene.new_bones, &scene.skin_bones)
             .context("writing the model")?;
-    let report = scene.report;
+    let mut report = scene.report;
+    // the new bones' tips, as the scene has them (taken to the game's size where the scene isn't), and which have
+    // "Simulate as cloth" ticked
+    #[derive(serde::Deserialize, Default)]
+    struct SceneBones {
+        #[serde(default)]
+        tips: BTreeMap<String, [f32; 3]>,
+        #[serde(default)]
+        cloth: Vec<String>,
+    }
+    let bones_file = glb.with_file_name("bones.json");
+    if let Ok(text) = std::fs::read_to_string(&bones_file)
+        && let Ok(bones) = serde_json::from_str::<SceneBones>(&text)
+    {
+        let to_game = report.scene_to_game.unwrap_or(math::IDENTITY);
+        for b in &scene.new_bones {
+            if let Some(&p) = bones.tips.get(&b.name) {
+                report
+                    .added_tips
+                    .insert(b.name.clone(), math::transform_point(&to_game, p));
+            }
+            if bones.cloth.contains(&b.name) {
+                report.added_cloth.push(b.name.clone());
+            }
+        }
+    }
     // Read back what was written: it must parse.
     Bfres::parse(&data, Some(&loaded.strings)).context("reading the written model back")?;
     let out = out_romfs.join(model_path);

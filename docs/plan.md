@@ -568,8 +568,74 @@ game takes a skeleton with bones after its own, their inverse bind matrices, and
 Checked in game (2026-11-14): the plume swings as written in adult Link's standing idles, and stays still in his hand
 when he runs or jumps (animations without its track). A new bone moves in the game's animations given a track for it.
 
-**Next:** the `_Demo` skeletons (cutscene animations: whether a bone their skeleton files don't have plays); then
-(5) cloth on new bones.
+**Next:** (5) cloth on new bones; the `_Demo` skeletons (cutscene animations: whether a bone their skeleton files
+don't have plays) after.
+
+**Found for (5) (2026-11-14), `examples/cloth_parts_probe.rs`, `cloth_patterns.rs`, `pack_dump.rs`:**
+- **Each simulated part is a cloth data of its own** (`hclClothData`; adult Link has 22), and all 1,134 parts of the
+  171 files are built alike: one sim cloth; operators skin (object space 911, bone space 223), move the fixed
+  particles, simulate, set bones from triangles (`hclSimpleMeshBoneDeformOperator`), and two vertex copies (copy or
+  gather); states `Default` [0, 1, 2, 3], `AnimToSimCurrent` [0, 4], `AnimToSimPrev` [0, 5]; buffers scratch, sim
+  current, sim previous; one transform set, the part's own skeleton (`cloth_skeleton_<part>`: the bones it uses and
+  their parents up to `Root`, 7 to 56 bones; matched to the model's by name: only `Root` has the model's index).
+- **Adult Link's feather**, the smallest: 3 particles (2 fixed: skinned to `Head_2`; the free one to the two
+  feather bones), 1 triangle, two links, a stretch link, a range keeping the free particle within 8 cm of where its
+  skinning puts it, a transition set; both feather bones set from the one triangle; 3 colliders; no virtual
+  collision points. The hood string: 5 particles, 3 triangles, bend links and bend stiffness too.
+- **A bone set from a triangle** (`havok-cloth::deform`): the triangle's frame (its centroid; its first two corners
+  less the centroid; their cross product) times the bone's stored matrix, made orthonormal. So the stored matrix of a
+  new bone is the inverse of its triangle's frame at rest times the bone's rest place. The pair's offsets are bytes:
+  64 a bone, 6 a triangle.
+- **The lists**: each part is an object of the file's parameter archive (`Name`, its base bone, axes, a material
+  preset: `burlap`, `silk`, `hair`, `old_leather`) and of the actor pack's `ClothParam` `MeshList` (`BaseBone`,
+  `Preset`, `ParamCoefDict` of stiffness and radius factors, `KeepBoneLength`, twist settings).
+
+**Plan for (5):**
+- In Blender: new bones named `Ph_...` (the game's own prefix for bones physics moves) hanging in a chain from a bone
+  that isn't one (the chain's anchor: a game bone, or a new one that isn't simulated). Each chain becomes a part.
+- The part: a strip of particles two wide down the chain (at each joint, one on the chain and one beside it, across
+  the bone), the top two fixed and carried by the anchor; each bone set from the strip's triangle at its head; links
+  along and across the strip, a stretch link down the chain, a range around where its rest place would carry each
+  particle; the settings (gravity, damping, mass, radius, solver) of the file's own smallest part. No colliders at
+  first.
+- Written as a new cloth data of the model's cloth file: a copy of its smallest part with every array made for the
+  strip, its skeleton the chain and its parents up to `Root`; listed in the parameter archive (and in `ClothParam`
+  if the game needs it).
+- Checked: the file reads back and simulates (the new bones swing and settle in *Cloth physics*), then in game.
+
+**Done (2026-11-14): new parts.** `modstudio-core::cloth_new`:
+- `add_parts` copies the file's smallest part whose skin is in object space (its cloth data, sim cloth, buffers,
+  transform set, operators, states, constraint sets and skeleton, through `TagfileImage::references_of`; colliders
+  shared, not copied) and makes every array of the copy for the strip, as the plan says; the copy is listed in the
+  cloth container, its skeleton in the animation container, its entry in the parameter archive (the template's, with
+  its name and base bone).
+- What the game's data needed that a first try didn't have: no link between two fixed particles (a link moves each
+  end by the stored stiffness times that particle's inverse mass, `havok-cloth::constraints`, not divided by the
+  pair's sum: the game's files store the share of the error a pass corrects divided by the pair's inverse masses, 0.05
+  on the feather's links for a half; a link between two fixed particles weighs nothing); and only the layouts a file
+  spells out (a type's members are in a file's type table only where the file stores one): two-bone skin blocks with
+  all the weight on the anchor where the file has no one-bone ones (27 files), range entries with a stiffness of
+  their own where it has no plain ones (11 files).
+- `examples/cloth_new_check.rs`: on every cloth file, a chain of two new bones hanging from its model's highest bone
+  gets a part: 162 of the 171 read back, settle within 5% of the chain's length of the skeleton's places (they sag a
+  little), swing in the test motion and come back. Not done: 8 files whose parts all skin in bone space (no template;
+  said so), 1 file no model has.
+- `chains_of`: bones the build added whose names start with `Ph_` (the game's own prefix) or with *Simulate as
+  cloth* ticked (`pipeline/scene_tools.py`, run when the app opens a scene: a button and tick box in the Bone tab; the
+  tick is the custom property `modstudio_cloth`, as Blender 5 keeps properties a script registers apart from custom
+  properties, out of reach of the build and of a scene opened without the script), each chain from one whose
+  parent isn't one, on down the only such child (more than one: the first, and a note); joints the bones' heads and
+  the last one's tip (`bone_tips.json`, which `prep_for_game.py` writes beside the export); the strip across the
+  model's x axis, a quarter of the first bone wide. The build adds the parts to the model's cloth file (the one it
+  just wrote, else the game's), simulates it, and lists them ("new part ...").
+- Through Blender: the feather four times larger hung from adult Link's right hand on a new bone `Ph_Plume` (0.62 m):
+  the part settles hanging straight down (the bone was modelled 22 degrees off), swings up to 30 degrees in the test
+  motion (its range: half its length) and comes back (`examples/cloth_swing.rs`).
+- Checked in game (2026-11-14): the plume swings from adult Link's hand. The game runs a part from the cloth file
+  alone: the actor pack's `ClothParam` doesn't list it, and didn't need to.
+
+**Next:** colliders for new parts (the body's, so a part doesn't go through it); a template for the 8 files whose
+parts all skin in bone space; the `_Demo` skeletons.
 
 ## Risks and how they are contained
 

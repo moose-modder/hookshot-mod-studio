@@ -13,7 +13,7 @@ use crate::progress::{CANCELLED, Progress};
 use crate::{Context, Error, Result};
 
 /// The Blender scripts (`pipeline/`), built in: the app writes them out where Blender can run them.
-pub const SCRIPTS: [(&str, &str); 7] = [
+pub const SCRIPTS: [(&str, &str); 8] = [
     (
         "make_scene.py",
         include_str!("../../../pipeline/make_scene.py"),
@@ -41,6 +41,10 @@ pub const SCRIPTS: [(&str, &str); 7] = [
     (
         "anim_scene.py",
         include_str!("../../../pipeline/anim_scene.py"),
+    ),
+    (
+        "scene_tools.py",
+        include_str!("../../../pipeline/scene_tools.py"),
     ),
 ];
 
@@ -142,9 +146,18 @@ pub fn blender_version(exe: &Path) -> Result<String> {
     Ok(line)
 }
 
-/// Opens `blend` in Blender for editing (Blender keeps running on its own).
-pub fn open_in_blender(exe: &Path, blend: &Path) -> Result<()> {
-    open_in_blender_with(exe, blend, &[])
+/// Opens `blend` in Blender for editing (Blender keeps running on its own), with Mod Studio's settings in its panels
+/// (`scene_tools.py`, from the scripts in `cache`: the Bone tab's "Simulate as cloth").
+pub fn open_in_blender(exe: &Path, blend: &Path, cache: &Path) -> Result<()> {
+    let scripts = scripts_dir(cache)?;
+    open_in_blender_with(
+        exe,
+        blend,
+        &[
+            OsString::from("--python"),
+            scripts.join("scene_tools.py").into_os_string(),
+        ],
+    )
 }
 
 /// Opens `blend` in Blender with more arguments after it (a `--python` script to run once it's open).

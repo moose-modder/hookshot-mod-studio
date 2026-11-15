@@ -565,7 +565,12 @@ fn cancel_task(state: State<'_, App>, task: u64) {
 async fn open_in_blender(state: State<'_, App>, file: PathBuf) -> Result<()> {
     let p = Project::load(&file).map_err(err)?;
     let settings = state.settings();
-    tools::open_in_blender(settings.blender().map_err(err)?, &p.blend()).map_err(err)
+    tools::open_in_blender(
+        settings.blender().map_err(err)?,
+        &p.blend(),
+        &settings.cache_dir(),
+    )
+    .map_err(err)
 }
 
 /// Shows a folder (or a file in its folder) in the system's file manager.

@@ -318,7 +318,16 @@ it; `modstudio settings --hookshot <Hookshot folder> --workspace <dir>` too.
     skeleton, on its parent (the nearest bone above it; the game's root for one without), at its place relative to
     that parent as the scene has it, and the meshes keep their weights on it (the build lists the bones added).
     In game it follows its parent (as the game's own bones do that their animations don't know), except in the
-    animations you give it motion in (*Editing animations*). Rigid meshes (one bone per vertex: eyes) can't go on a new bone; their weights go to the
+    animations you give it motion in (*Editing animations*).
+  - A new bone named **`Ph_...`** (the game's own prefix for bones its physics moves) or with **Simulate as cloth**
+    ticked, hanging from one that isn't, is simulated: the build makes it a part of the model's cloth file, a chain
+    down the bones under it that are simulated too (a strip of particles two wide, the top fixed to the bone above,
+    each bone set from it), and lists it ("new part"). The tick box is in the Bone tab's *Mod Studio* panel when the
+    app opens the scene (`scene_tools.py`); it is the bone's custom property `modstudio_cloth`, so a scene opened
+    otherwise shows it under *Custom Properties* (or add it there: a boolean of that name, ticked).
+    It swings as a pendulum from its top (hanging straight down when still), within half its length of where its
+    parent would carry it. Make the last bone as long as what hangs from it: the build reads its tip from the
+    scene. It needs the model to have a cloth file; it doesn't collide with anything yet. Rigid meshes (one bone per vertex: eyes) can't go on a new bone; their weights go to the
     nearest parent that can hold one.
   - A **moved bone** (in edit mode): the game's animations set each animated bone's own position (the
     townsman's animations hold the rest positions of most of his bones, `examples/anim_probe.rs`), so it would
