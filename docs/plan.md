@@ -634,8 +634,34 @@ don't have plays) after.
 - Checked in game (2026-11-14): the plume swings from adult Link's hand. The game runs a part from the cloth file
   alone: the actor pack's `ClothParam` doesn't list it, and didn't need to.
 
-**Next:** colliders for new parts (the body's, so a part doesn't go through it); a template for the 8 files whose
-parts all skin in bone space; the `_Demo` skeletons.
+**Done (2026-11-14): colliders for new parts, bone-space templates, cutscene skeletons.**
+- A new part meets the file's colliders within reach of its chain (from its anchor: the chain's length and a
+  particle's radius; capsules and spheres on a bone), the nearest first, at most 22 (the most a game's part has), but
+  those a free particle of the strip starts inside of (its anchor's own, mostly: they would throw it off at the first
+  step): its collider list, its map's bones and offsets (each collider's place relative to its bone), its free
+  particles' masks, its per-collider pinch data and sidedness (an entry of another part's, or zeros), the colliders'
+  bones in its skeleton and in what its simulation reads. The build lists them ("meets ..."). The plume from adult
+  Link's hand: 35 within reach, the nearest 22 (his right arm, leg and waist, the gear on his back).
+- A template whose skin is in bone space (8 files have no other: Big Octo's, ...): each particle's place relative to
+  the anchor, its weight in the fourth value, blocks of 16, 8, 5 or 4 vertices for one to four bones (as the file
+  spells out). `cloth_new_check`: 170 of the 171 files take a new part (the other has no model).
+- **Cutscene skeletons.** Adult and child Link's shared event animations (`Player_*_Demo_Animation`: drinking from a
+  bottle, chests, items got, the ocarina) have a skeleton file beside them (`.Skeleton.bfres`), the model's skeleton
+  bone for bone; the per-cutscene files (`Dm_*_Player_Adult`, 90 of them) have none. Skeleton files are laid out as
+  animation files are (only the first relocation section used, no GPU data): `bfres_write::write_skeleton` writes one
+  with bones added (the skeleton half of `write_edited`, now `append_skeleton`); `bones_add`: all 58 such files of the
+  game's take two bones, read back, find every name, write again unchanged. The build adds the bones to every
+  skeleton file beside an animation file the model's actors give it that is its skeleton bone for bone (a warning
+  for one that isn't: its animations won't move the new bones), so it stays so. Through Blender: the plume (a plain
+  new bone) waving in 79 of adult Link's ocarina animations: tracks in all, the skeleton file with the bone.
+
+Checked in game (2026-11-14): the plume on a plain new bone swings in adult Link's ocarina animations and hangs still
+otherwise. Holding the ocarina plays 721-frame waits (`Ocarina_Adult_Wait`, `_OpenEye_Wait`, a wait per note: the
+actor's animation sequence, `AS/Player_Adult.root.asb`, names them); a first test without them showed nothing. With
+the cloth plume (its skeleton file changed too), taking out the ocarina plays as before. The colliders were in the
+cloth test; whether the plume bumps off the leg wasn't looked at closely.
+
+**Next:** a release.
 
 ## Risks and how they are contained
 

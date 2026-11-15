@@ -284,105 +284,16 @@ pub fn write_edited(
         (d[..gpu].to_vec(), data_section.size, gpu)
     } else {
         let mut out = d[..data_section.size].to_vec();
-        let alloc = |out: &mut Vec<u8>, size: usize, align: usize| -> usize {
-            let at = out.len().next_multiple_of(align);
-            out.resize(at + size, 0);
-            at
-        };
-        let mut point = |out: &mut Vec<u8>, field: usize, to: usize| {
-            put_u64(out, field, to as u64);
-            if !relocated.contains(&field) {
-                added_entries.push(Entry {
-                    at: field,
-                    structs: 1,
-                    offsets: 1,
-                    padding: 0,
-                });
-            }
-        };
-        let mut new_entries: Vec<Entry> = Vec::new();
         if added > 0 {
-            let sk = model.skeleton.at;
-            // the new bones' names, as the file keeps strings: a u16 length, the bytes, a zero
-            let mut name_at = Vec::with_capacity(added);
-            for nb in new_bones {
-                let at = alloc(&mut out, 2 + nb.name.len() + 1, 2);
-                out[at..at + 2].copy_from_slice(&(nb.name.len() as u16).to_le_bytes());
-                out[at + 2..at + 2 + nb.name.len()].copy_from_slice(nb.name.as_bytes());
-                name_at.push(at);
-            }
-            let old_count = model.skeleton.bones.len();
-            let count = skeleton.bones.len();
-            // the bone array: the game's bones as they are (their rigid indices moved up), then the new ones
-            let bones_at = alloc(&mut out, count * BONE_RECORD, 8);
-            for (i, b) in model.skeleton.bones.iter().enumerate() {
-                let at = bones_at + i * BONE_RECORD;
-                out[at..at + BONE_RECORD].copy_from_slice(d.slice_at(b.at, BONE_RECORD)?);
-                let rigid = skeleton.bones[i].rigid_matrix.map_or(-1, |r| r as i16);
-                out[at + 0x26..at + 0x28].copy_from_slice(&rigid.to_le_bytes());
-            }
-            for (j, nb) in new_bones.iter().enumerate() {
-                let b = &skeleton.bones[old_count + j];
-                let at = bones_at + (old_count + j) * BONE_RECORD;
-                put_u64(&mut out, at, name_at[j] as u64);
-                let index = (old_count + j) as u16;
-                out[at + 0x20..at + 0x22].copy_from_slice(&index.to_le_bytes());
-                out[at + 0x22..at + 0x24].copy_from_slice(&(nb.parent as i16).to_le_bytes());
-                let smooth = b.smooth_matrix.map_or(-1, |s| s as i16);
-                out[at + 0x24..at + 0x26].copy_from_slice(&smooth.to_le_bytes());
-                out[at + 0x26..at + 0x28].copy_from_slice(&(-1i16).to_le_bytes());
-                out[at + 0x28..at + 0x2A].copy_from_slice(&(-1i16).to_le_bytes());
-                put_u32(&mut out, at + 0x2C, b.flags);
-                put_f32s(&mut out, at + 0x30, &b.scale);
-                put_f32s(&mut out, at + 0x3C, &b.rotation);
-                put_f32s(&mut out, at + 0x4C, &b.translation);
-            }
-            new_entries.push(Entry {
-                at: bones_at,
-                structs: count,
-                offsets: 3,
-                padding: BONE_RECORD / 8 - 3,
-            });
-            let list_at = alloc(&mut out, skeleton.matrix_to_bone.len() * 2, 8);
-            for (k, &b) in skeleton.matrix_to_bone.iter().enumerate() {
-                out[list_at + k * 2..list_at + k * 2 + 2].copy_from_slice(&b.to_le_bytes());
-            }
-            let inverse_at = alloc(&mut out, skeleton.smooth_count * 48, 8);
-            for (k, m) in skeleton.inverse_model_matrices.iter().enumerate() {
-                put_f32s(&mut out, inverse_at + k * 48, m);
-            }
-            // the name dictionary, built again; the root's key the game's (an empty string)
-            let old_dict = d.offset_at(sk + 0x08)?;
-            let names: Vec<&str> = skeleton.bones.iter().map(|b| b.name.as_str()).collect();
-            let nodes = res_dict::build(&names);
-            let dict_at = alloc(&mut out, 8 + nodes.len() * 16, 8);
-            out[dict_at..dict_at + 4].copy_from_slice(d.slice_at(old_dict, 4)?);
-            put_u32(&mut out, dict_at + 4, names.len() as u32);
-            for (k, node) in nodes.iter().enumerate() {
-                let at = dict_at + 8 + k * 16;
-                put_u32(&mut out, at, node.reference);
-                out[at + 4..at + 6].copy_from_slice(&node.left.to_le_bytes());
-                out[at + 6..at + 8].copy_from_slice(&node.right.to_le_bytes());
-                let key = match k {
-                    0 => d.u64_at(old_dict + 16)?,
-                    _ if k <= old_count => d.u64_at(model.skeleton.bones[k - 1].at)?,
-                    _ => name_at[k - 1 - old_count] as u64,
-                };
-                put_u64(&mut out, at + 8, key);
-            }
-            new_entries.push(Entry {
-                at: dict_at + 16,
-                structs: nodes.len(),
-                offsets: 1,
-                padding: 1,
-            });
-            point(&mut out, sk + 0x08, dict_at);
-            point(&mut out, sk + 0x10, bones_at);
-            point(&mut out, sk + 0x18, list_at);
-            point(&mut out, sk + 0x20, inverse_at);
-            out[sk + 0x38..sk + 0x3A].copy_from_slice(&(count as u16).to_le_bytes());
-            out[sk + 0x3A..sk + 0x3C]
-                .copy_from_slice(&(skeleton.smooth_count as u16).to_le_bytes());
+            append_skeleton(
+                &mut out,
+                d,
+                model,
+                &skeleton,
+                new_bones,
+                &relocated,
+                &mut added_entries,
+            )?;
         }
         // shapes' new lists of skin bones, and room for a sphere each (filled with the bounds below)
         for (&i, list) in skin_bones {
@@ -392,13 +303,24 @@ pub fn write_edited(
                 out[list_at + k * 2..list_at + k * 2 + 2].copy_from_slice(&b.to_le_bytes());
             }
             let spheres_at = alloc(&mut out, list.len() * 16, 8);
-            point(&mut out, shape.at + 0x20, list_at);
-            point(&mut out, shape.at + 0x40, spheres_at);
+            point(
+                &mut out,
+                &relocated,
+                &mut added_entries,
+                shape.at + 0x20,
+                list_at,
+            );
+            point(
+                &mut out,
+                &relocated,
+                &mut added_entries,
+                shape.at + 0x40,
+                spheres_at,
+            );
             out[shape.at + 0x58..shape.at + 0x5A]
                 .copy_from_slice(&(list.len() as u16).to_le_bytes());
             sphere_arrays.insert(i, spheres_at);
         }
-        added_entries.extend(new_entries);
         let end = out.len();
         let new_gpu = end.next_multiple_of(GPU_END_ALIGN).max(gpu);
         out.resize(new_gpu, 0);
@@ -661,6 +583,217 @@ pub fn write_edited(
     if buffer_info != 0 {
         put_u32(&mut out, buffer_info + 4, (gpu_end - new_gpu) as u32);
     }
+    Ok(out)
+}
+
+/// Room for `size` bytes at the end of `out`, aligned to `align`: its position.
+fn alloc(out: &mut Vec<u8>, size: usize, align: usize) -> usize {
+    let at = out.len().next_multiple_of(align);
+    out.resize(at + size, 0);
+    at
+}
+
+/// The pointer at `field` set to `to`, with a relocation entry for it unless the table lists it already.
+fn point(
+    out: &mut [u8],
+    relocated: &BTreeSet<usize>,
+    added_entries: &mut Vec<Entry>,
+    field: usize,
+    to: usize,
+) {
+    put_u64(out, field, to as u64);
+    if !relocated.contains(&field) {
+        added_entries.push(Entry {
+            at: field,
+            structs: 1,
+            offsets: 1,
+            padding: 0,
+        });
+    }
+}
+
+/// The skeleton `skeleton` (the model's with `new_bones` after its own, [`bfres_bones::with_bones`]) written at the
+/// end of `out` (the file's data; `d` as it was): the new bones' names, the bone array (the game's records as they
+/// are, their rigid indices as `skeleton` has them, then the new ones), the matrix list, the inverse bind matrices and
+/// the name dictionary, the skeleton's pointers and counts patched; relocation entries for the new pointers into
+/// `added_entries`.
+fn append_skeleton(
+    out: &mut Vec<u8>,
+    d: &[u8],
+    model: &Model,
+    skeleton: &Skeleton,
+    new_bones: &[NewBone],
+    relocated: &BTreeSet<usize>,
+    added_entries: &mut Vec<Entry>,
+) -> Result<()> {
+    let sk = model.skeleton.at;
+    // the new bones' names, as the file keeps strings: a u16 length, the bytes, a zero
+    let mut name_at = Vec::with_capacity(new_bones.len());
+    for nb in new_bones {
+        let at = alloc(out, 2 + nb.name.len() + 1, 2);
+        out[at..at + 2].copy_from_slice(&(nb.name.len() as u16).to_le_bytes());
+        out[at + 2..at + 2 + nb.name.len()].copy_from_slice(nb.name.as_bytes());
+        name_at.push(at);
+    }
+    let old_count = model.skeleton.bones.len();
+    let count = skeleton.bones.len();
+    // the bone array: the game's bones as they are (their rigid indices moved up), then the new ones
+    let bones_at = alloc(out, count * BONE_RECORD, 8);
+    for (i, b) in model.skeleton.bones.iter().enumerate() {
+        let at = bones_at + i * BONE_RECORD;
+        out[at..at + BONE_RECORD].copy_from_slice(d.slice_at(b.at, BONE_RECORD)?);
+        let rigid = skeleton.bones[i].rigid_matrix.map_or(-1, |r| r as i16);
+        out[at + 0x26..at + 0x28].copy_from_slice(&rigid.to_le_bytes());
+    }
+    for (j, nb) in new_bones.iter().enumerate() {
+        let b = &skeleton.bones[old_count + j];
+        let at = bones_at + (old_count + j) * BONE_RECORD;
+        put_u64(out, at, name_at[j] as u64);
+        let index = (old_count + j) as u16;
+        out[at + 0x20..at + 0x22].copy_from_slice(&index.to_le_bytes());
+        out[at + 0x22..at + 0x24].copy_from_slice(&(nb.parent as i16).to_le_bytes());
+        let smooth = b.smooth_matrix.map_or(-1, |s| s as i16);
+        out[at + 0x24..at + 0x26].copy_from_slice(&smooth.to_le_bytes());
+        out[at + 0x26..at + 0x28].copy_from_slice(&(-1i16).to_le_bytes());
+        out[at + 0x28..at + 0x2A].copy_from_slice(&(-1i16).to_le_bytes());
+        put_u32(out, at + 0x2C, b.flags);
+        put_f32s(out, at + 0x30, &b.scale);
+        put_f32s(out, at + 0x3C, &b.rotation);
+        put_f32s(out, at + 0x4C, &b.translation);
+    }
+    added_entries.push(Entry {
+        at: bones_at,
+        structs: count,
+        offsets: 3,
+        padding: BONE_RECORD / 8 - 3,
+    });
+    let list_at = alloc(out, skeleton.matrix_to_bone.len() * 2, 8);
+    for (k, &b) in skeleton.matrix_to_bone.iter().enumerate() {
+        out[list_at + k * 2..list_at + k * 2 + 2].copy_from_slice(&b.to_le_bytes());
+    }
+    let inverse_at = alloc(out, skeleton.smooth_count * 48, 8);
+    for (k, m) in skeleton.inverse_model_matrices.iter().enumerate() {
+        put_f32s(out, inverse_at + k * 48, m);
+    }
+    // the name dictionary, built again; the root's key the game's (an empty string)
+    let old_dict = d.offset_at(sk + 0x08)?;
+    let names: Vec<&str> = skeleton.bones.iter().map(|b| b.name.as_str()).collect();
+    let nodes = res_dict::build(&names);
+    let dict_at = alloc(out, 8 + nodes.len() * 16, 8);
+    out[dict_at..dict_at + 4].copy_from_slice(d.slice_at(old_dict, 4)?);
+    put_u32(out, dict_at + 4, names.len() as u32);
+    for (k, node) in nodes.iter().enumerate() {
+        let at = dict_at + 8 + k * 16;
+        put_u32(out, at, node.reference);
+        out[at + 4..at + 6].copy_from_slice(&node.left.to_le_bytes());
+        out[at + 6..at + 8].copy_from_slice(&node.right.to_le_bytes());
+        let key = match k {
+            0 => d.u64_at(old_dict + 16)?,
+            _ if k <= old_count => d.u64_at(model.skeleton.bones[k - 1].at)?,
+            _ => name_at[k - 1 - old_count] as u64,
+        };
+        put_u64(out, at + 8, key);
+    }
+    added_entries.push(Entry {
+        at: dict_at + 16,
+        structs: nodes.len(),
+        offsets: 1,
+        padding: 1,
+    });
+    point(out, relocated, added_entries, sk + 0x08, dict_at);
+    point(out, relocated, added_entries, sk + 0x10, bones_at);
+    point(out, relocated, added_entries, sk + 0x18, list_at);
+    point(out, relocated, added_entries, sk + 0x20, inverse_at);
+    out[sk + 0x38..sk + 0x3A].copy_from_slice(&(count as u16).to_le_bytes());
+    out[sk + 0x3A..sk + 0x3C].copy_from_slice(&(skeleton.smooth_count as u16).to_le_bytes());
+    Ok(())
+}
+
+/// Writes a file holding a skeleton alone (`bfres`: one model without shapes, nothing but its data in its relocation
+/// table's first section: the `*_Animation.Skeleton` files beside some animation files) with `new_bones` added: the
+/// skeleton written after the file's data as [`write_edited`] writes a model's, the relocation table after it.
+pub fn write_skeleton(bfres: &Bfres, new_bones: &[NewBone]) -> Result<Vec<u8>> {
+    let d = bfres.data;
+    let [model] = bfres.models.as_slice() else {
+        return Err(unsupported(format!(
+            "{} models in one file",
+            bfres.models.len()
+        )));
+    };
+    if !model.shapes.is_empty() {
+        return Err(invalid("a model with meshes: write_edited writes those"));
+    }
+    let rlt = Relocations::parse(d)?;
+    let Some(first) = rlt.sections.first() else {
+        return Err(invalid("a relocation table without sections"));
+    };
+    if first.offset != 0
+        || rlt
+            .sections
+            .iter()
+            .skip(1)
+            .any(|s| s.size != 0 || s.entry_count != 0)
+    {
+        return Err(unsupported(
+            "a skeleton file whose relocation table has more than its first section in use",
+        ));
+    }
+    let skeleton = bfres_bones::with_bones(&model.skeleton, new_bones)?;
+    let relocated: BTreeSet<usize> = rlt
+        .entries_of(0)
+        .iter()
+        .flat_map(|e| e.pointers())
+        .collect();
+    let mut out = d[..first.size].to_vec();
+    let mut added_entries = Vec::new();
+    if !new_bones.is_empty() {
+        append_skeleton(
+            &mut out,
+            d,
+            model,
+            &skeleton,
+            new_bones,
+            &relocated,
+            &mut added_entries,
+        )?;
+    }
+    let end = out.len();
+    let r = end.next_multiple_of(8);
+    out.resize(r, 0);
+    let mut entries: Vec<Entry> = rlt.entries_of(0).to_vec();
+    entries.extend(added_entries);
+    entries.sort_by_key(|e| e.at);
+    let mut table = Vec::new();
+    table.extend_from_slice(b"_RLT");
+    table.extend_from_slice(&(r as u32).to_le_bytes());
+    table.extend_from_slice(&(rlt.sections.len() as u32).to_le_bytes());
+    table.extend_from_slice(d.slice_at(rlt.at + 12, 4)?);
+    for si in 0..rlt.sections.len() {
+        table.extend_from_slice(d.slice_at(rlt.at + 0x10 + si * 0x18, 8)?);
+        let (pos, size, first, count) = if si == 0 {
+            (0, end, 0, entries.len())
+        } else {
+            (end, 0, entries.len(), 0)
+        };
+        for v in [pos, size, first, count] {
+            table.extend_from_slice(&(v as u32).to_le_bytes());
+        }
+    }
+    for e in &entries {
+        if e.structs > u16::MAX as usize
+            || e.offsets > u8::MAX as usize
+            || e.padding > u8::MAX as usize
+        {
+            return Err(invalid("a relocation entry too large to write"));
+        }
+        table.extend_from_slice(&(e.at as u32).to_le_bytes());
+        table.extend_from_slice(&(e.structs as u16).to_le_bytes());
+        table.extend_from_slice(&[e.offsets as u8, e.padding as u8]);
+    }
+    out.extend_from_slice(&table);
+    put_u32(&mut out, 0x18, r as u32);
+    let len = out.len() as u32;
+    put_u32(&mut out, 0x1C, len);
     Ok(out)
 }
 

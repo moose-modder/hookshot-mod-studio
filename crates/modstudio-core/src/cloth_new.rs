@@ -5,8 +5,8 @@
 //! skin (the particles' places as their bones carry them), move the fixed particles, simulate, set bones from
 //! triangles, and two vertex copies; states `Default`, `AnimToSimCurrent` and `AnimToSimPrev`; three buffers; one
 //! transform set, which is the part's own skeleton (the bones it uses and their parents up to the root, matched to the
-//! model's by name). So a new part is a copy of one of the file's own (the smallest whose skin is in object space),
-//! every array of it made again for the new part:
+//! model's by name). So a new part is a copy of one of the file's own (the smallest whose skin moves positions alone:
+//! in object space where the file has one, else in bone space), every array of it made again for the new part:
 //!
 //! - **a strip** of particles two wide down the chain: at each joint (each bone's head, then the last bone's tip) one
 //!   on the chain and one beside it (`across`); the top two fixed, carried by the bone the chain hangs from (its
@@ -15,9 +15,14 @@
 //! - **constraints**: links along every edge of the strip, a stretch link down the chain, a range keeping each free
 //!   particle near where the anchor would carry it at rest (half its distance down the chain), and the transition
 //!   set (all particles); run in the order the game's parts run them;
-//! - **skinning**: every particle on the anchor alone (one-bone blocks of the object space deformer, positions packed
-//!   as `hkPackedVector3`, in the model's space);
-//! - **no colliders**, no landscape collision particles, no pinch detection;
+//! - **skinning**: every particle on the anchor alone, in blocks of the fewest bones a vertex whose type the file
+//!   spells out (the other bones the anchor too, without weight): in object space its place in the model packed as
+//!   an `hkPackedVector3` and the anchor's inverse rest place; in bone space its place relative to the anchor, its
+//!   weight in the fourth value;
+//! - **colliders**: the file's own within reach of the chain (the nearest first, up to 22 as the game's parts have
+//!   at most; capsules and spheres on a bone), but those the chain starts inside of (its anchor's own, mostly: they
+//!   would throw it off at the first step); its free particles meet them all; no landscape collision, no pinch
+//!   detection;
 //! - **the skeleton**: the anchor and its parents from the root, then the chain; the transform set and every
 //!   operator's and state's record of the bones it reads and writes made for it.
 //!
@@ -196,6 +201,118 @@ pub fn chains_of(
     (parts, notes)
 }
 
+/// A collider of the file a new part meets: its item, its name, the model's bone it follows and its place relative to
+/// that bone.
+#[derive(Debug, Clone)]
+struct PartCollider {
+    item: usize,
+    name: String,
+    bone: usize,
+    offset: Mat4,
+}
+
+/// The most colliders a part of the game's has.
+const MOST_COLLIDERS: usize = 22;
+
+/// The distance from `p` to the segment `a`-`b`.
+fn to_segment(p: [f32; 3], a: [f32; 3], b: [f32; 3]) -> f32 {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+    let len2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    let t = if len2 > 0.0 {
+        ((ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    distance(p, [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t])
+}
+
+/// The colliders of the file (`colliders`, as its scene has them) a new part meets: on a bone of `skeleton`, a capsule
+/// or a sphere, within reach of the chain (from its anchor, the chain's length and a particle's radius), but not one
+/// a free particle of the strip starts inside of; the nearest first, at most [`MOST_COLLIDERS`]. Notes on the ones
+/// left out.
+fn colliders_for(
+    colliders: &[crate::cloth_edit::SceneCollider],
+    skeleton: &[RestBone],
+    world: &[Mat4],
+    part: &NewPart,
+    positions: &[[f32; 3]],
+    particle_radius: f32,
+) -> (Vec<PartCollider>, Vec<String>) {
+    use crate::cloth_edit::SceneShape;
+    let reach: f32 = part
+        .joints
+        .windows(2)
+        .map(|w| distance(w[0], w[1]))
+        .sum::<f32>()
+        + particle_radius;
+    let mut found: Vec<(f32, PartCollider)> = Vec::new();
+    let mut inside = Vec::new();
+    for c in colliders {
+        let Some(bone) = c
+            .bone
+            .as_ref()
+            .and_then(|n| skeleton.iter().position(|b| &b.name == n))
+        else {
+            continue;
+        };
+        let (a, b, r) = match &c.shape {
+            SceneShape::Capsule { start, end, radius } => (
+                math::transform_point(&c.place, *start),
+                math::transform_point(&c.place, *end),
+                *radius,
+            ),
+            SceneShape::Sphere { centre, radius } => {
+                let p = math::transform_point(&c.place, *centre);
+                (p, p, *radius)
+            }
+            _ => continue,
+        };
+        let near = to_segment(part.joints[0], a, b) - r;
+        if near > reach {
+            continue;
+        }
+        if positions
+            .iter()
+            .skip(2)
+            .any(|&p| to_segment(p, a, b) < r + particle_radius)
+        {
+            inside.push(c.name.clone());
+            continue;
+        }
+        let Some(inverse) = math::inverse_affine(&world[bone]) else {
+            continue;
+        };
+        found.push((
+            near,
+            PartCollider {
+                item: c.id,
+                name: c.name.clone(),
+                bone,
+                offset: math::mul(&inverse, &c.place),
+            },
+        ));
+    }
+    found.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let mut notes = Vec::new();
+    if found.len() > MOST_COLLIDERS {
+        notes.push(format!(
+            "{}: {} colliders within reach; the nearest {MOST_COLLIDERS} are used",
+            part.name,
+            found.len()
+        ));
+        found.truncate(MOST_COLLIDERS);
+    }
+    if !inside.is_empty() {
+        notes.push(format!(
+            "{}: it starts inside {} (left out: they would throw it off)",
+            part.name,
+            inside.join(", ")
+        ));
+    }
+    (found.into_iter().map(|(_, c)| c).collect(), notes)
+}
+
 /// Each bone's place in the model at rest.
 pub fn rest_world(skeleton: &[RestBone]) -> Vec<Mat4> {
     let mut world: Vec<Option<Mat4>> = vec![None; skeleton.len()];
@@ -358,6 +475,21 @@ impl<'t, 'a> Editor<'t, 'a> {
             "{} has no member {name}",
             self.tag.types.get(t).map_or("?", |ty| ty.name.as_str())
         )))
+    }
+
+    /// The size of member `name` of type `t`.
+    fn member_size(&self, t: usize, name: &str) -> Result<usize> {
+        let mut index = t;
+        for _ in 0..64 {
+            let Some(ty) = self.tag.types.get(index).filter(|_| index != 0) else {
+                break;
+            };
+            if let Some(f) = ty.fields.iter().find(|f| f.name == name) {
+                return self.tag.stride(f.type_index).map_err(fail("a member"));
+            }
+            index = ty.parent;
+        }
+        Err(Error(format!("no member {name}")))
     }
 
     /// The array member `field` (of the template) made `count` elements of `data` in the copy: a new run (empty: no
@@ -612,8 +744,14 @@ fn pointed<'t, 'a>(v: Value<'t, 'a>) -> Result<Vec<Value<'t, 'a>>> {
 }
 
 /// The cloth file `bytes` with a new part for each of `parts` (bones of `skeleton`, the model's skeleton with the
-/// chains' bones in it). Read back before it is returned.
-pub fn add_parts(bytes: &[u8], skeleton: &[RestBone], parts: &[NewPart]) -> Result<Vec<u8>> {
+/// chains' bones in it), and what each part meets and was left out of meeting (a line each). Read back before it is
+/// returned.
+pub fn add_parts(
+    bytes: &[u8],
+    skeleton: &[RestBone],
+    parts: &[NewPart],
+) -> Result<(Vec<u8>, Vec<String>)> {
+    let scene = crate::cloth_edit::scene_of(bytes, "the cloth file")?;
     let phive = Phive::parse(bytes).map_err(|e| Error(format!("not a cloth file: {e}")))?;
     let tag = Tagfile::read(phive.tagfile, None).map_err(fail("reading the cloth file"))?;
     let physics = cloth::read(&tag).map_err(fail("reading the cloth file"))?;
@@ -629,7 +767,7 @@ pub fn add_parts(bytes: &[u8], skeleton: &[RestBone], parts: &[NewPart]) -> Resu
             .map_err(fail("the animation container"))?,
     )?;
     // the template: the smallest part (by particles) whose skin is in object space, positions only
-    let mut template: Option<(usize, usize)> = None;
+    let mut template: Option<(usize, (bool, usize))> = None;
     for (i, d) in datas.iter().enumerate() {
         let name = d
             .field("name")
@@ -646,6 +784,9 @@ pub fn add_parts(bytes: &[u8], skeleton: &[RestBone], parts: &[NewPart]) -> Resu
                 OperatorKind::ObjectSpaceSkin {
                     components: cloth::Components::P,
                     ..
+                } | OperatorKind::BoneSpaceSkin {
+                    components: cloth::Components::P,
+                    ..
                 }
             )
             && matches!(c.operators[1].kind, OperatorKind::MoveParticles { .. })
@@ -658,14 +799,18 @@ pub fn add_parts(bytes: &[u8], skeleton: &[RestBone], parts: &[NewPart]) -> Resu
         if !fits {
             continue;
         }
-        let n = c.sim_cloths[0].particles.len();
-        if template.is_none_or(|(_, m)| n < m) {
-            template = Some((i, n));
+        // object space first (the most of the game's parts), then the fewest particles
+        let key = (
+            matches!(c.operators[0].kind, OperatorKind::BoneSpaceSkin { .. }),
+            c.sim_cloths[0].particles.len(),
+        );
+        if template.is_none_or(|(_, m)| key < m) {
+            template = Some((i, key));
         }
     }
     let (ti, _) = template.ok_or_else(|| {
         Error(
-            "the cloth file has no part to make new ones from (one whose skin is in object space)"
+            "the cloth file has no part to make new ones from (one skinned by positions alone)"
                 .to_owned(),
         )
     })?;
@@ -691,12 +836,85 @@ pub fn add_parts(bytes: &[u8], skeleton: &[RestBone], parts: &[NewPart]) -> Resu
 
     let mut ed = Editor::new(&tag)?;
     let world = rest_world(skeleton);
+    // an entry of each per-collider array of a sim cloth, from a part of the file that has one (its bytes): what a
+    // new part's colliders get (zeros where no part has one)
+    let mut samples: HashMap<&str, Vec<u8>> = HashMap::new();
+    for name in ["collidablePinchingDatas", "setupCollidableSidedness"] {
+        'found: for d in &datas {
+            let Ok(sims) = d
+                .field("simClothDatas")
+                .map_err(fail("a part"))
+                .and_then(pointed)
+            else {
+                continue;
+            };
+            for sim in sims {
+                if !sim.has_field(name) {
+                    continue;
+                }
+                let Ok(a) = sim.field(name).and_then(|f| f.array()) else {
+                    continue;
+                };
+                if a.is_empty() {
+                    continue;
+                }
+                let Ok(first) = a.get(0) else { continue };
+                let Ok(size) = tag.stride(first.type_index) else {
+                    continue;
+                };
+                let (item, rel) = ed.locate(first)?;
+                samples.insert(name, ed.image.items[item].data[rel..rel + size].to_vec());
+                break 'found;
+            }
+        }
+    }
+    let free_radius = t_cloth.sim_cloths[0]
+        .particles
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !t_cloth.sim_cloths[0].fixed_particles.contains(&(*i as u16)))
+        .map(|(_, p)| p.radius)
+        .fold(0f32, f32::max);
+    let mut notes = Vec::new();
     let mut new_datas = Vec::new();
     let mut new_skeletons = Vec::new();
     for part in parts {
         ed.copies.clear();
+        let s = strip(part)?;
+        let (colliders, part_notes) = colliders_for(
+            &scene.colliders,
+            skeleton,
+            &world,
+            part,
+            &s.positions,
+            free_radius,
+        );
+        notes.push(if colliders.is_empty() {
+            format!("{}: no collider within reach", part.name)
+        } else {
+            format!(
+                "{} meets {}",
+                part.name,
+                colliders
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        });
+        notes.extend(part_notes);
         let (data_item, skeleton_item) = make_part(
-            &mut ed, t_value, t_cloth, t_skeleton, skeleton, &world, part,
+            &mut ed,
+            Template {
+                value: t_value,
+                cloth: t_cloth,
+                skeleton: t_skeleton,
+                samples: &samples,
+            },
+            skeleton,
+            &world,
+            part,
+            &colliders,
         )?;
         new_datas.push(data_item);
         new_skeletons.push(skeleton_item);
@@ -799,39 +1017,59 @@ pub fn add_parts(bytes: &[u8], skeleton: &[RestBone], parts: &[NewPart]) -> Resu
             )));
         }
     }
-    Ok(out)
+    Ok((out, notes))
+}
+
+/// The part new ones are copied from, and entries of the file's per-collider arrays.
+struct Template<'t, 'a, 'c> {
+    value: Value<'t, 'a>,
+    cloth: &'c cloth::Cloth,
+    skeleton: Value<'t, 'a>,
+    samples: &'c HashMap<&'c str, Vec<u8>>,
 }
 
 /// One new part: its cloth data and skeleton, copied from the template's and made for `part`. Their items.
 fn make_part(
     ed: &mut Editor,
-    t_value: Value,
-    t_cloth: &cloth::Cloth,
-    t_skeleton: Value,
+    template: Template,
     skeleton: &[RestBone],
     world: &[Mat4],
     part: &NewPart,
+    colliders: &[PartCollider],
 ) -> Result<(usize, usize)> {
+    let (t_value, t_cloth, t_skeleton) = (template.value, template.cloth, template.skeleton);
     let s = strip(part)?;
     let n = s.positions.len();
     let fixed: Vec<u16> = vec![0, 1];
-    // the part's skeleton: the anchor and its parents from the root, then the chain
-    let mut path = vec![part.anchor];
-    while let Some(p) = skeleton[*path.last().expect("one")].parent {
-        if path.contains(&p) || path.len() > skeleton.len() {
-            return Err(Error(format!(
-                "bone {}: its parents loop",
-                skeleton[part.anchor].name
-            )));
+    // the part's skeleton: the anchor, the colliders' bones and their parents from the root (in the model's order,
+    // every parent before its children), then the chain
+    let mut base: Vec<usize> = Vec::new();
+    for &start in std::iter::once(&part.anchor).chain(colliders.iter().map(|c| &c.bone)) {
+        let mut b = Some(start);
+        let mut steps = 0;
+        while let Some(i) = b {
+            if base.contains(&i) {
+                break;
+            }
+            base.push(i);
+            steps += 1;
+            if steps > skeleton.len() {
+                return Err(Error(format!(
+                    "bone {}: its parents loop",
+                    skeleton[start].name
+                )));
+            }
+            b = skeleton[i].parent;
         }
-        path.push(p);
     }
-    path.reverse();
-    let anchor_index = path.len() - 1;
-    let mut bones: Vec<usize> = path;
+    base.sort_unstable();
+    let mut bones: Vec<usize> = base;
     bones.extend(&part.bones);
     let count = bones.len();
-    let chain_indices: Vec<usize> = (anchor_index + 1..count).collect();
+    let index_of = |model_bone: usize| bones.iter().position(|&b| b == model_bone).expect("listed");
+    let anchor_index = index_of(part.anchor);
+    let chain_indices: Vec<usize> = part.bones.iter().map(|&b| index_of(b)).collect();
+    let collider_indices: Vec<usize> = colliders.iter().map(|c| index_of(c.bone)).collect();
     let local_parent = |model_bone: usize| -> i16 {
         skeleton[model_bone]
             .parent
@@ -1000,31 +1238,68 @@ fn make_part(
     )?;
     let total: f32 = particles.iter().map(|p| p.mass).sum();
     ed.put_f32(sim.field("totalMass").map_err(fail("a sim cloth"))?, total)?;
+    // the colliders: each free particle meets all of them (a bit each)
     let f = sim
         .field("staticCollisionMasks")
         .map_err(fail("a sim cloth"))?;
     let size = ed.tag.stride(ed.element_type(f)?).map_err(fail("a mask"))?;
-    ed.set_array(f, n, vec![0; size * n])?;
-    for name in [
-        "perInstanceCollidables",
-        "collidablePinchingDatas",
-        "setupCollidableSidedness",
-        "antiPinchConstraintSets",
-        "triangleFlips",
-    ] {
-        if sim.has_field(name) {
-            ed.set_array(sim.field(name).map_err(fail("a sim cloth"))?, 0, Vec::new())?;
-        }
-    }
+    let all: u64 = (0..colliders.len()).fold(0, |m, k| m | 1 << k);
+    let masks: Vec<u8> = (0..n)
+        .flat_map(|i| {
+            let m: u64 = if i < 2 { 0 } else { all };
+            m.to_le_bytes()[..size].to_vec()
+        })
+        .collect();
+    ed.set_array(f, n, masks)?;
+    let items: Vec<usize> = colliders.iter().map(|c| c.item).collect();
+    ed.set_pointers(
+        sim.field("perInstanceCollidables")
+            .map_err(fail("a sim cloth"))?,
+        &items,
+    )?;
     let map = sim
         .field("collidableTransformMap")
         .map_err(fail("a sim cloth"))?;
-    for name in ["transformIndices", "offsets"] {
-        ed.set_array(
-            map.field(name).map_err(fail("a collider map"))?,
-            0,
-            Vec::new(),
-        )?;
+    let f = map
+        .field("transformIndices")
+        .map_err(fail("a collider map"))?;
+    let size = ed
+        .tag
+        .stride(ed.element_type(f)?)
+        .map_err(fail("a collider map"))?;
+    let data: Vec<u8> = collider_indices
+        .iter()
+        .flat_map(|&i| (i as u64).to_le_bytes()[..size].to_vec())
+        .collect();
+    ed.set_array(f, colliders.len(), data)?;
+    let data: Vec<u8> = colliders.iter().flat_map(|c| f32s(&c.offset)).collect();
+    ed.set_array(
+        map.field("offsets").map_err(fail("a collider map"))?,
+        colliders.len(),
+        data,
+    )?;
+    for name in ["collidablePinchingDatas", "setupCollidableSidedness"] {
+        if !sim.has_field(name) {
+            continue;
+        }
+        let f = sim.field(name).map_err(fail("a sim cloth"))?;
+        let size = ed
+            .tag
+            .stride(ed.element_type(f)?)
+            .map_err(fail("a sim cloth"))?;
+        let one = template
+            .samples
+            .get(name)
+            .filter(|s| s.len() == size)
+            .cloned()
+            .unwrap_or_else(|| vec![0; size]);
+        let data: Vec<u8> = (0..colliders.len()).flat_map(|_| one.clone()).collect();
+        ed.set_array(f, colliders.len(), data)?;
+    }
+    for name in ["antiPinchConstraintSets", "triangleFlips"] {
+        if sim.has_field(name) {
+            ed.set_array(sim.field(name).map_err(fail("a sim cloth"))?, 0, Vec::new())?;
+        }
     }
     if sim.has_field("perParticlePinchDetectionEnabledFlags") {
         let f = sim
@@ -1276,7 +1551,8 @@ fn make_part(
     // --- the operators
     let ops = pointed(t_value.field("operators").map_err(fail("a part"))?)?;
     let anchor_world = world[part.anchor];
-    // 0, skin: every particle on the anchor, its place at rest in the model
+    // 0, skin: every particle on the anchor, its place at rest in the model (object space: the model's space and the
+    // anchor's inverse rest place; bone space: its place relative to the anchor, its weight in the fourth value)
     let skin = ops[0];
     let inverse = math::inverse_affine(&anchor_world).ok_or_else(|| {
         Error(format!(
@@ -1284,129 +1560,229 @@ fn make_part(
             skeleton[part.anchor].name
         ))
     })?;
-    ed.set_array(
-        skin.field("boneFromSkinMeshTransforms")
-            .map_err(fail("the skin"))?,
-        1,
-        f32s(&inverse),
-    )?;
-    ed.set_array(
-        skin.field("transformSubset").map_err(fail("the skin"))?,
-        1,
-        le16(anchor_index as u16),
-    )?;
-    let deformer = skin
-        .field("objectSpaceDeformer")
-        .map_err(fail("the skin"))?;
-    let blocks = n.div_ceil(16);
-    for name in [
-        "eightBlendEntries",
-        "sevenBlendEntries",
-        "sixBlendEntries",
-        "fiveBlendEntries",
-        "fourBlendEntries",
-        "threeBlendEntries",
-        "twoBlendEntries",
-        "oneBlendEntries",
-    ] {
-        if deformer.has_field(name) {
-            ed.set_array(
-                deformer.field(name).map_err(fail("the deformer"))?,
-                0,
-                Vec::new(),
-            )?;
+    if skin.has_field("objectSpaceDeformer") {
+        ed.set_array(
+            skin.field("boneFromSkinMeshTransforms")
+                .map_err(fail("the skin"))?,
+            1,
+            f32s(&inverse),
+        )?;
+        ed.set_array(
+            skin.field("transformSubset").map_err(fail("the skin"))?,
+            1,
+            le16(anchor_index as u16),
+        )?;
+        let deformer = skin
+            .field("objectSpaceDeformer")
+            .map_err(fail("the skin"))?;
+        let blocks = n.div_ceil(16);
+        for name in [
+            "eightBlendEntries",
+            "sevenBlendEntries",
+            "sixBlendEntries",
+            "fiveBlendEntries",
+            "fourBlendEntries",
+            "threeBlendEntries",
+            "twoBlendEntries",
+            "oneBlendEntries",
+        ] {
+            if deformer.has_field(name) {
+                ed.set_array(
+                    deformer.field(name).map_err(fail("the deformer"))?,
+                    0,
+                    Vec::new(),
+                )?;
+            }
         }
-    }
-    // blocks of the fewest bones a vertex whose type the file spells out (one whose blocks it stores), every bone
-    // the anchor, all the weight on the first
-    const BLOCK_NAMES: [&str; 8] = [
-        "oneBlendEntries",
-        "twoBlendEntries",
-        "threeBlendEntries",
-        "fourBlendEntries",
-        "fiveBlendEntries",
-        "sixBlendEntries",
-        "sevenBlendEntries",
-        "eightBlendEntries",
-    ];
-    const CONTROL: [u8; 8] = [3, 2, 1, 0, 8, 7, 6, 5];
-    let mut chosen = None;
-    for (k, name) in BLOCK_NAMES.iter().enumerate() {
-        if !deformer.has_field(name) {
-            continue;
+        // blocks of the fewest bones a vertex whose type the file spells out (one whose blocks it stores), every bone
+        // the anchor, all the weight on the first
+        const BLOCK_NAMES: [&str; 8] = [
+            "oneBlendEntries",
+            "twoBlendEntries",
+            "threeBlendEntries",
+            "fourBlendEntries",
+            "fiveBlendEntries",
+            "sixBlendEntries",
+            "sevenBlendEntries",
+            "eightBlendEntries",
+        ];
+        const CONTROL: [u8; 8] = [3, 2, 1, 0, 8, 7, 6, 5];
+        let mut chosen = None;
+        for (k, name) in BLOCK_NAMES.iter().enumerate() {
+            if !deformer.has_field(name) {
+                continue;
+            }
+            let f = deformer.field(name).map_err(fail("the deformer"))?;
+            if ed.member(ed.element_type(f)?, "vertexIndices").is_ok() {
+                chosen = Some((k + 1, f));
+                break;
+            }
         }
-        let f = deformer.field(name).map_err(fail("the deformer"))?;
-        if ed.member(ed.element_type(f)?, "vertexIndices").is_ok() {
-            chosen = Some((k + 1, f));
-            break;
-        }
-    }
-    let (per_vertex, f) = chosen.ok_or_else(|| {
-        Error("the template's skin has no blocks of a type the file spells out".to_owned())
-    })?;
-    let rows: Vec<Vec<(&str, Vec<u8>)>> = (0..blocks)
-        .map(|b| {
-            let vertices: Vec<u8> = (0..16)
-                .flat_map(|k| ((16 * b + k).min(n - 1) as u16).to_le_bytes())
-                .collect();
-            let mut row = vec![
-                ("vertexIndices", vertices),
-                ("boneIndices", vec![0u8; 2 * 16 * per_vertex]),
-            ];
-            if per_vertex > 1 {
-                // 8-bit weights for two to four bones, 16-bit for five to eight
-                let wide = per_vertex > 4;
-                let mut weights = Vec::new();
-                for _ in 0..16 {
-                    for j in 0..per_vertex {
-                        let full = j == 0;
-                        if wide {
-                            weights.extend(if full { 65535u16 } else { 0 }.to_le_bytes());
-                        } else {
-                            weights.push(if full { 255u8 } else { 0 });
+        let (per_vertex, f) = chosen.ok_or_else(|| {
+            Error("the template's skin has no blocks of a type the file spells out".to_owned())
+        })?;
+        let bone_indices = ed.member_size(ed.element_type(f)?, "boneIndices")?;
+        let rows: Vec<Vec<(&str, Vec<u8>)>> = (0..blocks)
+            .map(|b| {
+                let vertices: Vec<u8> = (0..16)
+                    .flat_map(|k| ((16 * b + k).min(n - 1) as u16).to_le_bytes())
+                    .collect();
+                let mut row = vec![
+                    ("vertexIndices", vertices),
+                    ("boneIndices", vec![0u8; bone_indices]),
+                ];
+                if per_vertex > 1 {
+                    // 8-bit weights for two to four bones, 16-bit for five to eight
+                    let wide = per_vertex > 4;
+                    let mut weights = Vec::new();
+                    for _ in 0..16 {
+                        for j in 0..per_vertex {
+                            let full = j == 0;
+                            if wide {
+                                weights.extend(if full { 65535u16 } else { 0 }.to_le_bytes());
+                            } else {
+                                weights.push(if full { 255u8 } else { 0 });
+                            }
                         }
                     }
+                    row.push(("boneWeights", weights));
                 }
-                row.push(("boneWeights", weights));
+                row
+            })
+            .collect();
+        let data = ed.elements(f, &rows)?;
+        ed.set_array(f, blocks, data)?;
+        let f = deformer
+            .field("controlBytes")
+            .map_err(fail("the deformer"))?;
+        ed.set_array(f, blocks, vec![CONTROL[per_vertex - 1]; blocks])?;
+        ed.put_int(
+            deformer
+                .field("startVertexIndex")
+                .map_err(fail("the deformer"))?,
+            0,
+        )?;
+        ed.put_int(
+            deformer
+                .field("endVertexIndex")
+                .map_err(fail("the deformer"))?,
+            (n - 1) as i64,
+        )?;
+        let f = skin.field("localPs").map_err(fail("the skin"))?;
+        let rows: Vec<Vec<(&str, Vec<u8>)>> = (0..blocks)
+            .map(|b| {
+                let packed: Vec<u8> = (0..16)
+                    .flat_map(|k| {
+                        let p = s.positions[(16 * b + k).min(n - 1)];
+                        pack(p)
+                            .iter()
+                            .flat_map(|w| w.to_le_bytes())
+                            .collect::<Vec<u8>>()
+                    })
+                    .collect();
+                vec![("localPosition", packed)]
+            })
+            .collect();
+        let data = ed.elements(f, &rows)?;
+        ed.set_array(f, blocks, data)?;
+    } else {
+        ed.set_array(
+            skin.field("transformSubset").map_err(fail("the skin"))?,
+            1,
+            le16(anchor_index as u16),
+        )?;
+        let deformer = skin.field("boneSpaceDeformer").map_err(fail("the skin"))?;
+        // blocks of one to four bones a vertex: 16, 8, 5 or 4 vertices each, sixteen local positions (a vertex's for
+        // each of its bones in turn)
+        const NAMES: [&str; 4] = [
+            "oneBlendEntries",
+            "twoBlendEntries",
+            "threeBlendEntries",
+            "fourBlendEntries",
+        ];
+        const PER_BLOCK: [usize; 4] = [16, 8, 5, 4];
+        const CONTROL: [u8; 4] = [3, 2, 1, 0];
+        for name in NAMES {
+            if deformer.has_field(name) {
+                ed.set_array(
+                    deformer.field(name).map_err(fail("the deformer"))?,
+                    0,
+                    Vec::new(),
+                )?;
             }
-            row
-        })
-        .collect();
-    let data = ed.elements(f, &rows)?;
-    ed.set_array(f, blocks, data)?;
-    let f = deformer
-        .field("controlBytes")
-        .map_err(fail("the deformer"))?;
-    ed.set_array(f, blocks, vec![CONTROL[per_vertex - 1]; blocks])?;
-    ed.put_int(
-        deformer
-            .field("startVertexIndex")
-            .map_err(fail("the deformer"))?,
-        0,
-    )?;
-    ed.put_int(
-        deformer
-            .field("endVertexIndex")
-            .map_err(fail("the deformer"))?,
-        (n - 1) as i64,
-    )?;
-    let f = skin.field("localPs").map_err(fail("the skin"))?;
-    let rows: Vec<Vec<(&str, Vec<u8>)>> = (0..blocks)
-        .map(|b| {
-            let packed: Vec<u8> = (0..16)
-                .flat_map(|k| {
-                    let p = s.positions[(16 * b + k).min(n - 1)];
-                    pack(p)
-                        .iter()
-                        .flat_map(|w| w.to_le_bytes())
-                        .collect::<Vec<u8>>()
-                })
-                .collect();
-            vec![("localPosition", packed)]
-        })
-        .collect();
-    let data = ed.elements(f, &rows)?;
-    ed.set_array(f, blocks, data)?;
+        }
+        let mut chosen = None;
+        for (k, name) in NAMES.iter().enumerate() {
+            if !deformer.has_field(name) {
+                continue;
+            }
+            let f = deformer.field(name).map_err(fail("the deformer"))?;
+            if ed.member(ed.element_type(f)?, "vertexIndices").is_ok() {
+                chosen = Some((k, f));
+                break;
+            }
+        }
+        let (k, f) = chosen.ok_or_else(|| {
+            Error("the template's skin has no blocks of a type the file spells out".to_owned())
+        })?;
+        let (per_vertex, per_block) = (k + 1, PER_BLOCK[k]);
+        let blocks = n.div_ceil(per_block);
+        let bone_indices = ed.member_size(ed.element_type(f)?, "boneIndices")?;
+        let rows: Vec<Vec<(&str, Vec<u8>)>> = (0..blocks)
+            .map(|b| {
+                let vertices: Vec<u8> = (0..per_block)
+                    .flat_map(|j| ((per_block * b + j).min(n - 1) as u16).to_le_bytes())
+                    .collect();
+                vec![
+                    ("vertexIndices", vertices),
+                    ("boneIndices", vec![0u8; bone_indices]),
+                ]
+            })
+            .collect();
+        let data = ed.elements(f, &rows)?;
+        ed.set_array(f, blocks, data)?;
+        ed.set_array(
+            deformer
+                .field("controlBytes")
+                .map_err(fail("the deformer"))?,
+            blocks,
+            vec![CONTROL[k]; blocks],
+        )?;
+        ed.put_int(
+            deformer
+                .field("startVertexIndex")
+                .map_err(fail("the deformer"))?,
+            0,
+        )?;
+        ed.put_int(
+            deformer
+                .field("endVertexIndex")
+                .map_err(fail("the deformer"))?,
+            (n - 1) as i64,
+        )?;
+        let f = skin.field("localPs").map_err(fail("the skin"))?;
+        let rows: Vec<Vec<(&str, Vec<u8>)>> = (0..blocks)
+            .map(|b| {
+                let mut positions = Vec::with_capacity(16 * 16);
+                for slot in 0..16 {
+                    let (j, bone) = (slot / per_vertex, slot % per_vertex);
+                    let v = if j < per_block && bone == 0 {
+                        let p = math::transform_point(
+                            &inverse,
+                            s.positions[(per_block * b + j).min(n - 1)],
+                        );
+                        [p[0], p[1], p[2], 1.0]
+                    } else {
+                        [0.0; 4]
+                    };
+                    positions.extend(f32s(&v));
+                }
+                vec![("localPosition", positions)]
+            })
+            .collect();
+        let data = ed.elements(f, &rows)?;
+        ed.set_array(f, blocks, data)?;
+    }
     if skin.has_field("localUnpackedPs") {
         ed.set_array(
             skin.field("localUnpackedPs").map_err(fail("the skin"))?,
@@ -1514,11 +1890,15 @@ fn make_part(
             ed.set_array(f, n, data)?;
         }
     }
-    // which bones each operator and state reads and writes: the skin reads the anchor, the bones from triangles
-    // write the chain
+    // which bones each operator and state reads and writes: the skin reads the anchor, the simulation the colliders'
+    // bones, the bones from triangles write the chain
+    let mut collider_bones = collider_indices.clone();
+    collider_bones.sort_unstable();
+    collider_bones.dedup();
     let reads = |k: usize| -> (Vec<usize>, Vec<usize>) {
         match k {
             0 => (vec![anchor_index], vec![]),
+            2 => (collider_bones.clone(), vec![]),
             3 => (vec![], chain_indices.clone()),
             _ => (vec![], vec![]),
         }

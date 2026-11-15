@@ -1,4 +1,4 @@
-//! `bfres_write::write_edited` with bones added, on the game's models: to every model the writer takes, two bones
+//! `bfres_write::write_edited` (and `write_skeleton`, for files holding a skeleton alone) with bones added, on the game's models: to every model the writer takes, two bones
 //! (one on the root, one on that), and then: the written file's relocation table points inside it, it reads back with
 //! the bones, its name dictionary is the one `res_dict` builds and finds every name, the rigidly skinned shapes'
 //! vertices are on the same bones as before (their matrix indices moved up), every other vertex and index buffer is
@@ -13,7 +13,7 @@ use std::time::Instant;
 use modstudio_formats::bfres::{Bfres, ExternalStrings, Model};
 use modstudio_formats::bfres_anim_write::check_relocations;
 use modstudio_formats::bfres_bones::NewBone;
-use modstudio_formats::bfres_write::{ShapeGeometry, write, write_edited};
+use modstudio_formats::bfres_write::{ShapeGeometry, write, write_edited, write_skeleton};
 use modstudio_formats::res_dict::{self, DictNode};
 use modstudio_formats::romfs::Romfs;
 
@@ -80,7 +80,7 @@ fn main() {
     files.sort();
     let t = Instant::now();
     let (mut ok, mut skipped, mut bad) = (0, BTreeMap::<String, usize>::new(), Vec::new());
-    let (mut rigid_models, mut moved_gpu) = (0, 0);
+    let (mut rigid_models, mut moved_gpu, mut skeletons) = (0, 0, 0);
     for f in &files {
         let Ok(data) = romfs.read(&mut d, format!("Model/{f}")) else {
             continue;
@@ -105,7 +105,17 @@ fn main() {
                 translation: [0.0, 0.2, 0.05],
             },
         ];
-        let out = match write_edited(&b, &BTreeMap::new(), &new, &BTreeMap::new()) {
+        // skeleton files (the `*_Animation.Skeleton` beside animation files) through `write_skeleton`
+        let skeleton_only = m.shapes.is_empty();
+        if skeleton_only {
+            skeletons += 1;
+        }
+        let written = if skeleton_only {
+            write_skeleton(&b, &new)
+        } else {
+            write_edited(&b, &BTreeMap::new(), &new, &BTreeMap::new())
+        };
+        let out = match written {
             Ok(o) => o,
             Err(e) => {
                 *skipped.entry(e.to_string()).or_default() += 1;
@@ -176,7 +186,12 @@ fn main() {
         if back.buffer_offset != b.buffer_offset {
             moved_gpu += 1;
         }
-        match write(&back, &BTreeMap::new()) {
+        let again = if skeleton_only {
+            write_skeleton(&back, &[])
+        } else {
+            write(&back, &BTreeMap::new())
+        };
+        match again {
             Ok(again) if again == out => {}
             Ok(_) => problems.push("written again, not the same".into()),
             Err(e) => problems.push(format!("written again: {e}")),
@@ -188,7 +203,7 @@ fn main() {
         }
     }
     println!(
-        "{} model files in {:.1} s: {ok} written with two bones and checked; {} with problems; {rigid_models} of them with rigid shapes; the GPU data moved in {moved_gpu}",
+        "{} model files in {:.1} s: {ok} written with two bones and checked ({skeletons} skeleton files); {} with problems; {rigid_models} of them with rigid shapes; the GPU data moved in {moved_gpu}",
         files.len(),
         t.elapsed().as_secs_f32(),
         bad.len()

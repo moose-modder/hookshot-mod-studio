@@ -112,7 +112,8 @@ fn main() {
                 across: vec![[step * 0.3, 0.0, 0.0]; 3],
             };
             let bytes = romfs.read(&mut d, f).map_err(|e| e.to_string())?;
-            let written = cloth_new::add_parts(&bytes, &skeleton, &[part]).map_err(|e| e.0)?;
+            let (written, met) =
+                cloth_new::add_parts(&bytes, &skeleton, &[part]).map_err(|e| e.0)?;
             if let Some(dir) = out_dir {
                 let p = Path::new(dir).join(f);
                 std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -163,8 +164,12 @@ fn main() {
             if !swing.is_finite() || swing > 4.0 * 2.0 * step {
                 return Err(format!("it runs off ({swing} m)"));
             }
+            let colliders = met
+                .first()
+                .and_then(|l| l.split(" meets ").nth(1))
+                .map_or(0, |l| l.split(", ").count());
             Ok(format!(
-                "anchor {}, chain {:.3} m: at rest off {:.4} m; swings {:.3} m; ends {:.3} m off",
+                "{colliders} colliders; anchor {}, chain {:.3} m: at rest off {:.4} m; swings {:.3} m; ends {:.3} m off",
                 skeleton[anchor].name,
                 2.0 * step,
                 worst_rest,

@@ -104,23 +104,31 @@ pub fn list(mods_dir: &Path) -> Result<Vec<InstalledMod>> {
     Ok(out)
 }
 
-/// Turns a mod on or off by renaming its folder (`Name` <-> `-Name`). Returns the new folder name. Hookshot
-/// reads the mods folder when it starts, so it takes a restart; the size table needs rebuilding.
+/// Turns a mod on or off by renaming its folder (`Name` <-> `-Name`). `folder` is its folder, or its name either way
+/// it is now (`Name` for a mod that is off finds `-Name`). Returns the new folder name. Hookshot reads the mods
+/// folder when it starts, so it takes a restart; the size table needs rebuilding.
 pub fn set_enabled(mods_dir: &Path, folder: &str, enabled: bool) -> Result<String> {
     if folder.is_empty() || folder.contains(['/', '\\']) || folder == TABLE_MOD {
         return Err(Error(format!("not a mod folder: {folder:?}")));
     }
-    let from = mods_dir.join(folder);
-    if !from.join("romfs").is_dir() {
-        return Err(Error(format!("{} is not a mod", from.display())));
-    }
     let name = folder.trim_start_matches(['-', '_']);
+    let candidates = [folder.to_owned(), name.to_owned(), format!("-{name}")];
+    let Some(current) = candidates
+        .iter()
+        .find(|c| mods_dir.join(c).join("romfs").is_dir())
+    else {
+        return Err(Error(format!(
+            "{} is not a mod",
+            mods_dir.join(folder).display()
+        )));
+    };
+    let from = mods_dir.join(current);
     let new = if enabled {
         name.to_owned()
     } else {
         format!("-{name}")
     };
-    if new == folder {
+    if new == *current {
         return Ok(new);
     }
     let to = mods_dir.join(&new);
@@ -219,6 +227,10 @@ mod tests {
         assert_eq!(set_enabled(&dir, "BMod", false).unwrap(), "-BMod");
         assert_eq!(set_enabled(&dir, "AMod", true).unwrap(), "AMod");
         assert!(dir.join("AMod").is_dir() && dir.join("-BMod").is_dir());
+        // by its name, whichever way it is now
+        assert_eq!(set_enabled(&dir, "BMod", true).unwrap(), "BMod");
+        assert_eq!(set_enabled(&dir, "-AMod", false).unwrap(), "-AMod");
+        assert!(dir.join("-AMod").is_dir() && dir.join("BMod").is_dir());
         assert!(set_enabled(&dir, TABLE_MOD, false).is_err());
         assert!(set_enabled(&dir, "NotAMod", false).is_err());
         fsutil::remove_dir(&dir).unwrap();

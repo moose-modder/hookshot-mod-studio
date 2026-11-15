@@ -181,7 +181,9 @@ cloth following, with *Cloth physics* on).
 
 A bone the action moves that the game's animation has no track for (a new bone, or one of the game's the animation
 leaves at rest) gets a track in it: the build lists them ("track(s) added"). A new bone animated this way moves in
-game in that animation; in the others it follows its parent.
+game in that animation; in the others it follows its parent. Cutscene animations too: where the model's animations
+have a skeleton file of their own (the player's shared event animations: bottles, chests, items, the ocarina), the
+build adds the new bones to it as well.
 
 What isn't written (the build says so where it applies):
 - A different length: the game's animation keeps its frame count. Frames past it are left out; a shorter action holds
@@ -327,7 +329,8 @@ it; `modstudio settings --hookshot <Hookshot folder> --workspace <dir>` too.
     otherwise shows it under *Custom Properties* (or add it there: a boolean of that name, ticked).
     It swings as a pendulum from its top (hanging straight down when still), within half its length of where its
     parent would carry it. Make the last bone as long as what hangs from it: the build reads its tip from the
-    scene. It needs the model to have a cloth file; it doesn't collide with anything yet. Rigid meshes (one bone per vertex: eyes) can't go on a new bone; their weights go to the
+    scene. It meets the model's colliders within its reach (the nearest 22; not the ones it starts inside of, such
+    as those of the bone it hangs from); the build lists them. It needs the model to have a cloth file. Rigid meshes (one bone per vertex: eyes) can't go on a new bone; their weights go to the
     nearest parent that can hold one.
   - A **moved bone** (in edit mode): the game's animations set each animated bone's own position (the
     townsman's animations hold the rest positions of most of his bones, `examples/anim_probe.rs`), so it would

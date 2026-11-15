@@ -133,6 +133,92 @@ pub struct Difference {
     pub meshes: Vec<String>,
 }
 
+/// The model's animation skeleton files (`<animation file>.Skeleton.bfres.zs` beside an animation file its actors
+/// give it) that are its skeleton bone for bone, written into `mod_romfs` with the bones the built model (`built`) has
+/// after the game's (`bfres_write::write_skeleton`). A line for each (a warning: starting with `!`).
+fn animation_skeletons(
+    romfs: &Romfs,
+    settings: &crate::settings::Settings,
+    model_rel: &Path,
+    built: &Path,
+    mod_romfs: &Path,
+) -> Result<Vec<String>> {
+    use modstudio_formats::bfres::Bfres;
+    use modstudio_formats::bfres_bones::NewBone;
+    let mut decoder = romfs.decoder()?;
+    let strings = model::load_external_strings(romfs, &mut decoder)?;
+    let game_data = romfs
+        .read(&mut decoder, model_rel)
+        .context(model_rel.display())?;
+    let game = Bfres::parse(&game_data, Some(&strings)).context(model_rel.display())?;
+    let built_data = romfs.read(&mut decoder, built).context(built.display())?;
+    let built_bfres = Bfres::parse(&built_data, Some(&strings)).context(built.display())?;
+    let (Some(game_model), Some(built_model)) = (game.models.first(), built_bfres.models.first())
+    else {
+        return Ok(Vec::new());
+    };
+    let game_names: Vec<&str> = game_model
+        .skeleton
+        .bones
+        .iter()
+        .map(|b| b.name.as_str())
+        .collect();
+    let new_bones: Vec<NewBone> = built_model
+        .skeleton
+        .bones
+        .iter()
+        .skip(game_names.len())
+        .map(|b| NewBone {
+            name: b.name.clone(),
+            parent: b.parent.unwrap_or(0),
+            scale: b.scale,
+            rotation: b.rotation,
+            translation: b.translation,
+        })
+        .collect();
+    if new_bones.is_empty() {
+        return Ok(Vec::new());
+    }
+    let model_name = model_rel.to_string_lossy().replace('\\', "/");
+    let links = crate::actor_links::links(romfs.root(), Some(&settings.cache_dir()))?;
+    let mut lines = Vec::new();
+    for file in links.anims_of(&model_name) {
+        let Some(stem) = file.strip_suffix(".anim.bfres.zs") else {
+            continue;
+        };
+        let skeleton_file = format!("{stem}.Skeleton.bfres.zs");
+        if !romfs.root().join(&skeleton_file).is_file() {
+            continue;
+        }
+        let data = romfs
+            .read(&mut decoder, &skeleton_file)
+            .context(&skeleton_file)?;
+        let b = Bfres::parse(&data, Some(&strings)).context(&skeleton_file)?;
+        let Some(m) = b.models.first() else { continue };
+        let names: Vec<&str> = m.skeleton.bones.iter().map(|x| x.name.as_str()).collect();
+        if names != game_names {
+            lines.push(format!(
+                "!{skeleton_file}: not the model's skeleton bone for bone, so left as it is: the animations of {file} won't move the bones added"
+            ));
+            continue;
+        }
+        let written = modstudio_formats::bfres_write::write_skeleton(&b, &new_bones)
+            .context(&skeleton_file)?;
+        Bfres::parse(&written, Some(&strings)).context(format!(
+            "{skeleton_file}: reading the written skeleton back"
+        ))?;
+        let out = mod_romfs.join(&skeleton_file);
+        if let Some(dir) = out.parent() {
+            std::fs::create_dir_all(dir).context(dir.display())?;
+        }
+        std::fs::write(&out, modstudio_formats::zs::compress(&written)).context(out.display())?;
+        lines.push(format!(
+            "{skeleton_file}: the bones added too (the skeleton {file}'s animations play on)"
+        ));
+    }
+    Ok(lines)
+}
+
 /// Builds the project's mod (see the module's notes). The report is also saved as `build/build_report.json`;
 /// a failed build's report has `ok: false` and the error.
 pub fn build(
@@ -286,6 +372,25 @@ fn run(
     for w in &summary.geometry.warnings {
         progress.warn(w.clone());
     }
+    // the model's animation skeletons (a skeleton file beside an animation file the model's actors give it, the
+    // player's cutscene animations'): one that is the model's skeleton bone for bone gets the bones added too, so it
+    // stays so (an earlier build's go first)
+    let model_dir = mod_romfs.join("Model");
+    for rel in fsutil::files_under(&model_dir) {
+        if rel.to_string_lossy().ends_with(".Skeleton.bfres.zs") {
+            fsutil::remove_file(&model_dir.join(rel))?;
+        }
+    }
+    if !summary.geometry.added_names.is_empty() {
+        for line in animation_skeletons(&romfs, settings, model_rel, &summary.model, &mod_romfs)? {
+            if let Some(w) = line.strip_prefix('!') {
+                progress.warn(w.to_owned());
+                report.warnings.push(w.to_owned());
+            } else {
+                progress.line(line);
+            }
+        }
+    }
     let textures = work.join("textures");
     if fsutil::files_under(&textures)
         .iter()
@@ -433,7 +538,7 @@ fn run(
                 } else {
                     std::fs::read(romfs.root().join(&source)).context(&source)?
                 };
-                let out = cloth_new::add_parts(&bytes, &skeleton, &parts)?;
+                let (out, met) = cloth_new::add_parts(&bytes, &skeleton, &parts)?;
                 // it has to simulate before it goes into the mod
                 let mut live = cloth::LiveCloth::new(&out, &source)?;
                 for _ in 0..60 {
@@ -454,6 +559,10 @@ fn run(
                             .join(", "),
                         skeleton[p.anchor].name
                     );
+                    progress.line(line.clone());
+                    report.cloth.push(line);
+                }
+                for line in met {
                     progress.line(line.clone());
                     report.cloth.push(line);
                 }
