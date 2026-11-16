@@ -433,6 +433,13 @@ def scene_side(cfg):
         bpy.ops.object.mode_set(mode='OBJECT')
     rep = prep.Report()
     arm, objects = prep.collect_objects(cfg, rep)
+    # The texture the build writes is an image's pixels as they are, however Blender draws its alpha, and the
+    # result's textures are read with colour and alpha apart: the scene's are drawn so here too. (An image opened by
+    # hand comes in with straight alpha, which blends the colour into the alpha at a cut-out's edge: every cut-out
+    # showed differences along its edges. The scene file isn't saved.)
+    for img in bpy.data.images:
+        if img.alpha_mode in ('STRAIGHT', 'PREMUL'):
+            img.alpha_mode = 'CHANNEL_PACKED'
     views, bounds = frame_views(objects, cfg)
     index, left = render_all(objects, arm, cfg, views, "scene", set(cfg["game_bones"]))
     with open(os.path.join(cfg["out"], "scene.json"), "w", encoding="utf-8") as f:
