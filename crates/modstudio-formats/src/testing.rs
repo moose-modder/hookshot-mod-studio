@@ -460,3 +460,204 @@ pub fn tiny_bntx(name: &str, width: u32, height: u32, gob: Gob) -> Vec<u8> {
     b.u32(header + 0x1C, len);
     b.data
 }
+
+/// A square grid of `n` x `n` cells (2 triangles each) in the xz plane, `size` across, from `at`: normals up,
+/// tangents along x, UV set 0 across the grid (0..1) and set 1 at `uv1_scale` times it, colour set 0 constant in
+/// channel 0, varying in 1 and 3 (in 0..1, or up to `colour_top` in channel 3).
+pub fn meshlet_grid(
+    n: usize,
+    size: f32,
+    at: [f32; 3],
+    uv1_scale: f32,
+    colour_top: f32,
+) -> crate::meshlet::MeshletGeometry {
+    let mut g = crate::meshlet::MeshletGeometry {
+        tangents: Some(Vec::new()),
+        uvs: vec![Vec::new(), Vec::new()],
+        colours: vec![(0, Vec::new())],
+        ..Default::default()
+    };
+    for j in 0..=n {
+        for i in 0..=n {
+            let (u, v) = (i as f32 / n as f32, j as f32 / n as f32);
+            g.positions.push([
+                at[0] + u * size,
+                at[1] + (u * 7.0).sin() * 0.01,
+                at[2] + v * size,
+            ]);
+            g.normals.push([0.0, 1.0, 0.0]);
+            g.tangents
+                .as_mut()
+                .unwrap()
+                .push([1.0, 0.0, 0.0, if i % 2 == 0 { 1.0 } else { -1.0 }]);
+            g.uvs[0].push([u, v]);
+            g.uvs[1].push([u * uv1_scale, -v * uv1_scale]);
+            g.colours[0].1.push([1.0, u, 0.5, v * colour_top]);
+        }
+    }
+    let w = n as u32 + 1;
+    for j in 0..n as u32 {
+        for i in 0..n as u32 {
+            let a = j * w + i;
+            g.indices.extend([a, a + w, a + 1, a + 1, a + w, a + w + 1]);
+        }
+    }
+    g
+}
+
+/// The buffer flags of [`meshlet_grid`]'s shape: positions, normals, tangents, two UV sets, colour set 0.
+pub const MESHLET_GRID_FLAGS: u32 =
+    0x1061 | crate::meshlet::flags::UV_1 | crate::meshlet::flags::COLOUR_0;
+
+/// A BFRES 10.4 file laid out as the game's map pieces and objects are: one model of one bone `Root` and one meshlet
+/// shape `Rock__Mt_Test` (unskinned, an empty vertex buffer, no meshes), whose buffer holds `lods`
+/// ([`crate::meshlet::encode`] with [`MESHLET_GRID_FLAGS`]); its record, box and sphere as the game's. The GPU data
+/// (the relocation table's section 3; sections 1 and 2 empty at the data's end) on the 4 KiB after the data, the
+/// memory pool block after it, pointed at by the header and the shape's meshlet record.
+pub fn tiny_meshlet_bfres(lods: &[crate::meshlet::MeshletGeometry]) -> Vec<u8> {
+    let encoded =
+        crate::meshlet::encode(MESHLET_GRID_FLAGS, crate::meshlet::STEP, lods).expect("encode");
+    let mut b = Builder { data: Vec::new() };
+    let header = b.alloc(0xF0, 8);
+    b.bytes(header, b"FRES    ");
+    b.u32(header + 0x08, 0x000A_0400);
+    b.u16(header + 0x0C, 0xFEFF);
+    let file_name = b.string("rock");
+    b.u64(header + 0x20, file_name as u64);
+
+    let model = b.alloc(0x78, 8);
+    b.u64(header + 0x28, model as u64);
+    b.u16(header + 0xDC, 1);
+    b.bytes(model, b"FMDL");
+    let model_name = b.string("Rock");
+    b.u64(model + 0x08, model_name as u64);
+
+    // Skeleton: one bone.
+    let skel = b.alloc(0x48, 8);
+    b.u64(model + 0x18, skel as u64);
+    b.bytes(skel, b"FSKL");
+    let bones = b.alloc(0x58, 8);
+    b.u64(skel + 0x10, bones as u64);
+    let matrices = b.alloc(2, 8);
+    b.u64(skel + 0x18, matrices as u64);
+    let inverse = b.alloc(48, 8);
+    b.f32s(inverse, &[1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0.]);
+    b.u64(skel + 0x20, inverse as u64);
+    b.u16(skel + 0x38, 1);
+    b.u16(skel + 0x3A, 1);
+    let s = b.string("Root");
+    b.u64(bones, s as u64);
+    b.i16(bones + 0x22, -1);
+    b.i16(bones + 0x24, 0);
+    b.i16(bones + 0x26, -1);
+    b.i16(bones + 0x28, -1);
+    b.f32s(bones + 0x30, &[1., 1., 1., 0., 0., 0., 1., 0., 0., 0.]);
+
+    // An empty vertex buffer slot, as meshlet shapes have.
+    let vb = b.alloc(0x58, 8);
+    b.u64(model + 0x20, vb as u64);
+    b.u16(model + 0x68, 1);
+
+    // The shape and its meshlet record.
+    let shape = b.alloc(0x60, 8);
+    b.u64(model + 0x28, shape as u64);
+    b.u16(model + 0x6A, 1);
+    b.bytes(shape, b"FSHP");
+    b.u32(shape + 0x04, 0x12);
+    let shape_name = b.string("Rock__Mt_Test");
+    b.u64(shape + 0x08, shape_name as u64);
+    let record = b.alloc(0x48, 8);
+    b.u64(shape + 0x18, record as u64);
+    let blank = b.alloc(0x48, 8);
+    b.u64(record + 0x08, blank as u64);
+    let infos = b.alloc(0x10, 8);
+    b.u32(infos, encoded.data.len() as u32);
+    b.u32(infos + 4, 0x40);
+    b.u64(record + 0x10, infos as u64);
+    let offsets = b.alloc(8, 8);
+    b.u64(record + 0x18, offsets as u64);
+    let tris = b.alloc(4 * lods.len(), 8);
+    let counts = b.alloc(4 * lods.len(), 8);
+    for k in 0..lods.len() {
+        b.u32(tris + 4 * k, encoded.lod_triangles[k]);
+        b.u32(counts + 4 * k, encoded.lod_meshlets[k]);
+    }
+    b.u64(record + 0x20, tris as u64);
+    b.u64(record + 0x28, counts as u64);
+    b.u32(record + 0x3C, 64);
+    b.u32(record + 0x40, 124);
+    b.u8(record + 0x44, 1);
+    b.u8(record + 0x45, lods.len() as u8);
+    let bounds = b.alloc(24 + 16, 8);
+    b.u64(shape + 0x38, bounds as u64);
+    b.u64(shape + 0x40, (bounds + 24) as u64);
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for p in &encoded.positions {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let centre: Vec<f32> = (0..3).map(|k| (lo[k] + hi[k]) / 2.0).collect();
+    let extent: Vec<f32> = (0..3).map(|k| (hi[k] - lo[k]) / 2.0).collect();
+    b.f32s(bounds, &centre);
+    b.f32s(bounds + 12, &extent);
+    let r = (extent.iter().map(|e| e * e).sum::<f32>()).sqrt();
+    b.f32s(bounds + 24, &[centre[0], centre[1], centre[2], r]);
+
+    // Material.
+    let mat = b.alloc(0xB0, 8);
+    b.u64(model + 0x38, mat as u64);
+    b.u16(model + 0x6C, 1);
+    b.bytes(mat, b"FMAT");
+    let mat_name = b.string("Mt_Test");
+    b.u64(mat + 0x08, mat_name as u64);
+
+    // GPU data: the buffer at 0, padded to 4 KiB; then the memory pool block and the table.
+    let info = b.alloc(0x20, 8);
+    b.u32(info, 0x24);
+    b.u64(header + 0xB0, info as u64);
+    let cpu_end = b.data.len();
+    let gpu = b.alloc(0, 0x1000);
+    b.u64(info + 8, gpu as u64);
+    let buffer = b.alloc(encoded.data.len(), 0x40);
+    b.bytes(buffer, &encoded.data);
+    let gpu_end = b.alloc(0, 0x1000);
+    b.u32(info + 4, (gpu_end - gpu) as u32);
+    let pool = b.alloc(0x120, 8);
+    b.u64(header + 0xA8, pool as u64);
+    b.u64(record, pool as u64);
+
+    let rlt = b.alloc(0x10 + 6 * 0x18 + 3 * 8, 8);
+    b.bytes(rlt, b"_RLT");
+    b.u32(rlt + 4, rlt as u32);
+    b.u32(rlt + 8, 6);
+    // (offset, size, first entry, entries): the data, index and vertex buffers (none), the GPU data, the memory
+    // pool, the table.
+    let sections = [
+        (0, cpu_end, 0, 0),
+        (cpu_end, 0, 0, 0),
+        (cpu_end, 0, 0, 0),
+        (gpu, gpu_end - gpu, 0, 1),
+        (pool, 0x120, 1, 2),
+        (rlt, 0, 3, 0),
+    ];
+    for (i, (offset, size, first, count)) in sections.into_iter().enumerate() {
+        let s = rlt + 0x10 + i * 0x18;
+        b.u32(s + 8, offset as u32);
+        b.u32(s + 12, size as u32);
+        b.u32(s + 16, first);
+        b.u32(s + 20, count);
+    }
+    // The pointer into the GPU data (the buffer info's) and those into the memory pool (the header's, the record's).
+    let entries = rlt + 0x10 + 6 * 0x18;
+    for (k, at) in [info + 8, header + 0xA8, record].into_iter().enumerate() {
+        b.u32(entries + k * 8, at as u32);
+        b.u16(entries + k * 8 + 4, 1);
+        b.u8(entries + k * 8 + 6, 1);
+    }
+    b.u32(header + 0x18, rlt as u32);
+    let len = b.data.len() as u32;
+    b.u32(header + 0x1C, len);
+    b.data
+}

@@ -62,8 +62,9 @@ modstudio build <workspace>\zelda --install
    - exports `build\model.glb` and `build\textures\*.png`
 3. **Builds the mod** (`modstudio-core`'s replace): the game's model with each scene mesh in place of the game
    mesh of its name, in that mesh's vertex formats, skin count (the strongest influences) and LOD count (the lower
-   LODs are the mesh decimated in the proportions of the game's own, see `prep.lods`); a game mesh missing from
-   the scene is removed. A scene mesh left as the scene was made (its fingerprint, stamped on it when the project
+   LODs are the mesh decimated in the proportions of the game's own, see `prep.lods`; symmetrically in X, but for
+   map pieces and objects); a game mesh missing from the scene is removed. A mesh the game keeps as meshlets (map
+   pieces, objects, a few NPC models) is written in meshlets again, each LOD packed the way the game's are. A scene mesh left as the scene was made (its fingerprint, stamped on it when the project
    was made, still the same: its vertices, faces, normals, UVs, attributes, weights, materials, modifiers) is
    **kept** as the game has it, its LODs and tangents included: the round trip through Blender changes a few of
    the game's meshes a little (the normals of a hard edge's two sides, positions on bones whose bind place isn't

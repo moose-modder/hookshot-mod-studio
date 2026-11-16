@@ -351,3 +351,73 @@ fn glb_with(json: &serde_json::Value, bin: &[u8]) -> Vec<u8> {
     out.extend_from_slice(bin);
     out
 }
+
+/// A model of meshlet shapes (as the game's map pieces and objects are) through its scene: unchanged, it's kept as
+/// the game has it; with a vertex moved, every LOD is made from the scene (LOD 1, which the scene hasn't, from the
+/// mesh) and written in meshlets again, the vertex where the scene has it.
+#[test]
+fn a_meshlet_model_round_trips_through_its_scene() {
+    use modstudio_core::replace::geometry_from_gltf;
+    use modstudio_formats::bfres_write::write_meshlets;
+    use modstudio_formats::meshlet::{MeshletShape, STEP};
+    use modstudio_formats::testing::{meshlet_grid, tiny_meshlet_bfres};
+
+    let file = tiny_meshlet_bfres(&[
+        meshlet_grid(6, 2.0, [0.5, 0.0, -1.0], 3.0, 1.0),
+        meshlet_grid(2, 2.0, [0.5, 0.0, -1.0], 3.0, 1.0),
+    ]);
+    let bfres = Bfres::parse(&file, None).unwrap();
+    let model = &bfres.models[0];
+    let (glb, meshes, _) = model_glb(model, &[]).unwrap();
+    assert_eq!(meshes, 1);
+
+    let scene = geometry_from_gltf(model, &gltf::Gltf::parse(&glb).unwrap()).unwrap();
+    assert_eq!(
+        scene.report.shapes[0].status, "kept",
+        "{:?}",
+        scene.report.warnings
+    );
+    assert!(scene.meshlets.is_empty() && scene.shapes.is_empty());
+    assert_eq!(write_meshlets(&bfres, &scene.meshlets).unwrap(), file);
+
+    // the first vertex 0.25 further along x
+    let (json, bin) = gltf::split(&glb).unwrap();
+    let mut bin = bin.to_vec();
+    let accessor = &json["accessors"][json["meshes"][0]["primitives"][0]["attributes"]["POSITION"]
+        .as_u64()
+        .unwrap() as usize];
+    let view = &json["bufferViews"][accessor["bufferView"].as_u64().unwrap() as usize];
+    let at = view["byteOffset"].as_u64().unwrap_or(0) as usize
+        + accessor["byteOffset"].as_u64().unwrap_or(0) as usize;
+    let first: Vec<f32> = (0..3)
+        .map(|k| f32::from_le_bytes(bin[at + 4 * k..at + 4 * k + 4].try_into().unwrap()))
+        .collect();
+    bin[at..at + 4].copy_from_slice(&(first[0] + 0.25).to_le_bytes());
+    let moved = glb_with(&json, &bin);
+    let scene = geometry_from_gltf(model, &gltf::Gltf::parse(&moved).unwrap()).unwrap();
+    assert_eq!(scene.report.shapes[0].status, "replaced");
+    let lods = &scene.meshlets[&0];
+    assert_eq!(lods.len(), 2);
+    assert_eq!(lods[1], lods[0], "LOD 1 from the mesh");
+    assert_eq!(lods[0].indices.len(), 72 * 3);
+
+    let out = write_meshlets(&bfres, &scene.meshlets).unwrap();
+    let back = Bfres::parse(&out, None).unwrap();
+    let ms = MeshletShape::read(&back.models[0].shapes[0]).unwrap();
+    for lod in 0..2 {
+        let g = ms.geometry(lod).unwrap();
+        assert_eq!(g.indices.len(), 72 * 3);
+        let moved = [first[0] + 0.25, first[1], first[2]];
+        let near = |p: &[f32; 3], q: [f32; 3]| (0..3).all(|k| (p[k] - q[k]).abs() <= STEP);
+        assert!(
+            g.positions.iter().any(|p| near(p, moved)),
+            "LOD {lod}: the moved vertex"
+        );
+        assert!(
+            !g.positions
+                .iter()
+                .any(|p| near(p, [first[0], first[1], first[2]])),
+            "LOD {lod}: nothing left where it was"
+        );
+    }
+}

@@ -734,6 +734,37 @@ a share of the error a pass (the stiffness) like the links across joints. A stif
   the template's doesn't matter there.
 - `scene_tools.py`: ticking *Simulate as cloth* adds the settings at once.
 
+**Done (2026-11-15): meshlet shapes written (map pieces, objects).** `meshlet::encode` packs a shape's LODs into a
+buffer the game's way, `bfres_write::write_meshlets` lays the buffers into the file, and the build gives meshlet
+shapes each LOD from the scene (`<mesh>.lod<n>`, decimated without X symmetry) in their bone's space.
+- What the game's 896 buffers choose (`examples/meshlet_census.rs`): one model a file, every shape in meshlets; the
+  relocation table's section 3 the GPU data, on the 4 KiB after the data (sections 1 and 2 empty at the data's end),
+  the buffers one after another on 0x40, each padded to 0x100, the whole to 4 KiB, then the memory pool block
+  (pointed at by the header and each shape's meshlet record) and the table. The header's minimum is the vertices'
+  (all LODs), exactly; the shape's box theirs (within 2 mm), its sphere the smallest around them. In a meshlet, each
+  position and UV base is its smallest value and each width the bit length of the largest offset (UVs at least 1
+  bit); a UV component's exponent the smallest whose base fits an i16 (4 to 7: |u| up to 8, 16, 32, 64); a colour
+  channel constant (a byte in the record) when every vertex has the same byte, the varying channels 8-bit unless
+  one leaves 0..1, then all f32. The mask's high nibble is a bit a channel, set when it's constant or in 0..1 (so
+  it is 0xf exactly when the varying channels are 8-bit, as the reader takes it). Normal bits (6 to 12) don't follow the
+  meshlet's size; no rule found. Vertices aren't in order of first use; meshlets hold 56 to 64 vertices and fewer
+  than 120 triangles.
+- The writer's own choices: meshlets grown triangle by triangle from the one around them that brings the fewest new
+  vertices (then the nearest), and when none fits, the next unused triangle in a Z-order of the triangles' middles;
+  never more than the format's 524 m across (a far mountain made one wider). Normals with the fewest bits from 6
+  that keep each within half a degree; no normal cones (two meshlets in three in the game's have none).
+- Checked on all 779 files (`examples/meshlet_write_check.rs`): written unchanged, every file the original's bytes.
+  Every shape given its own decoded geometry and written: 6,972 of 8,142 LODs the same triangles exactly, the rest
+  the same but for UVs and colours a meshlet of other vertices holds less finely (a UV within 2^-10, half a step of
+  the coarsest scale; colours within half a byte, 8-bit where the game's meshlet had f32); normals within 0.5
+  degrees, tangents 0.04. Header minimum as the game's in all, box within 2 mm, sphere within 1 mm (one smaller).
+  545,624 meshlets for the game's 535,636; buffers 4% larger (finer normals); the slowest file 1.5 s.
+- Through a build: a Kokiri door (`Obj_Kokiri_Door_A_01`, 10 LODs) made 1.5 times taller, and a Kokiri tree house
+  (`Land_Kokiri_House_Outside_C_00`, 4 shapes) with its branches 1.5 times taller: the edited shapes replaced (each
+  LOD decimated from the edit), the others kept byte for byte, the render comparison without differences.
+  Collision isn't in the model: a map piece reshaped keeps the game's collision.
+- Checked in game (2026-11-16): both load and show their new shapes, near and far.
+
 **Done (2026-11-19): new parts don't twist.** A tester's new cloth bones twisted in game (the object on them turned
 about the bones), and their physics viewer showed our strip with the bones along one edge. Each new bone after the
 first is set from a triangle of the strip, two corners on the chain and one beside it, so its roll was wherever that
@@ -763,8 +794,7 @@ adult Link's cap twisted up to 66 degrees in the test motion (the cap: 14 to 37)
   the worst 6.7. The 35 files without bend stiffness (with a model) as before. `--forward`: stiffness 0 as before (29
   degrees), 0.3 settles 1.5 (1.8 before), 1 settles 0.1 (0.7).
 
-**Next:** writing meshlet shapes (a build that replaces a map piece or object); new animation names (the sequence
-files) later.
+**Next:** new animation names (the sequence files) later.
 
 ## Risks and how they are contained
 

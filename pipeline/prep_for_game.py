@@ -465,7 +465,7 @@ LOD_SAME = 0.95  # a game LOD with at least this share of LOD 0's triangles gets
 
 def make_lods(objects, vanilla_meshes, cfg, rep):
     """Lower LODs of each mesh, in the proportions of the game mesh's own LODs: "<mesh>.lod<n>" copies, decimated
-    (collapse, symmetric in X), with smooth normals. modstudio replace gives each LOD its version; a mesh it keeps
+    (collapse, symmetric in X but for meshlet shapes: map pieces, objects), with smooth normals. modstudio replace gives each LOD its version; a mesh it keeps
     as the game's ignores them. Returns the copies.
     Compared on the townsman's face and hair (LODs 3 and 4, a few hundred triangles): welding the copy first
     (prep.lod_weld, a distance) closes eyelids and lips into one surface that decimation then opens; without it
@@ -498,7 +498,8 @@ def make_lods(objects, vanilla_meshes, cfg, rep):
             dec.decimate_type = 'COLLAPSE'
             dec.ratio = ratio
             dec.use_collapse_triangulate = True
-            dec.use_symmetry = cfg.get("lod_symmetry", True)
+            # characters are symmetric in X; map pieces and objects (meshlet shapes) aren't
+            dec.use_symmetry = cfg.get("lod_symmetry", True) and not vm.get("meshlet")
             dec.symmetry_axis = 'X'
             with bpy.context.temp_override(object=dup):
                 bpy.ops.object.modifier_move_to_index(modifier=dec.name, index=0)

@@ -62,7 +62,7 @@ pub struct MeshInfo {
     pub triangles: u32,
     /// Triangles of each LOD (the build makes lower LODs of an edited mesh in these proportions).
     pub lod_triangles: Vec<u32>,
-    /// Stored as meshlets: exported and previewed, not replaced yet.
+    /// Stored as meshlets (map pieces, objects): written in meshlets again when replaced.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub meshlet: bool,
     pub attributes: Vec<AttributeInfo>,

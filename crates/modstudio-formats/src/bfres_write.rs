@@ -19,6 +19,7 @@ use crate::bfres::{AttribFormat, Bfres, Bounding, Model, Shape, Skeleton};
 use crate::bfres_bones::{self, NewBone};
 use crate::bytes::ReadLe;
 use crate::error::{Result, invalid, unsupported};
+use crate::meshlet::{self, MeshletGeometry, MeshletShape};
 use crate::res_dict;
 
 const INDEX_ALIGN: usize = 0x100;
@@ -186,7 +187,7 @@ pub fn write_edited(
     }
     if model.shapes.iter().any(|s| s.is_meshlet()) {
         return Err(unsupported(
-            "models with meshlet shapes (map pieces, objects): they are read and exported, not written yet",
+            "models with meshlet shapes (map pieces, objects) here: they are written with write_meshlets",
         ));
     }
     let rlt = Relocations::parse(d)?;
@@ -495,7 +496,177 @@ pub fn write_edited(
         }
     }
 
-    // The GPU block, then what came after the game's (the memory pool block) moved by `delta`; then the table.
+    let sections = [
+        (0, if grows { data_end } else { data_section.size }),
+        (new_gpu, index_end),
+        (new_gpu + index_end, gpu_end - new_gpu - index_end),
+    ];
+    finish(
+        d,
+        &rlt,
+        out,
+        &block,
+        old_gpu_end,
+        &sections,
+        added_entries,
+        buffer_info,
+    )
+}
+
+/// Writes `bfres`, a model of meshlet shapes (map pieces, objects: [`crate::meshlet`]), with `replace`'s shapes (by
+/// index) given new geometry, each LOD's (most detailed first, as many as the shape has).
+///
+/// The layout is the game's (checked against all 779 such files): the data part, then on the next 4 KiB the GPU data
+/// (the relocation table's section 3; sections 1 and 2, a model's index and vertex buffers, empty at the data's end):
+/// the shapes' buffers in order, each on its alignment (0x40), the whole padded to 4 KiB; then the memory pool block
+/// and the table. Everything in the data part stays where it is; a replaced shape's buffer size and offset, its
+/// triangles and meshlets per LOD, its bounding box (around every LOD's vertices) and sphere (the smallest around
+/// them) are patched. Written without replacements, the file is the original's bytes.
+pub fn write_meshlets(
+    bfres: &Bfres,
+    replace: &BTreeMap<usize, Vec<MeshletGeometry>>,
+) -> Result<Vec<u8>> {
+    let d = bfres.data;
+    let [model] = bfres.models.as_slice() else {
+        return Err(unsupported(format!(
+            "{} models in one file",
+            bfres.models.len()
+        )));
+    };
+    if model.shapes.is_empty() || !model.shapes.iter().all(|s| s.is_meshlet()) {
+        return Err(unsupported("a model of meshlet shapes and other shapes"));
+    }
+    if let Some(&i) = replace.keys().find(|&&i| i >= model.shapes.len()) {
+        return Err(invalid(format!("no shape {i}")));
+    }
+    let rlt = Relocations::parse(d)?;
+    let gpu = bfres.buffer_offset;
+    let laid_out = rlt.sections.len() >= 5 && {
+        let s = &rlt.sections;
+        s[0].offset == 0
+            && s[0].size <= gpu
+            && s[1].size == 0
+            && s[2].size == 0
+            && s[3].offset == gpu
+            && s[4].offset == s[3].offset + s[3].size
+    };
+    if !laid_out {
+        return Err(unsupported(
+            "meshlet GPU data not where the relocation table says",
+        ));
+    }
+    let old_gpu_end = rlt.sections[3].offset + rlt.sections[3].size;
+    let buffer_info = d.offset_at(0xB0)?;
+
+    let mut out = d[..gpu].to_vec();
+    let mut block: Vec<u8> = Vec::new();
+    for (si, shape) in model.shapes.iter().enumerate() {
+        let b = shape
+            .meshlet
+            .ok_or_else(|| invalid(format!("shape {}: no meshlet buffer", shape.name)))?;
+        let rec = b.record_at;
+        let infos = d.offset_at(rec + 0x10)?;
+        let align = (d.u32_at(infos + 4)? as usize).max(1);
+        let offsets = d.offset_at(rec + 0x18)?;
+        let encoded;
+        let bytes: &[u8] = match replace.get(&si) {
+            None => b.data,
+            Some(lods) => {
+                if lods.len() != b.lods {
+                    return Err(invalid(format!(
+                        "shape {}: {} LODs for its {}",
+                        shape.name,
+                        lods.len(),
+                        b.lods
+                    )));
+                }
+                let own = MeshletShape::read(shape)?;
+                encoded = meshlet::encode(own.flags, own.step, lods)
+                    .map_err(|e| invalid(format!("shape {}: {e}", shape.name)))?;
+                let tris = d.offset_at(rec + 0x20)?;
+                let counts = d.offset_at(rec + 0x28)?;
+                for k in 0..lods.len() {
+                    put_u32(&mut out, tris + 4 * k, encoded.lod_triangles[k]);
+                    put_u32(&mut out, counts + 4 * k, encoded.lod_meshlets[k]);
+                }
+                if shape.bounding_at != 0 {
+                    let bx = bounding(encoded.positions.iter().copied());
+                    put_f32s(&mut out, shape.bounding_at, &bx.center);
+                    put_f32s(&mut out, shape.bounding_at + 12, &bx.extent);
+                }
+                if shape.radius_at != 0 {
+                    put_f32s(
+                        &mut out,
+                        shape.radius_at,
+                        &sphere_around(&encoded.positions),
+                    );
+                }
+                &encoded.data
+            }
+        };
+        let at = block.len().next_multiple_of(align);
+        block.resize(at, 0);
+        block.extend_from_slice(bytes);
+        put_u32(&mut out, infos, bytes.len() as u32);
+        put_u64(&mut out, offsets, at as u64);
+    }
+    block.resize(block.len().next_multiple_of(GPU_END_ALIGN), 0);
+    let s = &rlt.sections;
+    let sections = [
+        (0, s[0].size),
+        (s[1].offset, 0),
+        (s[2].offset, 0),
+        (gpu, block.len()),
+    ];
+    finish(
+        d,
+        &rlt,
+        out,
+        &block,
+        old_gpu_end,
+        &sections,
+        Vec::new(),
+        buffer_info,
+    )
+}
+
+/// The smallest sphere around `points`, each counted once and taken in a shuffled order (the sphere's search is
+/// quick in a random order, slow in some others: a mesh's vertices along one side, say).
+fn sphere_around(points: &[[f32; 3]]) -> [f32; 4] {
+    let mut seen = BTreeSet::new();
+    let mut unique: Vec<[f32; 3]> = points
+        .iter()
+        .filter(|p| seen.insert(p.map(f32::to_bits)))
+        .copied()
+        .collect();
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    for i in (1..unique.len()).rev() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        unique.swap(i, (state % (i as u64 + 1)) as usize);
+    }
+    smallest_sphere(&unique)
+}
+
+/// The file's end: `out` (the data part, up to where the GPU data starts) and `block` (the GPU data, a multiple of
+/// 4 KiB) after it, what came after the game's GPU data (from `old_gpu_end`: the memory pool block) moved with its
+/// end, then the relocation table. `sections` gives the first sections' new places (the data's and the GPU data's); the
+/// later ones follow the move. Pointers into a section that moved follow it, entries in the moved part move with it,
+/// and `added_entries` (pointers new in the data part) join the first section's.
+#[allow(clippy::too_many_arguments)]
+fn finish(
+    d: &[u8],
+    rlt: &Relocations,
+    mut out: Vec<u8>,
+    block: &[u8],
+    old_gpu_end: usize,
+    sections: &[(usize, usize)],
+    added_entries: Vec<Entry>,
+    buffer_info: usize,
+) -> Result<Vec<u8>> {
+    let new_gpu = out.len();
+    let gpu_end = new_gpu + block.len();
     let delta = gpu_end as i64 - old_gpu_end as i64;
     let shift = |v: usize| {
         if v >= old_gpu_end {
@@ -504,20 +675,18 @@ pub fn write_edited(
             v
         }
     };
-    out.extend_from_slice(&block);
+    out.extend_from_slice(block);
     out.extend_from_slice(&d[old_gpu_end..rlt.at]);
 
-    // Each section where it is now: pointers into a section that moved follow it, and entries in the moved part
-    // move with it.
     let new_sections: Vec<(usize, usize)> = rlt
         .sections
         .iter()
         .enumerate()
-        .map(|(si, s)| match si {
-            0 => (0, if grows { data_end } else { s.size }),
-            1 => (new_gpu, index_end),
-            2 => (new_gpu + index_end, gpu_end - new_gpu - index_end),
-            _ => (shift(s.offset), s.size),
+        .map(|(si, s)| {
+            sections
+                .get(si)
+                .copied()
+                .unwrap_or((shift(s.offset), s.size))
         })
         .collect();
     for (si, section) in rlt.sections.iter().enumerate() {
@@ -1645,6 +1814,97 @@ mod tests {
         let mut past = own;
         past.lods[0].indices[0] = 7;
         assert!(write(&bfres, &BTreeMap::from([(0, past)])).is_err());
+    }
+
+    #[test]
+    fn a_meshlet_model_writes_back_identically() {
+        use crate::testing::{meshlet_grid, tiny_meshlet_bfres};
+        let file = tiny_meshlet_bfres(&[
+            meshlet_grid(4, 1.0, [0.0; 3], 1.0, 1.0),
+            meshlet_grid(2, 1.0, [0.0; 3], 1.0, 1.0),
+        ]);
+        let bfres = Bfres::parse(&file, None).unwrap();
+        assert!(bfres.models[0].shapes[0].is_meshlet());
+        assert_eq!(write_meshlets(&bfres, &BTreeMap::new()).unwrap(), file);
+    }
+
+    #[test]
+    fn a_meshlet_shape_replaced_moves_the_tail_and_patches_everything() {
+        use crate::testing::{meshlet_grid, tiny_meshlet_bfres};
+        let file = tiny_meshlet_bfres(&[
+            meshlet_grid(4, 1.0, [0.0; 3], 1.0, 1.0),
+            meshlet_grid(2, 1.0, [0.0; 3], 1.0, 1.0),
+        ]);
+        let bfres = Bfres::parse(&file, None).unwrap();
+        // a larger grid elsewhere: a buffer past 4 KiB more
+        let lods = vec![
+            meshlet_grid(40, 6.0, [2.0, 1.0, -3.0], 1.0, 1.0),
+            meshlet_grid(10, 6.0, [2.0, 1.0, -3.0], 1.0, 1.0),
+        ];
+        let out = write_meshlets(&bfres, &BTreeMap::from([(0, lods.clone())])).unwrap();
+        let d = out.as_slice();
+        let b2 = Bfres::parse(d, None).unwrap();
+        let shape = &b2.models[0].shapes[0];
+        let ms = MeshletShape::read(shape).unwrap();
+        assert_eq!(ms.geometry(0).unwrap().indices.len(), 3200 * 3);
+        assert_eq!(ms.geometry(1).unwrap().indices.len(), 200 * 3);
+        let rec = shape.meshlet.unwrap().record_at;
+        let tris = d.offset_at(rec + 0x20).unwrap();
+        let counts = d.offset_at(rec + 0x28).unwrap();
+        assert_eq!(d.u32_at(tris).unwrap(), 3200);
+        assert_eq!(d.u32_at(tris + 4).unwrap(), 200);
+        assert_eq!(d.u32_at(counts).unwrap() as usize, ms.lods[0].len());
+        assert_eq!(d.u32_at(counts + 4).unwrap() as usize, ms.lods[1].len());
+        // the buffer's size in the record, the GPU data's in the buffer info and the table
+        let size = d.u32_at(d.offset_at(rec + 0x10).unwrap()).unwrap() as usize;
+        assert_eq!(size, ms.data.len());
+        assert_eq!(size % 0x100, 0);
+        let rlt = Relocations::parse(d).unwrap();
+        let gpu = &rlt.sections[3];
+        assert_eq!(gpu.offset, b2.buffer_offset);
+        assert_eq!(gpu.size, size.next_multiple_of(0x1000));
+        assert_eq!(
+            d.u32_at(d.offset_at(0xB0).unwrap() + 4).unwrap() as usize,
+            gpu.size
+        );
+        // the memory pool after it, the header's and the record's pointers at it; the table after that
+        let pool = &rlt.sections[4];
+        assert_eq!(pool.offset, gpu.offset + gpu.size);
+        assert_eq!(d.offset_at(0xA8).unwrap(), pool.offset);
+        assert_eq!(d.offset_at(rec).unwrap(), pool.offset);
+        assert_eq!(rlt.at, pool.offset + pool.size);
+        assert_eq!(rlt.sections[5].offset, rlt.at);
+        assert_eq!(d.u32_at(0x1C).unwrap() as usize, d.len());
+        // the box around the new vertices, and a sphere around them
+        let bx: Vec<f32> = (0..6)
+            .map(|k| d.f32_at(shape.bounding_at + 4 * k).unwrap())
+            .collect();
+        assert!(
+            (bx[0] - 5.0).abs() < 1e-3 && (bx[2] - 0.0).abs() < 1e-3 && (bx[3] - 3.0).abs() < 1e-3,
+            "{bx:?}"
+        );
+        let sp: Vec<f32> = (0..4)
+            .map(|k| d.f32_at(shape.radius_at + 4 * k).unwrap())
+            .collect();
+        assert!(sp[3] > 4.2 && sp[3] < 4.3, "{sp:?}");
+        // and written again unchanged, the same bytes
+        assert_eq!(write_meshlets(&b2, &BTreeMap::new()).unwrap(), out);
+    }
+
+    #[test]
+    fn a_meshlet_shape_takes_as_many_lods_as_it_has() {
+        use crate::testing::{meshlet_grid, tiny_meshlet_bfres};
+        let file = tiny_meshlet_bfres(&[meshlet_grid(2, 1.0, [0.0; 3], 1.0, 1.0)]);
+        let bfres = Bfres::parse(&file, None).unwrap();
+        let two = vec![meshlet_grid(2, 1.0, [0.0; 3], 1.0, 1.0); 2];
+        let e = write_meshlets(&bfres, &BTreeMap::from([(0, two)]))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("2 LODs for its 1"), "{e}");
+        let e = write_edited(&bfres, &BTreeMap::new(), &[], &BTreeMap::new())
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("write_meshlets"), "{e}");
     }
 
     #[test]

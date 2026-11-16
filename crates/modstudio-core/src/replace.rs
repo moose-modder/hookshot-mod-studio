@@ -16,8 +16,12 @@
 //! - Every attribute the game's vertex buffer has is written: UVs from TEXCOORD_n, colours `_c<n>` from the
 //!   attribute `_C<n>` as they are (scenes made before it: COLOR_n, whose sRGB bytes are the game's; white
 //!   where the scene has none), tangents from TANGENT (computed from UV 0 if missing).
-//! - Every LOD of the shape gets the new mesh (simplified LODs are for later); sub-mesh counts stay the game's.
+//! - Every LOD of the shape gets the scene's version of it (`<mesh>.lod<n>`, which the build makes), or the next more
+//!   detailed one; sub-mesh counts stay the game's.
 //! - A shape the scene has no mesh for is removed (drawn as nothing), as Switch Toolbox's replace did.
+//! - Shapes stored as meshlets (map pieces, objects: [`modstudio_formats::meshlet`]) are unskinned: their vertices
+//!   go to their bone's space, with the attributes their buffer has, and are written in meshlets again
+//!   ([`bfres_write::write_meshlets`]). Their models don't take new bones.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -25,6 +29,7 @@ use std::path::{Path, PathBuf};
 use modstudio_formats::bfres::{Bfres, Model, Shape, Skeleton};
 use modstudio_formats::bfres_bones::{self, NewBone};
 use modstudio_formats::bfres_write::{self, LodGeometry, ShapeGeometry};
+use modstudio_formats::meshlet::{self, MeshletGeometry, MeshletShape};
 use modstudio_formats::romfs::{self, Romfs};
 use serde::Serialize;
 
@@ -657,28 +662,7 @@ fn mesh_attributes(
                 }
             }
             _ if name.starts_with("_c") => {
-                let set: usize = name[2..].parse().unwrap_or(usize::MAX);
-                if let Some(c) = mesh.color_data.get(&set) {
-                    c.clone()
-                } else if !mesh.color_data.is_empty() {
-                    // (a scene with exact colour sets that lacks this one: white, as the game's default)
-                    vec![[1.0; 4]; n]
-                } else {
-                    match mesh.colors.get(set) {
-                        Some(c) => c
-                            .iter()
-                            .map(|c| {
-                                [
-                                    math::linear_to_srgb(c[0]),
-                                    math::linear_to_srgb(c[1]),
-                                    math::linear_to_srgb(c[2]),
-                                    c[3],
-                                ]
-                            })
-                            .collect(),
-                        None => vec![[1.0; 4]; n],
-                    }
-                }
+                colour_set(mesh, name[2..].parse().unwrap_or(usize::MAX))
             }
             "_i0" | "_i1" | "_w0" | "_w1" => {
                 let first = if name.ends_with('1') { 4 } else { 0 };
@@ -710,6 +694,174 @@ fn mesh_attributes(
         attributes.insert(a.name.clone(), values);
     }
     Ok(attributes)
+}
+
+/// Colour set `_c<set>` of a scene mesh as the game stores it: the attribute `_C<set>` as it is; in scenes made
+/// before those, COLOR_<set> taken to sRGB; white (the game's default) where the scene has neither.
+fn colour_set(mesh: &SceneMesh, set: usize) -> Vec<[f32; 4]> {
+    let n = mesh.positions.len();
+    if let Some(c) = mesh.color_data.get(&set) {
+        c.clone()
+    } else if !mesh.color_data.is_empty() {
+        // (a scene with exact colour sets that lacks this one: white, as the game's default)
+        vec![[1.0; 4]; n]
+    } else {
+        match mesh.colors.get(set) {
+            Some(c) => c
+                .iter()
+                .map(|c| {
+                    [
+                        math::linear_to_srgb(c[0]),
+                        math::linear_to_srgb(c[1]),
+                        math::linear_to_srgb(c[2]),
+                        c[3],
+                    ]
+                })
+                .collect(),
+            None => vec![[1.0; 4]; n],
+        }
+    }
+}
+
+/// A scene mesh as one LOD of a meshlet shape: its vertices in the shape's bone's space (meshlet shapes are
+/// unskinned), with the attributes the shape's buffer has (`flags`).
+fn meshlet_lod(
+    shape: &Shape,
+    mesh: &SceneMesh,
+    world: &[Mat4],
+    flags: u32,
+    report: &mut GeometryReport,
+) -> Result<MeshletGeometry> {
+    let n = mesh.positions.len();
+    let inverse = world
+        .get(shape.bone)
+        .and_then(math::inverse_affine)
+        .ok_or_else(|| Error(format!("{}: its bone's place can't be undone", shape.name)))?;
+    let normals = match &mesh.normals {
+        Some(nv) => nv.clone(),
+        None => {
+            report.warn(format!(
+                "{}: the scene has no normals; they are made flat",
+                shape.name
+            ));
+            flat_normals(mesh)
+        }
+    };
+    let tangents = (flags & meshlet::flags::TANGENTS != 0).then(|| match &mesh.tangents {
+        Some(t) => t.clone(),
+        None => {
+            report.warn(format!(
+                "{}: the scene has no tangents (Blender exports them for triangles only); made from UV map 0",
+                shape.name
+            ));
+            compute_tangents(mesh, &normals)
+        }
+    });
+    let uvs = (0..meshlet::uv_set_count(flags))
+        .map(|set| match mesh.uvs.get(set) {
+            Some(uv) => uv.clone(),
+            None => {
+                report.warn(format!(
+                    "{}: the scene has no UV map {set}; it is all 0",
+                    shape.name
+                ));
+                vec![[0.0; 2]; n]
+            }
+        })
+        .collect();
+    let colours = [(0, meshlet::flags::COLOUR_0), (1, meshlet::flags::COLOUR_1)]
+        .into_iter()
+        .filter(|&(_, f)| flags & f != 0)
+        .map(|(set, _)| (set, colour_set(mesh, set)))
+        .collect();
+    Ok(MeshletGeometry {
+        positions: mesh
+            .positions
+            .iter()
+            .map(|&p| math::transform_point(&inverse, p))
+            .collect(),
+        normals: normals
+            .iter()
+            .map(|&d| transform_direction(&inverse, d))
+            .collect(),
+        tangents: tangents.map(|t| {
+            t.iter()
+                .map(|t| {
+                    let d = transform_direction(&inverse, [t[0], t[1], t[2]]);
+                    [d[0], d[1], d[2], t[3]]
+                })
+                .collect()
+        }),
+        uvs,
+        colours,
+        indices: mesh.indices.clone(),
+    })
+}
+
+/// A meshlet shape's LODs from the scene, as [`shape_geometry`] makes a shape's: `lods[n]` the scene's version of
+/// LOD n, or the next more detailed one.
+fn meshlet_lods(
+    shape: &Shape,
+    lod_count: usize,
+    flags: u32,
+    lods: &[Option<&SceneMesh>],
+    world: &[Mat4],
+    report: &mut GeometryReport,
+) -> Result<Vec<MeshletGeometry>> {
+    let mut out: Vec<MeshletGeometry> = Vec::with_capacity(lod_count);
+    for i in 0..lod_count {
+        match lods.get(i).copied().flatten() {
+            Some(mesh) => out.push(meshlet_lod(shape, mesh, world, flags, report)?),
+            None => match out.last() {
+                Some(prev) => out.push(prev.clone()),
+                None => return Err(Error(format!("{}: no scene mesh", shape.name))),
+            },
+        }
+    }
+    Ok(out)
+}
+
+/// Whether LOD 0 from the scene is the game's (`game`, decoded with the vertices meshlets share made one): the same
+/// triangles in the same order, every corner where the game has it (within the position step), with the game's
+/// normals and UVs. Then the shape is kept as the game has it.
+fn same_meshlets(game: &MeshletGeometry, ours: &MeshletGeometry) -> bool {
+    if game.indices.len() != ours.indices.len() || game.uvs.len() != ours.uvs.len() {
+        return false;
+    }
+    let near = |p: [f32; 3], q: [f32; 3], d: f32| (0..3).all(|k| (p[k] - q[k]).abs() <= d);
+    game.indices.iter().zip(&ours.indices).all(|(&a, &b)| {
+        let (a, b) = (a as usize, b as usize);
+        near(game.positions[a], ours.positions[b], meshlet::STEP)
+            && near(game.normals[a], ours.normals[b], 0.02)
+            && game.uvs.iter().zip(&ours.uvs).all(|(u, v)| {
+                (u[a][0] - v[b][0]).abs() <= 1e-3 && (u[a][1] - v[b][1]).abs() <= 1e-3
+            })
+    })
+}
+
+/// A meshlet shape removed: every LOD one triangle of no size.
+fn removed_meshlets(ms: &MeshletShape) -> Vec<MeshletGeometry> {
+    let one = MeshletGeometry {
+        positions: vec![ms.bounds_min; 3],
+        normals: vec![[0.0, 0.0, 1.0]; 3],
+        tangents: (ms.flags & meshlet::flags::TANGENTS != 0).then(|| vec![[1.0, 0.0, 0.0, 1.0]; 3]),
+        uvs: vec![vec![[0.0; 2]; 3]; meshlet::uv_set_count(ms.flags)],
+        colours: [(0, meshlet::flags::COLOUR_0), (1, meshlet::flags::COLOUR_1)]
+            .into_iter()
+            .filter(|&(_, f)| ms.flags & f != 0)
+            .map(|(set, _)| (set, vec![[1.0; 4]; 3]))
+            .collect(),
+        indices: vec![0, 1, 2],
+    };
+    vec![one; ms.lods.len()]
+}
+
+/// LODs a shape has: its meshes, or a meshlet shape's.
+fn lod_count(shape: &Shape) -> usize {
+    match shape.meshlet {
+        Some(b) => b.lods.max(1),
+        None => shape.meshes.len(),
+    }
 }
 
 /// The shape's geometry from the scene: `lods[0]` is the mesh, `lods[n]` the scene's own version of LOD n, if it
@@ -1120,6 +1272,8 @@ fn removed_shape(model: &Model, shape: &Shape) -> ShapeGeometry {
 #[derive(Debug, Default)]
 pub struct SceneGeometry {
     pub shapes: BTreeMap<usize, ShapeGeometry>,
+    /// Shapes stored as meshlets: each LOD's geometry.
+    pub meshlets: BTreeMap<usize, Vec<MeshletGeometry>>,
     pub new_bones: Vec<NewBone>,
     pub skin_bones: BTreeMap<usize, Vec<u16>>,
     pub report: GeometryReport,
@@ -1344,11 +1498,11 @@ pub fn geometry_from_gltf_with(
             ));
             continue;
         };
-        if lod >= model.shapes[si].meshes.len() {
+        let lods = lod_count(&model.shapes[si]);
+        if lod >= lods {
             report.warn(format!(
-                "{}: the game mesh has {} LODs; left out",
-                node.name,
-                model.shapes[si].meshes.len()
+                "{}: the game mesh has {lods} LODs; left out",
+                node.name
             ));
             continue;
         }
@@ -1373,8 +1527,52 @@ pub fn geometry_from_gltf_with(
         )?);
     }
     let mut out = BTreeMap::new();
+    let mut meshlets = BTreeMap::new();
     for (si, shape) in model.shapes.iter().enumerate() {
         if shape.is_meshlet() {
+            let lods: Vec<Option<&SceneMesh>> = by_shape
+                .get(&si)
+                .map(|v| v.iter().map(Option::as_ref).collect())
+                .unwrap_or_default();
+            let ms = MeshletShape::read(shape).context(&shape.name)?;
+            let game = ms.geometry(0).context(&shape.name)?.welded();
+            let (lod_geometry, status) = match lods.first().copied().flatten() {
+                Some(_) => {
+                    // (warnings about a mesh that turns out unchanged would only be noise)
+                    let mut own = GeometryReport::default();
+                    let g =
+                        meshlet_lods(shape, ms.lods.len(), ms.flags, &lods, &game_world, &mut own)?;
+                    if unchanged.contains(&shape.name) || same_meshlets(&game, &g[0]) {
+                        (None, "kept")
+                    } else {
+                        for w in own.warnings {
+                            report.warn(w);
+                        }
+                        (Some(g), "replaced")
+                    }
+                }
+                None => {
+                    report.warn(if lods.is_empty() {
+                        format!("{}: not in the scene; removed", shape.name)
+                    } else {
+                        format!(
+                            "{}: the scene has lower LODs of it but not the mesh itself; removed",
+                            shape.name
+                        )
+                    });
+                    (Some(removed_meshlets(&ms)), "removed")
+                }
+            };
+            let first = lod_geometry.as_ref().map_or(&game, |g| &g[0]);
+            report.shapes.push(ShapeReport {
+                name: shape.name.clone(),
+                status: status.to_owned(),
+                vertices: first.positions.len() as u32,
+                triangles: first.indices.len() as u32 / 3,
+            });
+            if let Some(g) = lod_geometry {
+                meshlets.insert(si, g);
+            }
             continue;
         }
         let lods: Vec<Option<&SceneMesh>> = by_shape
@@ -1447,6 +1645,7 @@ pub fn geometry_from_gltf_with(
     }
     Ok(SceneGeometry {
         shapes: out,
+        meshlets,
         new_bones,
         skin_bones,
         report,
@@ -1486,10 +1685,22 @@ pub fn replace_model(
         .ok()
         .and_then(|t| serde_json::from_str::<Unchanged>(&t).ok())
         .unwrap_or_default();
-    let scene = geometry_from_gltf_with(model, &gltf, &unchanged.meshes)?;
-    let data =
+    let mut scene = geometry_from_gltf_with(model, &gltf, &unchanged.meshes)?;
+    let data = if model.shapes.iter().any(|s| s.is_meshlet()) {
+        if !scene.new_bones.is_empty() {
+            scene.report.warn(format!(
+                "{} new bone(s) in the scene: map pieces and objects stored as meshlets don't take new bones (their meshes follow one bone); left out",
+                scene.new_bones.len()
+            ));
+            scene.report.added_bones.clear();
+            scene.report.added_names.clear();
+            scene.new_bones.clear();
+        }
+        bfres_write::write_meshlets(&bfres, &scene.meshlets).context("writing the model")?
+    } else {
         bfres_write::write_edited(&bfres, &scene.shapes, &scene.new_bones, &scene.skin_bones)
-            .context("writing the model")?;
+            .context("writing the model")?
+    };
     let mut report = scene.report;
     // the new bones' tips, as the scene has them (taken to the game's size where the scene isn't), and which have
     // "Simulate as cloth" ticked

@@ -51,6 +51,11 @@ projects, and Blender. Then:
   Bones named `Ph_...`, or with *Simulate as cloth* ticked in the Bone tab, are simulated (a part of the model's
   cloth file is made for them). They swing and bend but keep their roll, with the bend stiffness the game's own cloth
   has; a few models' cloth files have none to copy (the build says so), and there they may twist.
+- **Map pieces and objects**: most of the game's map pieces and many objects keep their geometry as *meshlets*
+  (small packed clusters) rather than ordinary meshes. They're exported, shown and rebuilt like any other model:
+  the build packs your mesh, and each of its distance versions (LODs), into meshlets the way the game's are.
+  Collision isn't in the model file: a map piece you reshape is drawn as you made it, but the game still collides
+  with its old shape.
 - **Installed mods**: Hookshot's mods folder, mods on and off, the shared size table. Mods deeper in the folder,
   as emulators keep them (`contents/<title id>/<name>`), count too. Hookshot reads its mods when it starts. The table's `table-stamp.json` names the app that built it and its rules' version: an app with
   older rules (an older Mod Studio or mod manager) leaves a newer table alone and says which app to update.
