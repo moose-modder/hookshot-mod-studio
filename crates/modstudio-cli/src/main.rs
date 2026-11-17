@@ -603,10 +603,20 @@ fn mods_command(args: &Args) -> Result<(), Failure> {
         [on @ ("on" | "off"), folder] => {
             let new = mods::set_enabled(&s.install_mods, folder, *on == "on")?;
             println!("{folder} -> {new}");
-            mods::rebuild_size_table(&s.install_mods, &s.game_romfs, &mut progress)?;
+            mods::rebuild_size_table(
+                &s.install_mods,
+                &s.game_romfs,
+                modstudio_core::MADE_BY,
+                &mut progress,
+            )?;
         }
         ["table"] => {
-            mods::rebuild_size_table(&s.install_mods, &s.game_romfs, &mut progress)?;
+            mods::rebuild_size_table(
+                &s.install_mods,
+                &s.game_romfs,
+                modstudio_core::MADE_BY,
+                &mut progress,
+            )?;
         }
         _ => {
             return Err(Failure::Usage(

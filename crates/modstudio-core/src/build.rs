@@ -672,8 +672,12 @@ fn run(
     if options.install {
         progress.step("Installing");
         let target = install(settings, project, &mod_romfs, progress)?;
-        report.size_table =
-            mods::rebuild_size_table(&settings.install_mods, &settings.game_romfs, progress)?;
+        report.size_table = mods::rebuild_size_table(
+            &settings.install_mods,
+            &settings.game_romfs,
+            crate::MADE_BY,
+            progress,
+        )?;
         report.installed = Some(target);
     }
 

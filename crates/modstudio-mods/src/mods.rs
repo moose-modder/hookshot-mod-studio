@@ -9,11 +9,16 @@
 //! default one). So one table is worked out over the files of every enabled mod, as the game overlays them, and
 //! installed as its own mod, [`TABLE_MOD`], which sorts after the others. A mod's own table is not lost: its
 //! entries that are larger than the shared table's are taken over ([`sizetable::write_table`]).
+//!
+//! Mod Studio and the mod manager both rebuild that table, and either may be built from an older copy of this
+//! crate. A stamp beside the table ([`Stamp`]) says which rules ([`TABLE_RULES`]) and which app built it, and an
+//! app with older rules leaves a newer table alone: it would otherwise replace it with one that gives some files
+//! too little room.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::fsutil::{self, is_size_table};
 use crate::progress::Progress;
@@ -21,6 +26,29 @@ use crate::{Context, Error, Result, open_game_romfs, sizetable};
 
 /// The mod that holds the size table for all mods.
 pub const TABLE_MOD: &str = "zzz-ResourceSizeTable";
+
+/// The version of the table's rules: what [`sizetable`] works out for each file. Bump it with every change that
+/// makes the table come out differently for the same mods (a new rule, another margin, a kind of file handled
+/// for the first time), so an app built before the change leaves the new tables alone.
+pub const TABLE_RULES: u32 = 1;
+
+/// The stamp's file, in [`TABLE_MOD`] beside its `romfs` (the game doesn't read it).
+pub const STAMP_FILE: &str = "table-stamp.json";
+
+/// Which rules and which app built the installed table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stamp {
+    /// [`TABLE_RULES`] of the app that built it.
+    pub rules: u32,
+    /// The app and its version ("Hookshot Mod Studio 0.5.0").
+    pub made_by: String,
+}
+
+/// The installed table's stamp: `None` when there's no table, or it was built before stamps.
+pub fn stamp(mods_dir: &Path) -> Option<Stamp> {
+    let text = std::fs::read_to_string(mods_dir.join(TABLE_MOD).join(STAMP_FILE)).ok()?;
+    serde_json::from_str(&text).ok()
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InstalledMod {
@@ -152,13 +180,25 @@ pub fn size_table(mods_dir: &Path) -> Option<PathBuf> {
 }
 
 /// Works out one size table for every enabled mod in `mods_dir` ([`sizetable`], against the game's files in
-/// `game_romfs`) and installs it as [`TABLE_MOD`]. Returns the table, or `None` when no mod needs one (every file
-/// fits the game's own table); an old table is then removed.
+/// `game_romfs`) and installs it as [`TABLE_MOD`], stamped as made by `made_by` (the app and its version).
+/// Returns the table, or `None` when no mod needs one (every file fits the game's own table); an old table is
+/// then removed. A table built with newer rules than [`TABLE_RULES`] is left as it is, with an error that says
+/// which app built it.
 pub fn rebuild_size_table(
     mods_dir: &Path,
     game_romfs: &Path,
+    made_by: &str,
     progress: &mut Progress,
 ) -> Result<Option<PathBuf>> {
+    if let Some(newer) = stamp(mods_dir).filter(|s| s.rules > TABLE_RULES) {
+        return Err(Error(format!(
+            "the resource size table in {} was built by {}, whose rules are newer than {made_by}'s: it's \
+             left as it is. Update this app, or rebuild the table with {}",
+            mods_dir.display(),
+            newer.made_by,
+            newer.made_by
+        )));
+    }
     let mods: Vec<InstalledMod> = list(mods_dir)?.into_iter().filter(|m| m.enabled).collect();
     // Each file once, the last mod's (as the game overlays them), by its path ignoring case.
     let mut files: BTreeMap<String, (String, PathBuf)> = BTreeMap::new();
@@ -194,6 +234,14 @@ pub fn rebuild_size_table(
     )?;
     if report.table.is_none() {
         fsutil::remove_dir(&table_mod)?;
+    } else {
+        let stamp = Stamp {
+            rules: TABLE_RULES,
+            made_by: made_by.to_owned(),
+        };
+        let path = table_mod.join(STAMP_FILE);
+        let text = serde_json::to_string_pretty(&stamp).context("the table's stamp")?;
+        std::fs::write(&path, text).context(path.display())?;
     }
     Ok(report.table)
 }
@@ -237,6 +285,44 @@ mod tests {
         assert!(dir.join("-AMod").is_dir() && dir.join("BMod").is_dir());
         assert!(set_enabled(&dir, TABLE_MOD, false).is_err());
         assert!(set_enabled(&dir, "NotAMod", false).is_err());
+        fsutil::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_table_with_newer_rules_is_left_alone() {
+        let dir = std::env::temp_dir().join(format!("modstudio-stamp-{}", std::process::id()));
+        let table = dir
+            .join(TABLE_MOD)
+            .join("romfs/System/Resource/R.rsizetable.zs");
+        let texture = dir.join("AMod/romfs/Tex/T.bntx.zs");
+        for p in [&table, &texture] {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+        }
+        let stamped = |rules: u32| {
+            let s = Stamp {
+                rules,
+                made_by: "Mod Manager 9.0.0".into(),
+            };
+            std::fs::write(
+                dir.join(TABLE_MOD).join(STAMP_FILE),
+                serde_json::to_string(&s).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(stamp(&dir), Some(s));
+        };
+        let no_romfs = dir.join("no-romfs");
+        let mut progress = Progress::new(|_| {});
+
+        stamped(TABLE_RULES + 1);
+        let e = rebuild_size_table(&dir, &no_romfs, "Test 1.0", &mut progress).unwrap_err();
+        assert!(e.0.contains("built by Mod Manager 9.0.0, whose rules are newer than Test 1.0's"));
+        assert!(table.is_file(), "the newer table is left as it is");
+
+        // the same rules: rebuilt (here as far as the game's files, which aren't there)
+        stamped(TABLE_RULES);
+        let e = rebuild_size_table(&dir, &no_romfs, "Test 1.0", &mut progress).unwrap_err();
+        assert!(e.0.contains("isn't the game's romfs"), "{e}");
         fsutil::remove_dir(&dir).unwrap();
     }
 }

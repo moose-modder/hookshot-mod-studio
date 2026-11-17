@@ -32,6 +32,9 @@
 //! A mod made with another tool may come with its own table, which the shared one replaces in game. Its
 //! entries that are larger than the shared table's are taken over: its tool knew what the mod needs, perhaps
 //! for kinds of file not worked out here.
+//!
+//! A change that makes the table come out differently for the same mods bumps [`crate::mods::TABLE_RULES`]
+//! (the stamp that keeps an older app from replacing a newer table).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};

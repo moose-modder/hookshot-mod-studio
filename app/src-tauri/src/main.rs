@@ -667,7 +667,13 @@ async fn rebuild_size_table(
 }
 
 fn rebuild_table(settings: &Settings, progress: &mut Progress) -> Result<Option<PathBuf>> {
-    mods::rebuild_size_table(&settings.install_mods, &settings.game_romfs, progress).map_err(err)
+    mods::rebuild_size_table(
+        &settings.install_mods,
+        &settings.game_romfs,
+        modstudio_core::MADE_BY,
+        progress,
+    )
+    .map_err(err)
 }
 
 fn main() {

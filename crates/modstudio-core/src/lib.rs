@@ -43,3 +43,6 @@ pub mod tools;
 
 use modstudio_mods::{Context, fsutil};
 pub use modstudio_mods::{Error, Result, mods, progress, sizetable};
+
+/// Mod Studio and its version, as the shared size table's stamp names the app that built it.
+pub const MADE_BY: &str = concat!("Hookshot Mod Studio ", env!("CARGO_PKG_VERSION"));

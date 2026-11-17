@@ -13,3 +13,4 @@ workspace = true
 [dependencies]
 modstudio-formats = { path = "../modstudio-formats" }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
