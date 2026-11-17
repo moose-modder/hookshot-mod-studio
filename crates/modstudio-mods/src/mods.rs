@@ -1,8 +1,10 @@
 //! The game's mods folder (Hookshot's, Longshot's): the mods in it, turning them on and off, and one resource
 //! size table for all of them.
 //!
-//! The game reads `<mods>/<name>/romfs/...` (the layout emulators use). A folder whose name starts with '-' or
-//! '_' is off. When two mods have the same file, the one whose folder sorts last wins.
+//! The game reads `<mods>/<name>/romfs/...` (the layout emulators use), or deeper as emulators keep them
+//! (`<mods>/contents/<title id>/<name>/romfs`). A folder whose name starts with '-' or '_' is off, with every mod
+//! in it. When two mods have the same file, the one whose path in the mods folder sorts last (ignoring case) wins.
+//! Longshot's loader is `host/mods.c` in its source; [`list`] finds mods as it does.
 //!
 //! The game reads one resource size table (RESTBL). When several mods each ship one, the game uses the last
 //! mod's, so the other mods' grown files get the game's sizes and fail to load (a texture then shows as a
@@ -30,7 +32,9 @@ pub const TABLE_MOD: &str = "zzz-ResourceSizeTable";
 /// The version of the table's rules: what [`sizetable`] works out for each file. Bump it with every change that
 /// makes the table come out differently for the same mods (a new rule, another margin, a kind of file handled
 /// for the first time), so an app built before the change leaves the new tables alone.
-pub const TABLE_RULES: u32 = 1;
+///
+/// 1: the rules of Mod Studio 0.5.0. 2: mods deeper in the mods folder are counted (`contents/<title id>/<name>`).
+pub const TABLE_RULES: u32 = 2;
 
 /// The stamp's file, in [`TABLE_MOD`] beside its `romfs` (the game doesn't read it).
 pub const STAMP_FILE: &str = "table-stamp.json";
@@ -52,9 +56,9 @@ pub fn stamp(mods_dir: &Path) -> Option<Stamp> {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InstalledMod {
-    /// The name without the '-' or '_' that turns it off.
+    /// [`folder`](Self::folder) without the '-' or '_' that turns its folders off.
     pub name: String,
-    /// The folder's name in the mods folder.
+    /// Its folder's path in the mods folder, with '/' (`Name`, or deeper: `contents/<title id>/Name`).
     pub folder: String,
     pub enabled: bool,
     pub files: usize,
@@ -67,8 +71,17 @@ pub struct InstalledMod {
     pub own_size_table: bool,
 }
 
-fn is_off(folder: &str) -> bool {
-    folder.starts_with(['-', '_'])
+/// How many folders down the game looks for mods (`contents/<title id>/<name>` is 3 down).
+pub const MAX_DEPTH: usize = 4;
+
+/// A folder name that turns off what's in it.
+fn is_off(folder_name: &str) -> bool {
+    folder_name.starts_with(['-', '_'])
+}
+
+/// A folder name without the '-' or '_' that turns it off.
+fn on_name(folder_name: &str) -> &str {
+    folder_name.trim_start_matches(['-', '_'])
 }
 
 /// What a file in `Model/` is (`path` in the romfs, with '/'): an animation (`X.anim.bfres`), an animation's
@@ -92,74 +105,119 @@ fn model_file(path: &str) -> Option<ModelFile> {
     })
 }
 
-/// Every mod in the mods folder (folders with a `romfs`), sorted as the game sorts them; not the size table's.
+/// Every mod in the mods folder with a `romfs`, sorted as the game sorts them (by its path, ignoring case); not
+/// the size table's. Found as the game finds them: a mod is a folder holding `romfs`, `exefs` or `cheats`, at most
+/// [`MAX_DEPTH`] folders down; the game doesn't look inside a mod for more, nor in folders whose names start with
+/// '.'. Mods in a folder that is off are listed, as off.
 pub fn list(mods_dir: &Path) -> Result<Vec<InstalledMod>> {
-    let Ok(entries) = std::fs::read_dir(mods_dir) else {
-        return Ok(Vec::new());
-    };
     let mut out = Vec::new();
-    for e in entries.flatten() {
-        let folder = e.file_name().to_string_lossy().into_owned();
-        let romfs = e.path().join("romfs");
-        if folder == TABLE_MOD || !romfs.is_dir() {
-            continue;
-        }
-        let files = fsutil::files_under(&romfs);
-        let slash = |p: &PathBuf| p.to_string_lossy().replace('\\', "/");
-        out.push(InstalledMod {
-            name: folder.trim_start_matches(['-', '_']).to_owned(),
-            enabled: !is_off(&folder),
-            models: files
-                .iter()
-                .map(slash)
-                .filter(|p| model_file(p) == Some(ModelFile::Model))
-                .collect(),
-            textures: files
-                .iter()
-                .map(slash)
-                .filter(|p| p.starts_with("Tex/"))
-                .count(),
-            animations: files
-                .iter()
-                .filter(|p| model_file(&slash(p)) == Some(ModelFile::Animation))
-                .count(),
-            own_size_table: files.iter().any(|p| is_size_table(p)),
-            files: files.len(),
-            folder,
-        });
-    }
-    out.sort_by_key(|m| m.folder.to_lowercase());
+    find_mods(mods_dir, "", 0, &mut out);
+    out.sort_by_key(|m| m.folder.to_ascii_lowercase());
     Ok(out)
 }
 
-/// Turns a mod on or off by renaming its folder (`Name` <-> `-Name`). `folder` is its folder, or its name either way
-/// it is now (`Name` for a mod that is off finds `-Name`). Returns the new folder name. The game reads the mods
-/// folder when it starts, so it takes a restart; the size table needs rebuilding.
+fn find_mods(dir: &Path, rel: &str, depth: usize, out: &mut Vec<InstalledMod>) {
+    if depth > 0
+        && ["romfs", "exefs", "cheats"]
+            .iter()
+            .any(|d| dir.join(d).exists())
+    {
+        if dir.join("romfs").is_dir() {
+            out.push(installed(dir, rel));
+        }
+        return;
+    }
+    if depth >= MAX_DEPTH {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !e.path().is_dir() || name.starts_with('.') || (depth == 0 && name == TABLE_MOD) {
+            continue;
+        }
+        let sub = if rel.is_empty() {
+            name
+        } else {
+            format!("{rel}/{name}")
+        };
+        find_mods(&e.path(), &sub, depth + 1, out);
+    }
+}
+
+/// The mod in `dir` (`folder`: its path in the mods folder).
+fn installed(dir: &Path, folder: &str) -> InstalledMod {
+    let files = fsutil::files_under(&dir.join("romfs"));
+    let slash = |p: &PathBuf| p.to_string_lossy().replace('\\', "/");
+    InstalledMod {
+        name: folder.split('/').map(on_name).collect::<Vec<_>>().join("/"),
+        enabled: !folder.split('/').any(is_off),
+        models: files
+            .iter()
+            .map(slash)
+            .filter(|p| model_file(p) == Some(ModelFile::Model))
+            .collect(),
+        textures: files
+            .iter()
+            .map(slash)
+            .filter(|p| p.starts_with("Tex/"))
+            .count(),
+        animations: files
+            .iter()
+            .filter(|p| model_file(&slash(p)) == Some(ModelFile::Animation))
+            .count(),
+        own_size_table: files.iter().any(|p| is_size_table(p)),
+        files: files.len(),
+        folder: folder.to_owned(),
+    }
+}
+
+/// Turns a mod on or off by renaming its folder (`Name` <-> `-Name`; a mod deeper down, the last folder of its
+/// path: `contents/<title id>/Name`). `folder` is its path in the mods folder, with '/', ending in its folder's
+/// name either way it is now (`Name` for a mod that is off finds `-Name`). Returns its new path. A mod in a
+/// folder that is off can't be turned on by itself. The game reads the mods folder when it starts, so it takes a
+/// restart; the size table needs rebuilding.
 pub fn set_enabled(mods_dir: &Path, folder: &str, enabled: bool) -> Result<String> {
-    if folder.is_empty() || folder.contains(['/', '\\']) || folder == TABLE_MOD {
+    let parts: Vec<&str> = folder.split('/').collect();
+    let bad_part = |p: &&str| p.is_empty() || *p == "." || *p == ".." || p.contains([':', '\\']);
+    if parts.iter().any(bad_part) || parts.len() > MAX_DEPTH || folder == TABLE_MOD {
         return Err(Error(format!("not a mod folder: {folder:?}")));
     }
-    let name = folder.trim_start_matches(['-', '_']);
-    let candidates = [folder.to_owned(), name.to_owned(), format!("-{name}")];
+    let (parents, leaf) = parts.split_at(parts.len() - 1);
+    if enabled && let Some(off) = parents.iter().find(|p| is_off(p)) {
+        return Err(Error(format!(
+            "{folder} is in {off}, a folder that is off: rename that folder to turn it on"
+        )));
+    }
+    let parent: PathBuf = mods_dir.join(parents.iter().collect::<PathBuf>());
+    let name = on_name(leaf[0]);
+    let candidates = [leaf[0].to_owned(), name.to_owned(), format!("-{name}")];
     let Some(current) = candidates
         .iter()
-        .find(|c| mods_dir.join(c).join("romfs").is_dir())
+        .find(|c| parent.join(c).join("romfs").is_dir())
     else {
         return Err(Error(format!(
             "{} is not a mod",
             mods_dir.join(folder).display()
         )));
     };
-    let from = mods_dir.join(current);
     let new = if enabled {
         name.to_owned()
     } else {
         format!("-{name}")
     };
+    let new_folder = parents
+        .iter()
+        .copied()
+        .chain([new.as_str()])
+        .collect::<Vec<_>>()
+        .join("/");
     if new == *current {
-        return Ok(new);
+        return Ok(new_folder);
     }
-    let to = mods_dir.join(&new);
+    let (from, to) = (parent.join(current), parent.join(&new));
     if to.exists() {
         return Err(Error(format!(
             "{} already exists: two copies of {name}",
@@ -167,7 +225,7 @@ pub fn set_enabled(mods_dir: &Path, folder: &str, enabled: bool) -> Result<Strin
         )));
     }
     std::fs::rename(&from, &to).context(format!("renaming {}", from.display()))?;
-    Ok(new)
+    Ok(new_folder)
 }
 
 /// The shared size table, if one is installed.
@@ -210,6 +268,17 @@ pub fn rebuild_size_table(
             } else {
                 files.insert(rel.to_lowercase(), (rel, path));
             }
+        }
+    }
+    // A mod with its own table that sorts after the shared one would have its table used instead
+    let table_key = TABLE_MOD.to_ascii_lowercase();
+    for m in mods.iter().filter(|m| m.own_size_table) {
+        if m.folder.to_ascii_lowercase() > table_key {
+            progress.warn(format!(
+                "{} sorts after {TABLE_MOD}, so the game uses its own size table instead of the one for all \
+                 mods: rename it so it sorts earlier",
+                m.folder
+            ));
         }
     }
     let names: Vec<&str> = mods.iter().map(|m| m.folder.as_str()).collect();
@@ -285,6 +354,71 @@ mod tests {
         assert!(dir.join("-AMod").is_dir() && dir.join("BMod").is_dir());
         assert!(set_enabled(&dir, TABLE_MOD, false).is_err());
         assert!(set_enabled(&dir, "NotAMod", false).is_err());
+        fsutil::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn mods_found_as_the_game_finds_them() {
+        let dir = std::env::temp_dir().join(format!("modstudio-nested-{}", std::process::id()));
+        for (folder, inside) in [
+            ("BMod", "romfs/Tex/B.bntx.zs"),
+            // as emulators keep them, and as Atmosphere does (the title id's folder is the mod)
+            ("contents/0100F2C0115B6000/CMod", "romfs/Tex/C.bntx.zs"),
+            (
+                "atmosphere/contents/0100F2C0115B6000",
+                "romfs/Tex/A.bntx.zs",
+            ),
+            // a folder that is off turns off every mod in it
+            ("-off/DMod", "romfs/Tex/D.bntx.zs"),
+            // the game doesn't look inside a mod, nor in hidden folders, nor deeper than MAX_DEPTH
+            ("EMod", "romfs/Tex/E.bntx.zs"),
+            ("EMod/inner", "romfs/Tex/I.bntx.zs"),
+            (".hidden/FMod", "romfs/Tex/F.bntx.zs"),
+            ("a/b/c/d/GMod", "romfs/Tex/G.bntx.zs"),
+            // a mod with only cheats is a mod (nothing inside it is), but has no files for the table
+            ("HMod", "cheats/E0F3CCFA00000000.txt"),
+            ("HMod/sub", "romfs/Tex/H.bntx.zs"),
+        ] {
+            let p = dir.join(folder).join(inside);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+        }
+        let mods = list(&dir).unwrap();
+        let folders: Vec<&str> = mods.iter().map(|m| m.folder.as_str()).collect();
+        assert_eq!(
+            folders,
+            [
+                "-off/DMod",
+                "atmosphere/contents/0100F2C0115B6000",
+                "BMod",
+                "contents/0100F2C0115B6000/CMod",
+                "EMod",
+            ]
+        );
+        let on: Vec<bool> = mods.iter().map(|m| m.enabled).collect();
+        assert_eq!(on, [false, true, true, true, true]);
+        assert_eq!(mods[0].name, "off/DMod");
+
+        // a mod deeper down: its own folder is renamed
+        let c = "contents/0100F2C0115B6000/CMod";
+        let off = "contents/0100F2C0115B6000/-CMod";
+        assert_eq!(set_enabled(&dir, c, false).unwrap(), off);
+        assert!(dir.join(off).join("romfs").is_dir());
+        assert_eq!(set_enabled(&dir, off, true).unwrap(), c);
+        // not one in a folder that is off, nor paths outside the mods folder
+        let e = set_enabled(&dir, "-off/DMod", true).unwrap_err();
+        assert!(e.0.contains("-off, a folder that is off"), "{e}");
+        for bad in [
+            "../BMod",
+            "C:/BMod",
+            "/BMod",
+            "BMod/",
+            "a\\BMod",
+            "a/b/c/d/GMod",
+        ] {
+            assert!(set_enabled(&dir, bad, false).is_err(), "{bad}");
+        }
+        assert!(dir.join("BMod").is_dir());
         fsutil::remove_dir(&dir).unwrap();
     }
 

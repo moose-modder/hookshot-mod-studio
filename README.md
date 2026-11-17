@@ -50,8 +50,8 @@ projects, and Blender. Then:
   to them; they follow their parent in game, and move as you animate them in the game's animations you edit.
   Bones named `Ph_...`, or with *Simulate as cloth* ticked in the Bone tab, are simulated (a part of the model's
   cloth file is made for them).
-- **Installed mods**: Hookshot's mods folder, mods on and off, the shared size table. Hookshot reads its mods
-  when it starts. The table's `table-stamp.json` names the app that built it and its rules' version: an app with
+- **Installed mods**: Hookshot's mods folder, mods on and off, the shared size table. Mods deeper in the folder,
+  as emulators keep them (`contents/<title id>/<name>`), count too. Hookshot reads its mods when it starts. The table's `table-stamp.json` names the app that built it and its rules' version: an app with
   older rules (an older Mod Studio or mod manager) leaves a newer table alone and says which app to update.
 
 ## The CLI
