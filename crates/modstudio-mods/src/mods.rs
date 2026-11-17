@@ -1,11 +1,12 @@
-//! Hookshot's mods folder: the mods in it, turning them on and off, and one resource size table for all of them.
+//! The game's mods folder (Hookshot's, Longshot's): the mods in it, turning them on and off, and one resource
+//! size table for all of them.
 //!
-//! Hookshot reads `<mods>/<name>/romfs/...` (the layout emulators use). A folder whose name starts with '-' or
+//! The game reads `<mods>/<name>/romfs/...` (the layout emulators use). A folder whose name starts with '-' or
 //! '_' is off. When two mods have the same file, the one whose folder sorts last wins.
 //!
-//! The game reads one resource size table (RESTBL). When several mods each ship one, Hookshot uses the last
+//! The game reads one resource size table (RESTBL). When several mods each ship one, the game uses the last
 //! mod's, so the other mods' grown files get the game's sizes and fail to load (a texture then shows as a
-//! default one). So one table is worked out over the files of every enabled mod, as Hookshot overlays them, and
+//! default one). So one table is worked out over the files of every enabled mod, as the game overlays them, and
 //! installed as its own mod, [`TABLE_MOD`], which sorts after the others. A mod's own table is not lost: its
 //! entries that are larger than the shared table's are taken over ([`sizetable::write_table`]).
 
@@ -16,8 +17,7 @@ use serde::Serialize;
 
 use crate::fsutil::{self, is_size_table};
 use crate::progress::Progress;
-use crate::settings::Settings;
-use crate::{Context, Error, Result, sizetable};
+use crate::{Context, Error, Result, open_game_romfs, sizetable};
 
 /// The mod that holds the size table for all mods.
 pub const TABLE_MOD: &str = "zzz-ResourceSizeTable";
@@ -64,7 +64,7 @@ fn model_file(path: &str) -> Option<ModelFile> {
     })
 }
 
-/// Every mod in the mods folder (folders with a `romfs`), sorted as Hookshot sorts them; not the size table's.
+/// Every mod in the mods folder (folders with a `romfs`), sorted as the game sorts them; not the size table's.
 pub fn list(mods_dir: &Path) -> Result<Vec<InstalledMod>> {
     let Ok(entries) = std::fs::read_dir(mods_dir) else {
         return Ok(Vec::new());
@@ -105,7 +105,7 @@ pub fn list(mods_dir: &Path) -> Result<Vec<InstalledMod>> {
 }
 
 /// Turns a mod on or off by renaming its folder (`Name` <-> `-Name`). `folder` is its folder, or its name either way
-/// it is now (`Name` for a mod that is off finds `-Name`). Returns the new folder name. Hookshot reads the mods
+/// it is now (`Name` for a mod that is off finds `-Name`). Returns the new folder name. The game reads the mods
 /// folder when it starts, so it takes a restart; the size table needs rebuilding.
 pub fn set_enabled(mods_dir: &Path, folder: &str, enabled: bool) -> Result<String> {
     if folder.is_empty() || folder.contains(['/', '\\']) || folder == TABLE_MOD {
@@ -151,12 +151,16 @@ pub fn size_table(mods_dir: &Path) -> Option<PathBuf> {
         .map(|p| romfs.join(p))
 }
 
-/// Works out one size table for every enabled mod ([`sizetable`]) and installs it as [`TABLE_MOD`]. Returns the
-/// table, or `None` when no mod needs one (every file fits the game's own table); an old table is then removed.
-pub fn rebuild_size_table(settings: &Settings, progress: &mut Progress) -> Result<Option<PathBuf>> {
-    let mods_dir = &settings.install_mods;
+/// Works out one size table for every enabled mod in `mods_dir` ([`sizetable`], against the game's files in
+/// `game_romfs`) and installs it as [`TABLE_MOD`]. Returns the table, or `None` when no mod needs one (every file
+/// fits the game's own table); an old table is then removed.
+pub fn rebuild_size_table(
+    mods_dir: &Path,
+    game_romfs: &Path,
+    progress: &mut Progress,
+) -> Result<Option<PathBuf>> {
     let mods: Vec<InstalledMod> = list(mods_dir)?.into_iter().filter(|m| m.enabled).collect();
-    // Each file once, the last mod's (as Hookshot overlays them), by its path ignoring case.
+    // Each file once, the last mod's (as the game overlays them), by its path ignoring case.
     let mut files: BTreeMap<String, (String, PathBuf)> = BTreeMap::new();
     let mut own_tables: Vec<sizetable::OwnTable> = Vec::new();
     for m in &mods {
@@ -182,7 +186,7 @@ pub fn rebuild_size_table(settings: &Settings, progress: &mut Progress) -> Resul
     ));
     let files: BTreeMap<String, PathBuf> = files.into_values().collect();
     let report = sizetable::write_table(
-        &settings.romfs()?,
+        &open_game_romfs(game_romfs)?,
         &files,
         &own_tables,
         &table_mod.join("romfs"),

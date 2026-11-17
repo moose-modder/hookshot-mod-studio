@@ -1,0 +1,15 @@
+[package]
+name = "modstudio-mods"
+description = "A mods folder as the game reads it, and one resource size table for all its mods (shared by Mod Studio and the mod manager)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+modstudio-formats = { path = "../modstudio-formats" }
+serde = { version = "1.0.229", features = ["derive"] }

@@ -16,7 +16,10 @@
 //! - [`anim`]: a model's animations, listed and sampled for playing
 //! - [`anim_edit`]: animations into a Blender scene, and the scene's written back into the game's files
 //! - [`actor_links`]: which cloth and animation files the game's actors give each model
-//! - [`mods`]: Hookshot's mods folder: mods on and off, one resource size table for all of them
+//! - [`mods`]: the game's mods folder: mods on and off, one resource size table for all of them
+//!
+//! [`mods`], [`sizetable`], [`progress`] and the error type come from `modstudio-mods`, which the mod manager
+//! shares.
 
 pub mod actor_links;
 pub mod anim;
@@ -27,50 +30,16 @@ pub mod cloth;
 pub mod cloth_edit;
 pub mod cloth_new;
 pub mod eyes;
-mod fsutil;
 pub mod gltf;
 pub mod look;
 pub mod math;
 pub mod model;
-pub mod mods;
 pub mod preview;
-pub mod progress;
 pub mod project;
 pub mod replace;
 pub mod settings;
-pub mod sizetable;
 pub mod texture;
 pub mod tools;
 
-use std::fmt;
-
-/// A failure, with enough context to show to the user.
-#[derive(Debug)]
-pub struct Error(pub String);
-
-pub type Result<T> = std::result::Result<T, Error>;
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for Error {}
-
-impl From<modstudio_formats::Error> for Error {
-    fn from(e: modstudio_formats::Error) -> Self {
-        Error(e.to_string())
-    }
-}
-
-/// Adds context to errors: `.context("reading x")?`.
-pub(crate) trait Context<T> {
-    fn context(self, what: impl fmt::Display) -> Result<T>;
-}
-
-impl<T, E: fmt::Display> Context<T> for std::result::Result<T, E> {
-    fn context(self, what: impl fmt::Display) -> Result<T> {
-        self.map_err(|e| Error(format!("{what}: {e}")))
-    }
-}
+use modstudio_mods::{Context, fsutil};
+pub use modstudio_mods::{Error, Result, mods, progress, sizetable};

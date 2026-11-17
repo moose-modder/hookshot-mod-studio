@@ -76,7 +76,8 @@ And the format tools: `inspect`, `export` (`.glb` + PNG + `model.json`), `replac
 |---|---|
 | `crates/modstudio-formats` | the game's file formats: zstd with the game's dictionaries, SARC, BYML (reading), BNTX, BFRES (reading and writing), the cloth files' wrapper and parameter archives |
 | `crates/havok-formats`, `crates/havok-cloth` | Havok tagfiles and the cloth simulation, vendored from Kalmarv's crates and adapted to the game's Havok version (THIRD_PARTY.md) |
-| `crates/modstudio-core` | what the CLI and the app do: export, replace, previews, settings, projects, builds, installed mods |
+| `crates/modstudio-mods` | the game's mods folder: mods on and off, one resource size table for all of them (shared with the mod manager) |
+| `crates/modstudio-core` | what the CLI and the app do: export, replace, previews, settings, projects, builds |
 | `crates/modstudio-cli` | `modstudio`, the command line |
 | `app/` | the app: Tauri (`app/src-tauri`, Rust) with a Svelte page and a three.js 3D view (`app/src`) |
 | `pipeline/` | the Python that runs inside Blender (scene creation, baking, the build check); built into the CLI and the app |

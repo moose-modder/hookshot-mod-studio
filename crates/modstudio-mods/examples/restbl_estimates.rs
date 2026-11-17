@@ -7,8 +7,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use modstudio_core::sizetable::{estimate, game_table, kind_of};
 use modstudio_formats::romfs::Romfs;
+use modstudio_mods::sizetable::{estimate, game_table, kind_of};
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     for e in std::fs::read_dir(dir).unwrap().flatten() {

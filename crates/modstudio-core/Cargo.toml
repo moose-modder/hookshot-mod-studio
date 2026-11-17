@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 modstudio-formats = { path = "../modstudio-formats" }
+modstudio-mods = { path = "../modstudio-mods" }
 havok-formats = { path = "../havok-formats" }
 havok-cloth = { path = "../havok-cloth" }
 serde = { version = "1.0.229", features = ["derive"] }

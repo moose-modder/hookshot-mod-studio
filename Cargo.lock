@@ -1913,6 +1913,7 @@ dependencies = [
  "havok-cloth",
  "havok-formats",
  "modstudio-formats",
+ "modstudio-mods",
  "serde",
  "serde_json",
 ]
@@ -1924,6 +1925,14 @@ dependencies = [
  "png",
  "ruzstd",
  "texture2ddecoder",
+]
+
+[[package]]
+name = "modstudio-mods"
+version = "0.5.0"
+dependencies = [
+ "modstudio-formats",
+ "serde",
 ]
 
 [[package]]

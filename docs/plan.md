@@ -169,7 +169,7 @@ shared table replaced it in game and knew only loose files. Now:
 - A mod's packs are opened and their files compared with the game's same pack (`pack_files`): grown or added ones
   get entries of their own.
 - Sizes for more kinds, each covering every file of its kind in the game (`examples/restbl_packs.rs`,
-  `crates/modstudio-core/examples/restbl_estimates.rs`): parameter files 6500 plus 10 times their size (the game's
+  `crates/modstudio-mods/examples/restbl_estimates.rs`): parameter files 6500 plus 10 times their size (the game's
   need 5,056 bytes and up, up to 9.2 times the size: they are read into objects; 57,752 files), animations
   (`.anim.bfres`) 16 KB plus 1.04 times their size (unlike models, their extra grows with the file; 418 of 1,427
   were above the model formula), everything else 1.5 times their size plus 1 KB (`.asb`: up to 1.38 times plus

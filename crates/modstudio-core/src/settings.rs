@@ -122,13 +122,7 @@ impl Settings {
     }
 
     pub fn romfs(&self) -> Result<Romfs> {
-        if !is_romfs(&self.game_romfs) {
-            return Err(Error(format!(
-                "{} isn't the game's romfs (no Model folder or Pack/ZsDic.pack.zs)",
-                self.game_romfs.display()
-            )));
-        }
-        Ok(Romfs::open(&self.game_romfs)?)
+        modstudio_mods::open_game_romfs(&self.game_romfs)
     }
 
     pub fn blender(&self) -> Result<&Path> {
@@ -176,7 +170,7 @@ impl Settings {
         if self.game_romfs.as_os_str().is_empty() {
             s.problems
                 .push("Choose the game files folder (romfs, in your Hookshot folder)".into());
-        } else if is_romfs(&self.game_romfs) {
+        } else if modstudio_mods::is_game_romfs(&self.game_romfs) {
             s.romfs = true;
             match self.game_version() {
                 Ok(v) => s.game_version = Some(v),
@@ -217,10 +211,6 @@ fn tool<'a>(path: Option<&'a Path>, name: &str) -> Result<&'a Path> {
         Some(p) => Err(Error(format!("{name} not found: {}", p.display()))),
         None => Err(Error(format!("Choose where {name} is"))),
     }
-}
-
-fn is_romfs(dir: &Path) -> bool {
-    dir.join("Model").is_dir() && dir.join("Pack").join("ZsDic.pack.zs").is_file()
 }
 
 #[cfg(test)]
