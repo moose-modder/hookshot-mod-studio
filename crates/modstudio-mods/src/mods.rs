@@ -283,8 +283,8 @@ pub fn rebuild_size_table(
     }
     let names: Vec<&str> = mods.iter().map(|m| m.folder.as_str()).collect();
     let table_mod = mods_dir.join(TABLE_MOD);
-    fsutil::remove_dir(&table_mod)?;
     if files.is_empty() {
+        fsutil::remove_dir(&table_mod)?;
         progress.line("No mod files: no resource size table needed");
         return Ok(None);
     }
@@ -294,25 +294,57 @@ pub fn rebuild_size_table(
         mods.len()
     ));
     let files: BTreeMap<String, PathBuf> = files.into_values().collect();
+    // The new table is made beside the old one (in a hidden folder: the game and the mods list skip it) and
+    // swapped in, so a rebuild cut off (the app closed, an error) leaves the old table, not none.
+    let building = mods_dir.join(format!(".{TABLE_MOD}.new"));
+    fsutil::remove_dir(&building)?;
+    // (its lines name where the table goes, not where it's made)
+    let (here, there) = (
+        building.display().to_string(),
+        table_mod.display().to_string(),
+    );
     let report = sizetable::write_table(
         &open_game_romfs(game_romfs)?,
         &files,
         &own_tables,
-        &table_mod.join("romfs"),
-        progress,
+        &building.join("romfs"),
+        &mut progress.map_lines(|l| l.replace(&here, &there)),
     )?;
-    if report.table.is_none() {
+    let Some(made) = report.table else {
+        fsutil::remove_dir(&building)?;
         fsutil::remove_dir(&table_mod)?;
-    } else {
-        let stamp = Stamp {
-            rules: TABLE_RULES,
-            made_by: made_by.to_owned(),
-        };
-        let path = table_mod.join(STAMP_FILE);
-        let text = serde_json::to_string_pretty(&stamp).context("the table's stamp")?;
-        std::fs::write(&path, text).context(path.display())?;
+        return Ok(None);
+    };
+    let stamp = Stamp {
+        rules: TABLE_RULES,
+        made_by: made_by.to_owned(),
+    };
+    let path = building.join(STAMP_FILE);
+    let text = serde_json::to_string_pretty(&stamp).context("the table's stamp")?;
+    std::fs::write(&path, text).context(path.display())?;
+    swap_in(&building, &table_mod)?;
+    let rel = made.strip_prefix(&building).unwrap_or(&made);
+    Ok(Some(table_mod.join(rel)))
+}
+
+/// Puts the folder `new` in place of `dest`: the old one moved aside first and removed after, so `dest` is only
+/// missing between two renames.
+fn swap_in(new: &Path, dest: &Path) -> Result<()> {
+    let name = dest.file_name().map(|n| n.to_string_lossy().into_owned());
+    let old = dest.with_file_name(format!(".{}.old", name.unwrap_or_default()));
+    fsutil::remove_dir(&old)?;
+    if dest.exists() {
+        std::fs::rename(dest, &old).context(format!("moving {} aside", dest.display()))?;
     }
-    Ok(report.table)
+    if let Err(e) = std::fs::rename(new, dest) {
+        // the old table back where it was
+        let _ = std::fs::rename(&old, dest);
+        return Err(Error(format!(
+            "putting the new table in {}: {e}",
+            dest.display()
+        )));
+    }
+    fsutil::remove_dir(&old)
 }
 
 #[cfg(test)]
@@ -453,10 +485,35 @@ mod tests {
         assert!(e.0.contains("built by Mod Manager 9.0.0, whose rules are newer than Test 1.0's"));
         assert!(table.is_file(), "the newer table is left as it is");
 
-        // the same rules: rebuilt (here as far as the game's files, which aren't there)
+        // the same rules: rebuilt (here as far as the game's files, which aren't there), and a rebuild that
+        // fails leaves the table it would have replaced
         stamped(TABLE_RULES);
         let e = rebuild_size_table(&dir, &no_romfs, "Test 1.0", &mut progress).unwrap_err();
         assert!(e.0.contains("isn't the game's romfs"), "{e}");
+        assert!(table.is_file());
+        fsutil::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_new_table_is_swapped_in() {
+        let dir = std::env::temp_dir().join(format!("modstudio-swap-{}", std::process::id()));
+        let (new, dest) = (dir.join(".t.new"), dir.join("t"));
+        for (folder, text) in [(&new, "new"), (&dest, "old")] {
+            std::fs::create_dir_all(folder.join("romfs")).unwrap();
+            std::fs::write(folder.join("romfs/x"), text).unwrap();
+        }
+        swap_in(&new, &dest).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dest.join("romfs/x")).unwrap(),
+            "new"
+        );
+        assert!(!new.exists() && !dir.join(".t.old").exists());
+        // nothing to swap in: the table there stays
+        assert!(swap_in(&new, &dest).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("romfs/x")).unwrap(),
+            "new"
+        );
         fsutil::remove_dir(&dir).unwrap();
     }
 }
