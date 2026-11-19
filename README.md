@@ -49,7 +49,8 @@ projects, and Blender. Then:
 - **New bones**: bones added to the armature in Blender are added to the game's skeleton, with the meshes weighted
   to them; they follow their parent in game, and move as you animate them in the game's animations you edit.
   Bones named `Ph_...`, or with *Simulate as cloth* ticked in the Bone tab, are simulated (a part of the model's
-  cloth file is made for them).
+  cloth file is made for them). They swing and bend but keep their roll, with the bend stiffness the game's own cloth
+  has; a few models' cloth files have none to copy (the build says so), and there they may twist.
 - **Installed mods**: Hookshot's mods folder, mods on and off, the shared size table. Mods deeper in the folder,
   as emulators keep them (`contents/<title id>/<name>`), count too. Hookshot reads its mods when it starts. The table's `table-stamp.json` names the app that built it and its rules' version: an app with
   older rules (an older Mod Studio or mod manager) leaves a newer table alone and says which app to update.

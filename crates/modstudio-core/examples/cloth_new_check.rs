@@ -1,7 +1,8 @@
 //! The new-part generator (`modstudio_core::cloth_new`) on the game's cloth files: each file's model (the first its
 //! actors give it) gets a chain of two new bones hanging from its highest bone, a part is made for the chain, and the
 //! written file is checked: it reads back, it simulates (`LiveCloth`), the new bones start where the skeleton has
-//! them (settled at rest, within 5% of the chain's length: it sags a little), and they swing in the test motion and come back.
+//! them (settled at rest, within 5% of the chain's length: it sags a little), and they swing in the test motion and come back;
+//! reported, how far the lower bone twists about its length (it shouldn't: the part's bend stiffness).
 //!
 //! `--forward`: instead, one new bone sticking out forward (+z) from a bone on the model's middle at seven tenths of its
 //! height, as long as a tenth of it; reported, not checked: how far it turns from its angle at rest (as the bone it
@@ -69,6 +70,8 @@ fn main() {
     files.sort();
     let mut results: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut ok = 0;
+    // (most twist, file, whether the part has bend stiffness)
+    let mut twists: Vec<(f32, String, bool)> = Vec::new();
     for f in &files {
         let Some(model_path) = links.models_with(f).first().map(|s| s.to_string()) else {
             results
@@ -177,10 +180,36 @@ fn main() {
             let frames = (motion.seconds() * 60.0) as usize;
             let mut swing = 0f32;
             let mut end = 0f32;
+            // the lower bone's twist about its length (against the upper one, as at rest), at most
+            let rel_rest = math::mul(
+                &math::inverse_affine(&world2[bones[0]]).ok_or("a flat bone")?,
+                &world2[bones[1]],
+            );
+            let back = math::inverse_affine(&rel_rest).ok_or("a flat bone")?;
+            let axis = math::normalize3(math::transform_point(
+                &math::inverse_affine(&world2[bones[1]]).ok_or("a flat bone")?,
+                joints[2],
+            ));
+            let mut twist = 0f32;
             for fr in 0..frames {
                 let m = motion.at(fr as f32 / 60.0);
                 live.step(&m, 1.0 / 60.0).map_err(|e| e.0)?;
-                let p = live.places()[idx[1]];
+                let places = live.places();
+                let rel = math::mul(
+                    &math::inverse_affine(&places[idx[0]]).ok_or("a flat bone")?,
+                    &places[idx[1]],
+                );
+                let (_, q, _) = math::decompose(&math::mul(&back, &rel));
+                let along = q[0] * axis[0] + q[1] * axis[1] + q[2] * axis[2];
+                let mut t = 2.0 * along.atan2(q[3]).to_degrees();
+                if t > 180.0 {
+                    t -= 360.0;
+                }
+                if t < -180.0 {
+                    t += 360.0;
+                }
+                twist = twist.max(t.abs());
+                let p = places[idx[1]];
                 let want = math::mul(&m, &world2[bones[1]]);
                 let dist = ((p[12] - want[12]).powi(2)
                     + (p[13] - want[13]).powi(2)
@@ -199,8 +228,10 @@ fn main() {
                 .first()
                 .and_then(|l| l.split(" meets ").nth(1))
                 .map_or(0, |l| l.split(", ").count());
+            let bend = !met.iter().any(|n| n.contains("no bend stiffness"));
+            twists.push((twist, f.clone(), bend));
             Ok(format!(
-                "{colliders} colliders; anchor {}, chain {:.3} m: at rest off {:.4} m; swings {:.3} m; ends {:.3} m off",
+                "{colliders} colliders; anchor {}, chain {:.3} m: at rest off {:.4} m; swings {:.3} m; ends {:.3} m off; twists {twist:.1} deg at most",
                 skeleton[anchor].name,
                 2.0 * step,
                 worst_rest,
@@ -230,6 +261,23 @@ fn main() {
         "{} files: {ok} with a new part that reads back, simulates and swings",
         files.len()
     );
+    twists.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (bend, what) in [
+        (true, "with bend stiffness"),
+        (false, "without (the file has none)"),
+    ] {
+        let group: Vec<&(f32, String, bool)> = twists.iter().filter(|t| t.2 == bend).collect();
+        let Some(last) = group.last() else { continue };
+        let q = |f: f32| group[((group.len() - 1) as f32 * f) as usize].0;
+        println!(
+            "  the lower bone's twist about its length in the test motion, at most, {} parts {what}: median {:.1} deg, 90% {:.1}, most {:.1} ({})",
+            group.len(),
+            q(0.5),
+            q(0.9),
+            last.0,
+            last.1
+        );
+    }
     for (k, v) in &results {
         if k == "ok" {
             continue;

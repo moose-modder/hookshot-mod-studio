@@ -8,14 +8,18 @@
 //! model's by name). So a new part is a copy of one of the file's own (the smallest whose skin moves positions alone:
 //! in object space where the file has one, else in bone space), every array of it made again for the new part:
 //!
-//! - **a strip** of particles two wide down the chain: at each joint (each bone's head, then the last bone's tip) one
-//!   on the chain and one beside it (`across`); the top two fixed, carried by the bone the chain hangs from (its
-//!   anchor), and with a stiffness a third (the brace) off the strip beside the top; two triangles a bone, the bone set from the one at its head (its stored matrix: the inverse of that
-//!   triangle's frame at rest times the bone's rest place, `havok-cloth::deform`);
+//! - **a strip** of particles two wide down the chain: at each joint (each bone's head, then the last bone's tip) two,
+//!   either side of the chain (`across`, towards the side of the model the chain is on, so a left and a right chain
+//!   mirror each other); the top two fixed, carried by the bone the chain hangs from (its anchor), and with a stiffness
+//!   a third (the brace) off the strip beside the top; two triangles a bone, the bone set from the one at its head (its
+//!   stored matrix: the inverse of that triangle's frame at rest times the bone's rest place, `havok-cloth::deform`);
 //! - **constraints**: links along every edge of the strip, with a stiffness links across each joint and from the
-//!   brace to the first bone's tip (soft: they pull the chain back to its shape at rest), a stretch link down the
-//!   chain, a range keeping each free particle near where the anchor would carry it at rest (half its distance down
-//!   the chain), and the transition set (all particles); run in the order the game's parts run them;
+//!   brace to the first bone's tip (soft: they pull the chain back to its shape at rest), stretch links down both
+//!   sides, a range keeping each free particle near where the anchor would carry it at rest (half its distance down
+//!   the chain), the transition set (all particles), and bend stiffness (a copy of the file's own set, where it has
+//!   one: 135 of the 171 files) across each segment's diagonals, which keeps the strip from twisting about the chain,
+//!   and with a stiffness across each joint; run in the order the game's parts run them, a pass of the bend stiffness
+//!   after each of the links;
 //! - **skinning**: every particle on the anchor alone, in blocks of the fewest bones a vertex whose type the file
 //!   spells out (the other bones the anchor too, without weight): in object space its place in the model packed as
 //!   an `hkPackedVector3` and the anchor's inverse rest place; in bone space its place relative to the anchor, its
@@ -176,7 +180,8 @@ pub const SIMULATED_PREFIX: &str = "Ph_";
 /// as cloth" ticked in the scene), as parts: each starts at such a bone whose parent isn't one, hangs from that parent
 /// (its anchor), and goes on down the only such child of each bone. Its joints are the bones' heads and the last one's tip (`tips`, in the model's space; else as far on from
 /// its head as the bone before it was long, or a tenth of the chain's height down); the strip across it is a quarter
-/// of its first bone's length wide, along the model's x axis (across the chain); its settings those of the topmost
+/// of its first bone's length wide, along the model's x axis towards the side the chain is on (across the chain; a
+/// left and a right chain mirror each other); its settings those of the topmost
 /// bone of it in `settings` (the scene's), the defaults else. Notes on what was left out.
 pub fn chains_of(
     skeleton: &[RestBone],
@@ -259,12 +264,14 @@ pub fn chains_of(
             joints[1][1] - joints[0][1],
             joints[1][2] - joints[0][2],
         ]);
-        // the model's x axis, less its part along the chain (its z where the chain runs along x)
+        // the model's x axis, less its part along the chain (its z where the chain runs along x); towards the side
+        // the chain is on, so that a left and a right chain get strips that mirror each other
         let pick = |a: [f32; 3]| {
             let k = a[0] * down[0] + a[1] * down[1] + a[2] * down[2];
             [a[0] - k * down[0], a[1] - k * down[1], a[2] - k * down[2]]
         };
-        let mut side = pick([1.0, 0.0, 0.0]);
+        let outward = if joints[0][0] < -1e-4 { -1.0 } else { 1.0 };
+        let mut side = pick([outward, 0.0, 0.0]);
         if (side[0] * side[0] + side[1] * side[1] + side[2] * side[2]).sqrt() < 0.3 {
             side = pick([0.0, 0.0, 1.0]);
         }
@@ -790,8 +797,16 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
-/// The strip of a part: particles (on the chain at even indices, beside it at odd ones; with a stiffness, the brace
-/// after them), triangles, and which triangle sets each bone.
+/// Where two of a strip's triangles meet: across a segment (its diagonal, the edge the strip twists about), or at a
+/// joint (the rung between two segments, the edge the chain bends about).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BendKind {
+    Diagonal,
+    Joint,
+}
+
+/// The strip of a part: particles (two at each joint, either side of the chain: one at even indices, the other at odd
+/// ones; with a stiffness, the brace after them), triangles, and which triangle sets each bone.
 struct Strip {
     positions: Vec<[f32; 3]>,
     /// The particles the anchor carries: the top two, and the brace.
@@ -807,6 +822,9 @@ struct Strip {
     /// Links from the brace to the first bone's tip, both sides (holding the first bone at its angle to the anchor:
     /// the part's stiffness).
     braces: Vec<(u16, u16)>,
+    /// Every two triangles that share an edge, as a bend stiffness link takes them: `[A, B, C, D]`, C-D the edge, A
+    /// and B the triangles' far corners.
+    bend_pairs: Vec<([u16; 4], BendKind)>,
 }
 
 impl Strip {
@@ -816,11 +834,17 @@ impl Strip {
     }
 }
 
-/// A part's strip of particles and links. The top two particles fix the first bone's hinge: the strip's segments are
-/// rigid, so the chain folds at its top across the strip (and at each joint below), and with nothing else gravity
-/// takes it down until its range stops it. With a stiffness, a third fixed particle (the brace), off the strip's
-/// plane at the top, is linked to the first bone's tip: the link's length changes as the first bone turns on its
-/// hinge, so it pulls the bone back to its angle at rest (a bone that sticks out springs back rather than hanging).
+/// A part's strip of particles and links: at each joint two particles, half the strip's width either side of the chain
+/// (as the game's own strips have them: Link's hood string). The top two particles fix the first bone's hinge: the
+/// strip's segments are rigid, so the chain folds at its top across the strip (and at each joint below), and with
+/// nothing else gravity takes it down until its range stops it. With a stiffness, a third fixed particle (the brace),
+/// off the strip's plane at the top, is linked to the first bone's tip: the link's length changes as the first bone
+/// turns on its hinge, so it pulls the bone back to its angle at rest (a bone that sticks out springs back rather than
+/// hanging).
+///
+/// Links alone don't keep a flat strip flat: a particle moving straight off the strip's plane barely changes their
+/// lengths, so the strip twisted about the chain like a ribbon, and its bones with it. The bend pairs (each segment's
+/// diagonal, each joint's rung) are what the part's bend stiffness holds ([`bend_link`]).
 fn strip(part: &NewPart) -> Result<Strip> {
     let n = part.bones.len();
     if n == 0 || part.joints.len() != n + 1 || part.across.len() != n + 1 {
@@ -834,8 +858,8 @@ fn strip(part: &NewPart) -> Result<Strip> {
     }
     let mut positions = Vec::with_capacity(2 * (n + 1));
     for (j, a) in part.joints.iter().zip(&part.across) {
-        positions.push(*j);
-        positions.push([j[0] + a[0], j[1] + a[1], j[2] + a[2]]);
+        positions.push([j[0] - 0.5 * a[0], j[1] - 0.5 * a[1], j[2] - 0.5 * a[2]]);
+        positions.push([j[0] + 0.5 * a[0], j[1] + 0.5 * a[1], j[2] + 0.5 * a[2]]);
     }
     let l = |j: usize| (2 * j) as u16;
     let r = |j: usize| (2 * j + 1) as u16;
@@ -848,8 +872,7 @@ fn strip(part: &NewPart) -> Result<Strip> {
         bone_triangles.push(triangles.len());
         triangles.push([l(k - 1), r(k - 1), l(k)]);
         triangles.push([r(k - 1), r(k), l(k)]);
-        // both diagonals: each segment rigid, so the chain only folds at its joints (one diagonal lets a segment
-        // twist about the chain, flipping its bone)
+        // both diagonals: each segment rigid, so the chain only folds at its joints
         edges.extend([
             (l(k - 1), l(k)),
             (r(k - 1), r(k)),
@@ -857,21 +880,35 @@ fn strip(part: &NewPart) -> Result<Strip> {
             (l(k - 1), r(k)),
             (l(k), r(k)),
         ]);
-        rails.push((l(k - 1), l(k)));
+        rails.extend([(l(k - 1), l(k)), (r(k - 1), r(k))]);
     }
     let bends = (1..n)
         .flat_map(|k| [(l(k - 1), l(k + 1)), (r(k - 1), r(k + 1))])
         .collect();
+    // the bend pairs, each with its mirror image (the pair the other diagonal's triangles make): one pair's far corners
+    // are on either side of the chain, so its pull alone turns the strip about it a little; the two together don't.
+    // Each segment folding across its diagonal (twisting), and with more than one bone, each joint folding at its rung
+    let mut bend_pairs = Vec::new();
+    for k in 1..=n {
+        bend_pairs.push(([l(k - 1), r(k), r(k - 1), l(k)], BendKind::Diagonal));
+        bend_pairs.push(([r(k - 1), l(k), l(k - 1), r(k)], BendKind::Diagonal));
+    }
+    for k in 1..n {
+        bend_pairs.push(([r(k - 1), l(k + 1), l(k), r(k)], BendKind::Joint));
+        bend_pairs.push(([l(k - 1), r(k + 1), l(k), r(k)], BendKind::Joint));
+    }
     let mut fixed = vec![l(0), r(0)];
     let mut braces = Vec::new();
     if part.settings.stiffness > 0.0 {
         // off the strip's plane (square to the first bone and to the strip across it), as far from the top as the
         // first bone is long: the brace's links meet the bone at a right angle's worth of slant, so a turn either
-        // way on its hinge changes their length at once
+        // way on its hinge changes their length at once. On the same side for a chain and its mirror image (their
+        // strips go across the other way: `chains_of`)
         let (top, next) = (part.joints[0], part.joints[1]);
         let along = [next[0] - top[0], next[1] - top[1], next[2] - top[2]];
         let length = distance(top, next);
-        let normal = math::normalize3(cross(along, part.across[0]));
+        let mirrored = if part.across[0][0] < 0.0 { -1.0 } else { 1.0 };
+        let normal = math::normalize3(cross(along, part.across[0]).map(|x| x * mirrored));
         if length > 1e-5 && normal.iter().all(|x| x.is_finite()) && dot(normal, normal) > 0.5 {
             let brace = positions.len() as u16;
             positions.push([
@@ -892,7 +929,79 @@ fn strip(part: &NewPart) -> Result<Strip> {
         rails,
         bends,
         braces,
+        bend_pairs,
     })
+}
+
+/// A bend stiffness link (`hclBendStiffnessConstraintSet::Link`) for two triangles sharing the edge C-D, A and B their
+/// far corners, made as the game's are (`examples/bend_check.rs`, on every cloth file):
+/// - the weights `[a, b, -(1 - t), -t]`: `a` and `b` the far corners' heights over the edge, each as a share of the
+///   two's (`b`'s height for A: the point `a A + b B` is where A to B crosses the edge, flattened), `t` where that
+///   point falls along C-D (as the game's have them for two triangles in one plane; the game's own differ a little on
+///   folded ones);
+/// - the stiffness `-beta / (the four particles' inverse masses, summed)`: `beta` the part's (the game's: 0.2 for most
+///   parts, 2.4 for stiff ones, up to 4);
+/// - the rest curvature: what makes the bending vector nothing at rest, as `havok-cloth::constraints::bend_stiffness`
+///   works it out (`useRestPoseConfig`), so a strip bent at rest is held to that bend.
+///
+/// Also the bend's height at rest (the rest curvature times `current`), for the set's `maxRestPoseHeightSq`.
+fn bend_link(
+    positions: &[[f32; 3]],
+    inv_mass: &[f32],
+    [a, b, c, d]: [u16; 4],
+    beta: f32,
+) -> (cloth::BendStiffnessLink, f32) {
+    let p = |i: u16| positions[usize::from(i)].map(f64::from);
+    let (pa, pb, pc, pd) = (p(a), p(b), p(c), p(d));
+    let sub = |x: [f64; 3], y: [f64; 3]| [x[0] - y[0], x[1] - y[1], x[2] - y[2]];
+    let dot = |x: [f64; 3], y: [f64; 3]| x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
+    let cross = |x: [f64; 3], y: [f64; 3]| {
+        [
+            x[1] * y[2] - x[2] * y[1],
+            x[2] * y[0] - x[0] * y[2],
+            x[0] * y[1] - x[1] * y[0],
+        ]
+    };
+    let len = |x: [f64; 3]| dot(x, x).sqrt();
+    let cd = sub(pd, pc);
+    let edge = len(cd).max(1e-12);
+    // the far corners' heights over the edge
+    let ha = len(cross(cd, sub(pa, pc))) / edge;
+    let hb = len(cross(cd, sub(pb, pc))) / edge;
+    let wa = if ha + hb > 0.0 { hb / (ha + hb) } else { 0.5 };
+    let wb = 1.0 - wa;
+    let on_ab = [0, 1, 2].map(|k| wa * pa[k] + wb * pb[k]);
+    let t = dot(sub(on_ab, pc), cd) / (edge * edge);
+    let weights = [wa, wb, -(1.0 - t), -t];
+    // the rest curvature: as the simulator measures a bend (its offset and `current`), the one that cancels the
+    // bending vector at rest
+    let bv = [0, 1, 2]
+        .map(|k| weights[0] * pa[k] + weights[1] * pb[k] + weights[2] * pc[k] + weights[3] * pd[k]);
+    let ca = sub(pa, pc);
+    let cb = sub(pb, pc);
+    let (x, y) = (cross(cd, ca), cross(cb, cd));
+    let (lx, ly) = (len(x), len(y));
+    let mut rest_curvature = 0.0;
+    let mut height = 0.0;
+    if lx > 1e-18 && ly > 1e-18 {
+        let o = [0, 1, 2].map(|k| x[k] / lx + y[k] / ly);
+        let lo = len(o);
+        let current = lx * ly / (edge * edge);
+        if lo > 1e-12 && current > 1e-18 {
+            rest_curvature = -dot(bv, o) / lo / current;
+            height = rest_curvature * current;
+        }
+    }
+    let sum_inv: f32 = [a, b, c, d].iter().map(|&i| inv_mass[usize::from(i)]).sum();
+    (
+        cloth::BendStiffnessLink {
+            weights: weights.map(|w| w as f32),
+            bend_stiffness: if sum_inv > 0.0 { -beta / sum_inv } else { 0.0 },
+            rest_curvature: rest_curvature as f32,
+            particles: [a, b, c, d],
+        },
+        height as f32,
+    )
 }
 
 fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -1039,6 +1148,41 @@ pub fn add_parts(
                 .is_ok_and(|n| n == t_cloth.transform_sets[0].name)
         })
         .ok_or_else(|| Error(format!("the template part {t_name} has no skeleton")))?;
+    // the bend stiffness new parts copy (the smallest part's that has one; 135 of the game's 171 files have one): the
+    // file's own layout of the set, filled for each new part
+    let mut bend: Option<(Value, usize)> = None;
+    for d in &datas {
+        let name = d
+            .field("name")
+            .and_then(|n| n.string())
+            .map_err(fail("a part"))?;
+        let Some(c) = physics.cloths.iter().find(|c| c.name == name) else {
+            continue;
+        };
+        let Some(sc) = c.sim_cloths.first() else {
+            continue;
+        };
+        let Some(j) = sc
+            .constraint_sets
+            .iter()
+            .position(|s| matches!(s.kind, ConstraintKind::BendStiffness { .. }))
+        else {
+            continue;
+        };
+        if bend.is_some_and(|(_, size)| size <= sc.particles.len()) {
+            continue;
+        }
+        let sims = pointed(d.field("simClothDatas").map_err(fail("a part"))?)?;
+        let sets = pointed(
+            sims[0]
+                .field("staticConstraintSets")
+                .map_err(fail("a sim cloth"))?,
+        )?;
+        if let Some(&set) = sets.get(j) {
+            bend = Some((set, sc.particles.len()));
+        }
+    }
+    let bend = bend.map(|(v, _)| v);
 
     let mut ed = Editor::new(&tag)?;
     let world = rest_world(skeleton);
@@ -1119,6 +1263,12 @@ pub fn add_parts(
             )
         });
         notes.extend(part_notes);
+        if bend.is_none() {
+            notes.push(format!(
+                "{}: this cloth file has no bend stiffness to copy, so the new part may twist about its bones",
+                part.name
+            ));
+        }
         let (data_item, skeleton_item) = make_part(
             &mut ed,
             Template {
@@ -1126,6 +1276,7 @@ pub fn add_parts(
                 cloth: t_cloth,
                 skeleton: t_skeleton,
                 samples: &samples,
+                bend,
             },
             skeleton,
             &world,
@@ -1236,13 +1387,19 @@ pub fn add_parts(
     Ok((out, notes))
 }
 
-/// The part new ones are copied from, and entries of the file's per-collider arrays.
+/// The part new ones are copied from, entries of the file's per-collider arrays, and a bend stiffness set of the file's
+/// (another part's) to copy.
 struct Template<'t, 'a, 'c> {
     value: Value<'t, 'a>,
     cloth: &'c cloth::Cloth,
     skeleton: Value<'t, 'a>,
     samples: &'c HashMap<&'c str, Vec<u8>>,
+    bend: Option<Value<'t, 'a>>,
 }
+
+/// The bend stiffness (its `beta`: [`bend_link`]) across each segment's diagonal, which keeps the strip from twisting
+/// about the chain: the game's stiff parts' (95 parts; 4 is about a whole correction a pass).
+const TWIST_BEND: f32 = 2.4;
 
 /// One new part: its cloth data and skeleton, copied from the template's and made for `part`. Their items.
 fn make_part(
@@ -1748,6 +1905,56 @@ fn make_part(
         let data = ed.elements(f, &rows)?;
         ed.set_array(f, n, data)?;
     }
+    // bend stiffness (a copy of the file's own set): across each segment's diagonal, so the strip doesn't twist about
+    // the chain; with a stiffness, across each joint too
+    let bend = match template.bend {
+        Some(source) => {
+            let (item, _) = ed.locate(source)?;
+            ed.deep_copy(item, &keep)?;
+            let inv: Vec<f32> = particles.iter().map(|p| p.inv_mass).collect();
+            let mut most_height = 0f32;
+            let rows: Vec<Vec<(&str, Vec<u8>)>> = s
+                .bend_pairs
+                .iter()
+                .filter_map(|&(pair, kind)| {
+                    let beta = match kind {
+                        BendKind::Diagonal => TWIST_BEND,
+                        BendKind::Joint => TWIST_BEND * part.settings.stiffness,
+                    };
+                    (beta > 0.0).then(|| bend_link(&s.positions, &inv, pair, beta))
+                })
+                .map(|(l, height)| {
+                    most_height = most_height.max(height.abs());
+                    vec![
+                        ("weightA", le32(l.weights[0].to_bits())),
+                        ("weightB", le32(l.weights[1].to_bits())),
+                        ("weightC", le32(l.weights[2].to_bits())),
+                        ("weightD", le32(l.weights[3].to_bits())),
+                        ("bendStiffness", le32(l.bend_stiffness.to_bits())),
+                        ("restCurvature", le32(l.rest_curvature.to_bits())),
+                        ("particleA", le16(l.particles[0])),
+                        ("particleB", le16(l.particles[1])),
+                        ("particleC", le16(l.particles[2])),
+                        ("particleD", le16(l.particles[3])),
+                    ]
+                })
+                .collect();
+            let f = source.field("links").map_err(fail("bend stiffness"))?;
+            let data = ed.elements(f, &rows)?;
+            ed.set_array(f, rows.len(), data)?;
+            // as the game's: links folded beyond eight times the most a link is folded at rest lose their stiffness
+            if source.has_field("maxRestPoseHeightSq") {
+                ed.put_f32(
+                    source
+                        .field("maxRestPoseHeightSq")
+                        .map_err(fail("bend stiffness"))?,
+                    64.0 * most_height * most_height,
+                )?;
+            }
+            (!rows.is_empty()).then_some(source)
+        }
+        None => None,
+    };
     // the sets, in order, and the simulate configuration's order of them
     let mut ordered: Vec<Value> = vec![standard];
     if let Some(st) = stretch {
@@ -1756,6 +1963,9 @@ fn make_part(
     ordered.push(range);
     if let Some(tr) = transition {
         ordered.push(tr);
+    }
+    if let Some(b) = bend {
+        ordered.push(b);
     }
     let set_items: Vec<usize> = ordered
         .iter()
@@ -1781,7 +1991,13 @@ fn make_part(
     let i_stretch = stretch.map(|_| 1i32);
     let i_range = 1 + i32::from(stretch.is_some());
     let i_transition = transition.map(|_| i_range + 1);
-    let mut execution = vec![i_range, i_standard, i_standard, i_standard];
+    let i_bend = bend.map(|_| i_range + 1 + i32::from(transition.is_some()));
+    // each pass of the links followed by one of the bend stiffness
+    let mut execution = vec![i_range];
+    for _ in 0..3 {
+        execution.push(i_standard);
+        execution.extend(i_bend);
+    }
     execution.extend(i_stretch);
     execution.push(-1);
     execution.extend(i_transition);
@@ -2350,11 +2566,48 @@ mod tests {
         };
         let s = strip(&part).unwrap();
         assert_eq!(s.positions.len(), 6);
+        // the chain down the strip's middle
+        let near = |a: [f32; 3], b: [f32; 3]| distance(a, b) < 1e-6;
+        assert!(
+            near(s.positions[0], [-0.025, 1.0, 0.0]) && near(s.positions[1], [0.025, 1.0, 0.0])
+        );
+        assert!(near(s.positions[5], [0.025, 0.6, 0.0]));
         assert_eq!(s.triangles, [[0, 1, 2], [1, 3, 2], [2, 3, 4], [3, 5, 4]]);
         assert_eq!(s.bone_triangles, [0, 2]);
-        assert_eq!(s.rails, [(0, 2), (2, 4)]);
+        assert_eq!(s.rails, [(0, 2), (1, 3), (2, 4), (3, 5)]);
         // across the middle joint, down each side: what holds the chain straight
         assert_eq!(s.bends, [(0, 4), (1, 5)]);
+        // bend stiffness: each segment's diagonal both ways, the middle joint's rung both ways
+        let pairs: Vec<([u16; 4], BendKind)> = s.bend_pairs.clone();
+        assert_eq!(
+            pairs,
+            [
+                ([0, 3, 1, 2], BendKind::Diagonal),
+                ([1, 2, 0, 3], BendKind::Diagonal),
+                ([2, 5, 3, 4], BendKind::Diagonal),
+                ([3, 4, 2, 5], BendKind::Diagonal),
+                ([1, 4, 2, 3], BendKind::Joint),
+                ([0, 5, 2, 3], BendKind::Joint),
+            ]
+        );
+        // each a link whose bending vector is nothing at rest: a flat strip's, weighted half and half across its
+        // diagonals (where they cross)
+        let inv = [0.0, 0.0, 10.0, 10.0, 10.0, 10.0];
+        for (pair, _) in &pairs {
+            let (l, height) = bend_link(&s.positions, &inv, *pair, 2.4);
+            assert!(
+                height.abs() < 1e-6 && l.rest_curvature.abs() < 1e-4,
+                "{l:?}"
+            );
+            assert!((l.weights[0] + l.weights[1] - 1.0).abs() < 1e-6);
+            assert!((l.weights[2] + l.weights[3] + 1.0).abs() < 1e-6);
+        }
+        let (l, _) = bend_link(&s.positions, &inv, pairs[0].0, 2.4);
+        for (w, want) in l.weights.iter().zip([0.5, 0.5, -0.5, -0.5]) {
+            assert!((w - want).abs() < 1e-5, "{l:?}");
+        }
+        // (particles 0 and 1 fixed: three moving ones share the stiffness)
+        assert!((l.bend_stiffness + 2.4 / 20.0).abs() < 1e-6, "{l:?}");
         // no stiffness: the top two fixed, no brace
         assert_eq!(s.fixed, [0, 1]);
         assert!(s.braces.is_empty());
@@ -2399,8 +2652,101 @@ mod tests {
         assert!(((b[1] - 1.0).abs() - 0.2).abs() < 1e-5, "{b:?}");
         // turning the bone on its hinge (about x at the top) changes the brace's link: it pulls it back
         let rest = distance(b, s.positions[2]);
-        let turned = [0.0, 1.0 - 0.2 * 0.1f32.sin(), 0.2 * 0.1f32.cos()];
+        let turned = [-0.025, 1.0 - 0.2 * 0.1f32.sin(), 0.2 * 0.1f32.cos()];
         assert!((distance(b, turned) - rest).abs() > 0.01);
+        // a chain's mirror image (its strip across the other way): the brace on the same side
+        let mirror = NewPart {
+            across: vec![[-0.05, 0.0, 0.0]; 2],
+            ..part
+        };
+        let m = strip(&mirror).unwrap();
+        assert!(
+            distance(m.positions[4], b) < 1e-6,
+            "{:?} {b:?}",
+            m.positions[4]
+        );
+    }
+
+    #[test]
+    fn a_left_and_a_right_chain_mirror_each_other() {
+        let bone = |name: &str, parent: Option<usize>, t: [f32; 3]| RestBone {
+            name: name.into(),
+            parent,
+            translation: t,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+        };
+        let skeleton = vec![
+            bone("Root", None, [0.0; 3]),
+            bone("Chest", Some(0), [0.0, 1.2, 0.0]),
+            bone("Ph_Left", Some(1), [0.1, 0.0, 0.05]),
+            bone("Ph_Right", Some(1), [-0.1, 0.0, 0.05]),
+        ];
+        let added = vec!["Ph_Left".to_owned(), "Ph_Right".to_owned()];
+        let tips = std::collections::BTreeMap::from([
+            ("Ph_Left".to_owned(), [0.15, 1.1, 0.15]),
+            ("Ph_Right".to_owned(), [-0.15, 1.1, 0.15]),
+        ]);
+        let (parts, _) = chains_of(&skeleton, &added, &[], &tips, &Default::default());
+        assert_eq!(parts.len(), 2);
+        let (left, right) = (strip(&parts[0]).unwrap(), strip(&parts[1]).unwrap());
+        // the right strip is the left one mirrored (x the other way): particle for particle
+        for (a, b) in left.positions.iter().zip(&right.positions) {
+            assert!(distance(*a, [-b[0], b[1], b[2]]) < 1e-6, "{a:?} {b:?}");
+        }
+    }
+
+    #[test]
+    fn bend_links_as_the_games() {
+        // far corners A (1 over the edge) and B (2 under it), the edge from C to D along x: A to B crosses it a
+        // quarter of the way from C, so the weights are A and B by the other's height, C and D by that quarter
+        let positions = [
+            [0.0, 1.0, 0.0],
+            [0.0, -2.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+        ];
+        let inv = [10.0, 10.0, 0.0, 10.0];
+        let (l, height) = bend_link(&positions, &inv, [0, 1, 2, 3], 0.6);
+        for (w, want) in l.weights.iter().zip([2.0 / 3.0, 1.0 / 3.0, -0.75, -0.25]) {
+            assert!((w - want).abs() < 1e-6, "{l:?}");
+        }
+        assert!(l.rest_curvature.abs() < 1e-6 && height.abs() < 1e-6);
+        assert!((l.bend_stiffness + 0.6 / 30.0).abs() < 1e-7);
+
+        // folded at rest (B turned 40 degrees out of the plane about the edge): the simulator leaves it there, and
+        // pushes a fold further than that back towards it
+        use havok_cloth::simd::V4;
+        let turn = |deg: f32| {
+            let (s, c) = deg.to_radians().sin_cos();
+            [0.0, -2.0 * c, 2.0 * s]
+        };
+        let rest = [positions[0], turn(40.0), positions[2], positions[3]];
+        let (l, _) = bend_link(&rest, &inv, [0, 1, 2, 3], TWIST_BEND);
+        let run = |at: [[f32; 3]; 4]| -> Vec<V4> {
+            let mut pos: Vec<V4> = at.iter().map(|p| V4::new(p[0], p[1], p[2], 0.0)).collect();
+            let mut prev = pos.clone();
+            havok_cloth::constraints::bend_stiffness(
+                std::slice::from_ref(&l),
+                havok_cloth::constraints::BendRestPose::Curved { clamp: None },
+                &mut havok_cloth::constraints::Particles {
+                    positions: &mut pos,
+                    previous: &mut prev,
+                    inv_mass: &inv,
+                },
+                1.0,
+            );
+            pos
+        };
+        let still = run(rest);
+        for (p, q) in still.iter().zip(&rest) {
+            assert!(distance([p.x(), p.y(), p.z()], *q) < 1e-4, "{p:?} {q:?}");
+        }
+        let folded = turn(70.0);
+        let back = run([positions[0], folded, positions[2], positions[3]]);
+        let angle = |p: V4| p.z().atan2(-p.y()).to_degrees();
+        let after = angle(back[1]);
+        assert!(after < 69.0 && after > 40.0, "{after}");
     }
 
     #[test]

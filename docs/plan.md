@@ -734,6 +734,35 @@ a share of the error a pass (the stiffness) like the links across joints. A stif
   the template's doesn't matter there.
 - `scene_tools.py`: ticking *Simulate as cloth* adds the settings at once.
 
+**Done (2026-11-19): new parts don't twist.** A tester's new cloth bones twisted in game (the object on them turned
+about the bones), and their physics viewer showed our strip with the bones along one edge. Each new bone after the
+first is set from a triangle of the strip, two corners on the chain and one beside it, so its roll was wherever that
+one particle was; and a flat strip's links barely resist a particle moving off its plane (their lengths change at
+second order), so the strip twisted about the chain like a ribbon. `examples/bone_roll_probe.rs`: a chain laid along
+adult Link's cap twisted up to 66 degrees in the test motion (the cap: 14 to 37) and flipped over (179) at stiffness
+0.3. The bones down the strip's middle, links at full strength, or a third particle a joint didn't help on their own.
+- What the game's strips have and ours didn't: bend stiffness (`hclBendStiffnessConstraintSet`), a link for every two
+  triangles sharing an edge (33,698 of the 34,025 pairs in the 135 files that have it), which pushes a fold back at
+  first order. `examples/bend_check.rs`, on every link: the weights `[a, b, -(1 - t), -t]`, `a` and `b` the far corners'
+  heights over the shared edge as shares of the two's (B's for A; to 8e-7), `t` where `a A + b B` falls along the
+  edge (exact for triangles in one plane, further off the more they are folded); the stiffness `-beta` over the four
+  inverse masses summed, `beta` a part's (0.2 in 409 parts, 2.4 in 95; 0.04 to 4); the rest curvature as
+  `havok-cloth` works it out at rest (to 3e-6 of it, median); `maxRestPoseHeightSq` 64 times the set's largest height
+  at rest, squared, in every set; rest pose and clamp on in all 553 sets.
+- New parts now: the particles either side of the chain (the bones down the middle, as the hood string has them);
+  stretch links down both sides; the strip across towards the side of the model the chain is on, so a left and a right
+  chain mirror each other (their braces too); and a copy of the file's own bend stiffness set (the smallest part's
+  that has one), with links across each segment's diagonal at `beta` 2.4 and, with a stiffness, across each joint
+  (2.4 times it), each with its mirror pair (one pair's far corners lie either side of the chain, so its pull alone
+  turned the strip: a stiff chain settled 9 degrees twisted); a pass of it after each of the links' three. The 36
+  files without a bend stiffness set get none, and the build says the part may twist.
+- `bone_roll_probe`, the chain along the cap: at most 3 degrees in the test motion without colliders, 14 lying on the
+  head among its colliders (21 at stiffness 0.3), no flips; settled within 0.7 degrees without colliders at stiffness 0
+  and 0.3 (3 at 1). `cloth_new_check`, two new bones hanging from each model's highest bone: the lower bone's twist at
+  most, median over the 135 files 1.8 degrees (56 before), the worst 13.6; stiffness 0.3: 0.2, the worst 10.1; 1: 0.4,
+  the worst 6.7. The 35 files without bend stiffness (with a model) as before. `--forward`: stiffness 0 as before (29
+  degrees), 0.3 settles 1.5 (1.8 before), 1 settles 0.1 (0.7).
+
 **Next:** writing meshlet shapes (a build that replaces a map piece or object); new animation names (the sequence
 files) later.
 
